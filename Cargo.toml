@@ -25,7 +25,9 @@ url = "2"
 percent-encoding = "2"
 
 [dev-dependencies]
+flate2 = "1.1.10"
 insta = { version = "1", features = ["json"] }
+tar = "0.4.46"
 tower = { version = "0.5", features = ["util"] }
 
 [patch.crates-io]

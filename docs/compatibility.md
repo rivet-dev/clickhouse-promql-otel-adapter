@@ -50,7 +50,7 @@ upgrading them requires regenerating snapshots and rerunning conformance.
 - [ ] Exponential/native histogram scale, positive/negative buckets, zero threshold/count, resets and mixed float/histogram series.
 - [ ] Summaries and quantiles; sum/count names and label rendering.
 - [ ] OTLP flags, no-recorded-value/stale samples, NaN and infinities; missing samples.
-- [ ] Nanosecond input to Prometheus millisecond semantics; pre-epoch/overflow checks.
+- [x] Nanosecond input to Prometheus millisecond semantics; default-schema loss documented, precise-column variant verified through the real Collector and 9,756 query executions.
 - [ ] Prometheus scrape round trip: metric suffix/unit/name normalization, resource job/instance, scope and target_info, label collision handling.
 - [ ] Resource/point/scope attributes: typed values, canonical labels, UTF-8 and invalid names.
 - [ ] Exemplars: labels, trace/span identifiers, timestamps and range selection.
@@ -225,7 +225,7 @@ of compatibility.
 - [x] [collision.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/collision.test)
 - [x] [duration_expression.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/duration_expression.test)
 - [x] [extended_vectors.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/extended_vectors.test)
-- [ ] [fill-modifier.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/fill-modifier.test)
+- [x] [fill-modifier.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/fill-modifier.test)
 - [x] [functions.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/functions.test)
 - [x] [histograms.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/histograms.test)
 - [x] [info.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/info.test)

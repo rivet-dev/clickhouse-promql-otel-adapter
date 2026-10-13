@@ -25,3 +25,14 @@ credentials. The compose volume persists until `docker compose down -v`.
 
 [Schema findings](docs/schema-findings.md) explain fidelity issues in the default
 format. No schema changes are required to run the baseline snapshot test.
+
+Run the Rust and real ClickHouse tests with `cargo test`. Replay the committed
+Prometheus evaluator, parser, and HTTP reference corpora with
+`python3 scripts/conformance.py`; `--regenerate` explicitly replaces them using
+the pinned upstream Go test tools. Go is never used by the adapter.
+
+`python3 scripts/generate-snapshots.py --precision-schema` checks a separately
+snapshotted `DateTime64(9)` schema using the unmodified Collector. This confirms
+that precreated precise columns preserve subsecond input. See the
+[ClickHouse differential report](docs/storage-report.md) for representable
+upstream datasets and explicit format exclusions.

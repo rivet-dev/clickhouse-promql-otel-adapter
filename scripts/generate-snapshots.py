@@ -44,6 +44,7 @@ def snapshot(name, value, update):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--update", action="store_true")
+    parser.add_argument("--precision-schema", action="store_true", help="precreate a DateTime64(9) variant and verify the unmodified collector against it")
     args = parser.parse_args()
     suffix = uuid.uuid4().hex
     database = "snapshot_" + suffix
@@ -59,7 +60,7 @@ exporters:
     username: default
     password: local-test-only
     database: {database}
-    create_schema: true
+    create_schema: {str(not args.precision_schema).lower()}
     async_insert: false
     sending_queue:
       enabled: false
@@ -69,6 +70,12 @@ service:
       receivers: [otlp]
       exporters: [clickhouse]
 """
+    if args.precision_schema:
+        query(f"CREATE DATABASE {database}")
+        ddl = (ROOT / "tests/snapshots/collector-schema.sql").read_text().replace("{{database}}", database).replace("DateTime", "DateTime64(9)")
+        for statement in ddl.split(";"):
+            if statement.strip():
+                query(statement)
     with tempfile.TemporaryDirectory(prefix="ch-promql-") as temp:
         path = Path(temp) / "collector.yaml"
         path.write_text(config)
@@ -105,10 +112,13 @@ service:
                 if not records:
                     raise AssertionError(f"Collector produced no rows for {table}")
                 rows[table] = sorted(records, key=lambda r: json.dumps(r, sort_keys=True))
-            snapshot("collector-schema.sql", "\n".join(schema), args.update)
-            snapshot("collector-rows.json", json.dumps(rows, sort_keys=True, indent=2)+"\n", args.update)
+            suffix = "-precise" if args.precision_schema else ""
+            snapshot(f"collector-schema{suffix}.sql", "\n".join(schema), args.update)
+            snapshot(f"collector-rows{suffix}.json", json.dumps(rows, sort_keys=True, indent=2)+"\n", args.update)
             snapshot("otlp-dataset.json", json.dumps(dataset(), sort_keys=True, indent=2)+"\n", args.update)
-        except Exception:
+        except Exception as error:
+            if isinstance(error, subprocess.CalledProcessError) and error.stderr:
+                print(error.stderr.decode() if isinstance(error.stderr, bytes) else error.stderr)
             subprocess.run(["docker", "logs", "--tail", "25", container], check=False)
             raise
         finally:

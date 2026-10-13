@@ -13,7 +13,7 @@ exemplar timestamps. An adapter cannot reconstruct the missing fraction, and
 the rows now conflict at one timestamp.
 
 Recommendation: use `DateTime64(9)` for metric, start and exemplar timestamps;
-verify the collector driver preserves fractions with these types before adopting.
+the unmodified Collector was verified to preserve `.100000000` and `.900000000` with precreated tables (`collector-rows-precise.json`).
 Prometheus ultimately uses milliseconds, but retaining the original nanoseconds
 makes the storage format faithful to OTLP. Test schema changes separately from
 the default-schema compatibility path.
@@ -34,6 +34,12 @@ Native histogram results must not claim exact fidelity when this value is lost.
 checked for its treatment of absent values: a stored zero cannot distinguish
 "not provided" from a recorded zero without an explicit presence field. Exact
 reconstruction requires nullable values or presence flags plus exporter support.
+
+## Schema changes require new tables
+
+ClickHouse rejected an in-place `MODIFY COLUMN TimeUnix DateTime64(9)` because `TimeUnix` participates in the sorting/partition keys. Create replacement tables with the desired types and migrate deliberately; the test variant creates fresh isolated tables. Existing rows cannot recover discarded fractions.
+
+The ClickHouse differential report is in [storage-report.md](storage-report.md). The precision variant there additionally supplies ZeroThreshold directly; the unmodified exporter still needs a code change to populate that field.
 
 ## Additional validation still required
 

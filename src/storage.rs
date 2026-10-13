@@ -112,12 +112,16 @@ impl Store {
                 }
                 let row: Json =
                     serde_json::from_str(line).context("invalid ClickHouse metric row")?;
-                let name = metric_name(
-                    string(&row, "MetricName"),
-                    string(&row, "MetricUnit"),
-                    kind,
-                    row["IsMonotonic"].as_bool().unwrap_or(false),
-                );
+                let name = if prometheus_scope(&row) {
+                    string(&row, "MetricName").to_owned()
+                } else {
+                    metric_name(
+                        string(&row, "MetricName"),
+                        string(&row, "MetricUnit"),
+                        kind,
+                        row["IsMonotonic"].as_bool().unwrap_or(false),
+                    )
+                };
                 let mut labels = row_labels(&row)?;
                 labels.insert("__name__".into(), name.clone());
                 let candidates = derived_names(&name, kind);
@@ -367,11 +371,19 @@ fn integer(v: &Json) -> Result<i64> {
         bail!("missing or invalid integer metric value")
     }
 }
+fn prometheus_scope(row: &Json) -> bool {
+    string(row, "ScopeName")
+        == "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver"
+}
 fn row_labels(row: &Json) -> Result<Labels> {
     let mut labels = Labels::new();
     if let Some(attrs) = row["Attributes"].as_object() {
         for (k, v) in attrs {
-            let key = label_name(k);
+            let key = if prometheus_scope(row) {
+                k.clone()
+            } else {
+                label_name(k)
+            };
             let value = v.as_str().context("attribute is not a string")?;
             if !value.is_empty() && labels.insert(key.clone(), value.into()).is_some() {
                 bail!("attribute normalization collision at {key}")
