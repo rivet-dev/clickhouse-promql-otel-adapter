@@ -19,6 +19,8 @@ import (
  "github.com/prometheus/prometheus/promql/promqltest"
  "github.com/prometheus/prometheus/storage"
  "github.com/prometheus/prometheus/tsdb/chunkenc"
+ "github.com/prometheus/prometheus/tsdb"
+ "github.com/prometheus/prometheus/util/teststorage"
 )
 
 type engine struct { base promql.QueryEngine; out string; fixture string; cases *os.File }
@@ -57,11 +59,11 @@ func(q *query)snapshot(ctx context.Context)([]byte,error){
    switch kind {
    case chunkenc.ValFloat:
     t,v:=it.At();text:=fmt.Sprint(v);if value.IsStaleNaN(v){text="stale"}
-    points=append(points,map[string]any{"timestamp":t,"value":text})
+    points=append(points,map[string]any{"timestamp":t,"start_timestamp":it.AtST(),"value":text})
    case chunkenc.ValHistogram,chunkenc.ValFloatHistogram:
     t,h:=it.AtFloatHistogram(nil)
     // Retain all internal fields, including reset hint and custom buckets.
-    points=append(points,map[string]any{"timestamp":t,"histogram":h})
+    points=append(points,map[string]any{"timestamp":t,"start_timestamp":it.AtST(),"histogram":map[string]any{"CounterResetHint":h.CounterResetHint,"Schema":h.Schema,"ZeroThreshold":fmt.Sprint(h.ZeroThreshold),"ZeroCount":fmt.Sprint(h.ZeroCount),"Count":fmt.Sprint(h.Count),"Sum":fmt.Sprint(h.Sum),"PositiveSpans":h.PositiveSpans,"NegativeSpans":h.NegativeSpans,"PositiveBuckets":floatStrings(h.PositiveBuckets),"NegativeBuckets":floatStrings(h.NegativeBuckets),"CustomValues":floatStrings(h.CustomValues)}})
    }
   }
   if err:=it.Err();err!=nil{return nil,err}
@@ -77,7 +79,9 @@ func TestGenerate(t *testing.T){
  e:=&engine{base:promqltest.NewTestEngine(t,false,5*time.Minute,100000000),out:out,cases:cases}
  source:=os.Getenv("PROMETHEUS_SOURCE");if source==""{source="../../.research/prometheus"}
  files,err:=filepath.Glob(filepath.Join(source,"promql/promqltest/testdata/*.test"));if err!=nil||len(files)==0{t.Fatal("missing upstream test fixtures",err)}
- for _,file:=range files{t.Run(filepath.Base(file),func(t *testing.T){e.fixture=filepath.Base(file);data,err:=os.ReadFile(file);if err!=nil{t.Fatal(err)};promqltest.RunTest(t,string(data),e)})}
+ for _,file:=range files{t.Run(filepath.Base(file),func(t *testing.T){e.fixture=filepath.Base(file);data,err:=os.ReadFile(file);if err!=nil{t.Fatal(err)};promqltest.RunTestWithStorage(t,string(data),e,func(t testing.TB) storage.Storage{return teststorage.New(t,func(o *tsdb.Options){o.EnableSTStorage=true;o.FloatChunkEncoding=chunkenc.EncXOR2;o.EnableHistogramSTEncoding=true})})})}
 }
 
 func lookback(o promql.QueryOpts)int64{if o==nil||o.LookbackDelta()==0{return 300000};return o.LookbackDelta().Milliseconds()}
+
+func floatStrings(values []float64)[]string{out:=make([]string,len(values));for i,v:=range values{out[i]=fmt.Sprint(v)};return out}

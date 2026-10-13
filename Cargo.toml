@@ -20,6 +20,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 
+url = "2"
+percent-encoding = "2"
+
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
 tower = { version = "0.5", features = ["util"] }

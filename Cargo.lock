@@ -324,6 +324,7 @@ dependencies = [
  "chrono",
  "clap",
  "insta",
+ "percent-encoding",
  "promql-parser",
  "regex",
  "reqwest",
@@ -334,6 +335,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

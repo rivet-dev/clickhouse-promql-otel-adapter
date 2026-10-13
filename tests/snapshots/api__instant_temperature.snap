@@ -1,0 +1,25 @@
+---
+source: tests/api.rs
+expression: x
+---
+{
+  "data": {
+    "result": [
+      {
+        "metric": {
+          "__name__": "temperature",
+          "instance": "one",
+          "job": "tests/fixture",
+          "region": "west",
+          "route": "/api"
+        },
+        "value": [
+          1700000075.0,
+          "25.5"
+        ]
+      }
+    ],
+    "resultType": "vector"
+  },
+  "status": "success"
+}

@@ -39,6 +39,9 @@ impl<'a> Engine<'a> {
             infos: BTreeSet::new(),
         }
     }
+    pub fn evaluate(&mut self, expr: &Expr, t: i64) -> Result<Value> {
+        self.eval(expr, t)
+    }
     pub fn parse(query: &str) -> Result<Expr> {
         parser::parse(query).map_err(anyhow::Error::msg)
     }
