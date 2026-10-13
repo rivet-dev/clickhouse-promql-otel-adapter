@@ -31,6 +31,8 @@ All 21,442 captured query executions pass. Values, exact labels, explicit sort o
 
 The compressed, checksummed corpus is committed in `tests/conformance/`. Regeneration runs the actual upstream test assertions against its pinned reference evaluator before recording results. Go is used only for reference generation.
 
-Remaining acceptance gates: query-creation/parser errors, complete HTTP contracts, ClickHouse-backed differential execution, manual live Collector/Grafana verification, and independent review. This report does not claim complete replacement readiness.
+Additional pinned corpora now pass: **356 parser acceptance/type cases** from upstream `parse_test.go`, and **572 HTTP requests** covering GET/form POST, discovery, parameter failures, query results, formatting and AST serialization. HTTP execution uses a unique real ClickHouse database. Invalid UTF-8 parser inputs retain their original bytes in hexadecimal. Timing measurements are normalized; numerical sample statistics remain checked.
+
+Parser error wording/positions outside the HTTP corpus and operational statistics for complex queries still need broader checks. Remaining acceptance gates: complete HTTP/Thanos contracts, ClickHouse-backed differential execution, manual live Collector/Grafana verification, and independent review. This report does not claim complete replacement readiness.
 
 The vendored parser also runs its own unit, serialization, custom-function and documentation tests. The adapter enforces 65,536 input bytes, 2,048 parser tokens and 128 evaluator nesting levels; these limits are explicit resource protections.

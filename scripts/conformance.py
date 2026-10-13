@@ -63,6 +63,10 @@ def main():
         env = os.environ | {"ORACLE_OUTPUT": str(generated), "PROMETHEUS_SOURCE": str(source)}
         run("go", "test", "-run", "TestGenerate", "-count=1", "-timeout", "20m", "./...", cwd=ROOT / "tools/oracle", env=env)
         package(generated)
+        env |= {"PARSER_OUTPUT": str(SNAPSHOTS / "parser.json")}
+        run("go", "test", "-run", "TestParserReference", "-count=1", "./...", cwd=ROOT / "tools/oracle", env=env)
+        env |= {"API_OUTPUT": str(SNAPSHOTS / "http.json")}
+        run("go", "test", "-run", "TestAPIReference", "-count=1", "./...", cwd=ROOT / "tools/oracle", env=env)
     manifest = json.loads((SNAPSHOTS / "manifest.json").read_text())
     data = (SNAPSHOTS / "prometheus.tar.gz").read_bytes()
     if hashlib.sha256(data).hexdigest() != manifest["sha256"]:
@@ -70,6 +74,7 @@ def main():
     STATE.mkdir(parents=True, exist_ok=True)
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
         archive.extractall(STATE, filter="data")
+    run("cargo", "test", "--locked", "--test", "parser_conformance", "--test", "http_conformance")
     run("cargo", "run", "--locked", "--release", "--example", "conformance", "--", str(STATE))
 
 

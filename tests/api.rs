@@ -103,7 +103,7 @@ async fn bad_parameters_do_not_query_storage() {
     for path in [
         "/api/v1/query",
         "/api/v1/query?query=)",
-        "/api/v1/query?query=1&time=NaN",
+        "/api/v1/query?query=1&time=garbage",
         "/api/v1/query_range?query=1&start=0&end=1&step=0",
         "/api/v1/series",
     ] {

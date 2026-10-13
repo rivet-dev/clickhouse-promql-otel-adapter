@@ -55,9 +55,13 @@ fn validate_selectors(expr: &Expr) -> Result<(), String> {
         }
         Expr::Call(c) => {
             for (i, a) in c.args.args.iter().enumerate() {
-                if c.func.name != "info" || i != 1 {
-                    validate_selectors(a)?
-                }
+                if c.func.name == "info" && i == 1 {
+                    match a.as_ref() {
+                        Expr::VectorSelector(v) if v.name.is_none()=>{},
+                        Expr::VectorSelector(_)=>return Err("expected label selectors only, got vector selector instead".into()),
+                        _=>return Err("expected label selectors only".into()),
+                    }
+                } else {validate_selectors(a)?}
             }
         }
         _ => {}
@@ -132,6 +136,7 @@ mod tests {
 
     #[test]
     fn test_number_literal() {
+        assert!(crate::parser::parse(&"9".repeat(400)).unwrap_err().contains("value out of range"));
         let cases = vec![
             ("1", Expr::from(1.0)),
             ("Inf", Expr::from(f64::INFINITY)),
@@ -150,10 +155,7 @@ mod tests {
 
             // for abnormal input
             ("NaN", Expr::from(f64::NAN)),
-            (
-                "999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999",
-                Expr::from(f64::INFINITY)
-            ),
+
         ];
         assert_cases(Case::new_expr_cases(cases));
     }
@@ -818,11 +820,11 @@ mod tests {
             ),
             (
                 "+some_metric",
-                Expr::from(VectorSelector::from("some_metric")),
+                Expr::new_positive_expr(Expr::from(VectorSelector::from("some_metric"))).unwrap(),
             ),
             (
                 " +some_metric",
-                Expr::from(VectorSelector::from("some_metric")),
+                Expr::new_positive_expr(Expr::from(VectorSelector::from("some_metric"))).unwrap(),
             ),
         ];
         assert_cases(Case::new_expr_cases(cases));

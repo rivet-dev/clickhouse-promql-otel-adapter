@@ -89,3 +89,5 @@ licensed as above, without any additional terms or conditions.
 
 [prom-v3.8]: https://github.com/prometheus/prometheus/tree/v3.8.0/promql/parser
 [querying-prometheus]: https://prometheus.io/docs/prometheus/latest/querying/basics/
+
+Local compatibility changes also retain duration-expression metadata and unary plus, preserve raw backtick escapes, format negative @ timestamps and Go string escapes, reject numeric/@ overflow, and use checked 64-bit duration arithmetic. The root adapter supplies contextual duration evaluation and Prometheus API AST translation.

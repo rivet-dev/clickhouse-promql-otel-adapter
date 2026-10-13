@@ -454,7 +454,7 @@ subquery_expr -> Result<Expr, String>:
  * Unary expressions.
  */
 unary_expr -> Result<Expr, String>:
-                ADD expr %prec MUL { $2 }
+                ADD expr %prec MUL { Expr::new_positive_expr($2?) }
         |       SUB expr %prec MUL { Expr::new_unary_expr($2?) }
 ;
 
@@ -564,7 +564,9 @@ label_matcher -> Result<Matcher, String>:
  * Metric descriptions.
  */
 metric_identifier -> Result<Token, String>:
-                AVG { lexeme_to_token($lexer, $1) }
+                ANCHORED { lexeme_to_token($lexer, $1) }
+        |       SMOOTHED { lexeme_to_token($lexer, $1) }
+        |       AVG { lexeme_to_token($lexer, $1) }
         |       BOTTOMK { lexeme_to_token($lexer, $1) }
         |       BY { lexeme_to_token($lexer, $1) }
         |       COUNT { lexeme_to_token($lexer, $1) }
@@ -621,7 +623,9 @@ aggregate_op -> Result<Token, String>:
 // inside of grouping options label names can be recognized as keywords by the lexer.
 // This is a list of keywords that could also be a label name.
 maybe_label -> Result<Token, String>:
-                AVG { lexeme_to_token($lexer, $1) }
+                ANCHORED { lexeme_to_token($lexer, $1) }
+        |       SMOOTHED { lexeme_to_token($lexer, $1) }
+        |       AVG { lexeme_to_token($lexer, $1) }
         |       BOOL { lexeme_to_token($lexer, $1) }
         |       BOTTOMK { lexeme_to_token($lexer, $1) }
         |       BY { lexeme_to_token($lexer, $1) }
@@ -674,7 +678,7 @@ number_literal -> Result<Expr, String>:
         |       DURATION
                 {
                         let duration = parse_duration($lexer.span_str($span))?;
-                        Ok(Expr::from(duration.as_secs_f64()))
+                        Ok(Expr::NumberLiteral(crate::parser::ast::NumberLiteral {val:duration.as_secs_f64(),duration:true}))
                 }
 ;
 

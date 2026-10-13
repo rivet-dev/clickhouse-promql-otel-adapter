@@ -24,6 +24,8 @@ pub struct Engine<'a> {
     pub max_samples: usize,
     pub deadline: Instant,
     samples: usize,
+    pub samples_read: usize,
+    pub peak_samples: usize,
     depth: usize,
     pub warnings: BTreeSet<String>,
     pub infos: BTreeSet<String>,
@@ -47,6 +49,8 @@ impl<'a> Engine<'a> {
             max_samples: 5_000_000,
             deadline: Instant::now() + Duration::from_secs(120),
             samples: 0,
+            samples_read: 0,
+            peak_samples: 0,
             depth: 0,
             warnings: BTreeSet::new(),
             infos: BTreeSet::new(),
@@ -64,7 +68,7 @@ impl<'a> Engine<'a> {
         self.eval(expr, t)
     }
     pub fn parse(query: &str) -> Result<Expr> {
-        frontend::parse(query, 0, 0, 0)
+        frontend::syntax(query)
     }
     pub fn parse_at(query: &str, start: i64, end: i64, step: i64) -> Result<Expr> {
         frontend::parse(query, start, end, step)
@@ -255,6 +259,8 @@ impl<'a> Engine<'a> {
     }
     fn charge(&mut self, count: usize) -> Result<()> {
         self.samples = self.samples.saturating_add(count);
+        self.samples_read = self.samples_read.saturating_add(count);
+        self.peak_samples = self.peak_samples.max(count);
         if self.samples > self.max_samples {
             bail!("query processing would load too many samples into memory in query execution")
         }
@@ -346,6 +352,7 @@ impl<'a> Engine<'a> {
             Expr::NumberLiteral(n) => Ok(Value::Scalar(n.val)),
             Expr::StringLiteral(s) => Ok(Value::String(s.val.clone())),
             Expr::Paren(p) => self.eval(&p.expr, timestamp),
+            Expr::Unary(u) if u.positive => self.eval(&u.expr, timestamp),
             Expr::Unary(u) => match self.eval(&u.expr, timestamp)? {
                 Value::Scalar(v) => Ok(Value::Scalar(-v)),
                 Value::Vector(mut v) => {

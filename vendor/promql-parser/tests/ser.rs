@@ -654,7 +654,7 @@ fn test_serialize() {
         "op":"<=",
         "rhs":{
             "type":"numberLiteral",
-            "val":"1296000"
+            "val":"1296000", "duration":true
         },
         "type":"binaryExpr"
     });

@@ -1,6 +1,6 @@
 # PromQL on the OpenTelemetry ClickHouse schema
 
-Status: all **21,442 captured upstream executions pass** against the strictly Rust evaluator. Real ClickHouse integration tests and collector snapshots also pass. HTTP protocol, parser-creation rejection coverage, manual Grafana validation, and independent reviews remain in progress. An unchecked item
+Status: all **21,442 captured upstream executions pass** against the strictly Rust evaluator. Real ClickHouse integration tests and collector snapshots also pass. 356 parser acceptance/type cases and 572 HTTP reference cases pass. Broader HTTP/Thanos coverage, manual Grafana validation, and independent reviews remain in progress. An unchecked item
 is not a compatibility claim. Target: Prometheus 3.15.0 query semantics and the
 Thanos HTTP query surface, backed by Collector Contrib 0.162.0's default schema.
 ClickHouse's native SQL interfaces remain supplied by ClickHouse itself.

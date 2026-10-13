@@ -25,6 +25,11 @@ pub fn escape_string(s: &str) -> String {
             '\n' => result.push_str("\\n"),
             '\r' => result.push_str("\\r"),
             '\t' => result.push_str("\\t"),
+            '\x07' => result.push_str("\\a"),
+            '\x08' => result.push_str("\\b"),
+            '\x0c' => result.push_str("\\f"),
+            '\x0b' => result.push_str("\\v"),
+            c if c.is_control() => result.push_str(&format!("\\x{:02x}",c as u32)),
             _ => result.push(c),
         }
     }

@@ -63,7 +63,7 @@ pub fn walk_expr<V: ExprVisitor>(visitor: &mut V, expr: &Expr) -> Result<bool, V
 
     let recurse = match expr {
         Expr::Aggregate(AggregateExpr { expr, .. }) => walk_expr(visitor, expr)?,
-        Expr::Unary(UnaryExpr { expr }) => walk_expr(visitor, expr)?,
+        Expr::Unary(UnaryExpr { expr, .. }) => walk_expr(visitor, expr)?,
         Expr::Binary(BinaryExpr { lhs, rhs, .. }) => {
             walk_expr(visitor, lhs)? && walk_expr(visitor, rhs)?
         }
@@ -116,7 +116,7 @@ pub fn walk_expr_mut<V: ExprVisitorMut>(
 
     let recurse = match expr {
         Expr::Aggregate(AggregateExpr { expr, .. }) => walk_expr_mut(visitor, expr)?,
-        Expr::Unary(UnaryExpr { expr }) => walk_expr_mut(visitor, expr)?,
+        Expr::Unary(UnaryExpr { expr, .. }) => walk_expr_mut(visitor, expr)?,
         Expr::Binary(BinaryExpr { lhs, rhs, .. }) => {
             walk_expr_mut(visitor, lhs)? && walk_expr_mut(visitor, rhs)?
         }

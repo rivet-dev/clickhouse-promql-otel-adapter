@@ -1,14 +1,24 @@
 //! Resolve duration arithmetic with query context. Quoted label contents are
 //! copied verbatim; offsets consume one grammar atom, preserving outer operators.
 use anyhow::{Context, Result, bail};
-use promql_parser::parser::{self, Expr};
+use promql_parser::parser::{self, Expr, Offset};
+use std::{collections::BTreeMap, time::Duration};
+const MARKER: u64 = 10_000_000_000_000;
+pub(super) fn syntax(query: &str) -> Result<Expr> {
+    parse_internal(query, None)
+}
 pub(super) fn parse(query: &str, start: i64, end: i64, step: i64) -> Result<Expr> {
+    parse_internal(query, Some((start, end, step)))
+}
+fn parse_internal(query: &str, context: Option<(i64, i64, i64)>) -> Result<Expr> {
     if query.len() > 65536 {
         bail!("query exceeds 65536 byte limit");
     }
     let bytes = query.as_bytes();
     let mut out = String::new();
     let mut i = 0;
+    let mut braces = 0;
+    let mut expressions = BTreeMap::new();
     while i < bytes.len() {
         match bytes[i] {
             b'"' | b'\'' | b'`' => {
@@ -34,18 +44,29 @@ pub(super) fn parse(query: &str, start: i64, end: i64, step: i64) -> Result<Expr
                     if part.trim().is_empty() && j > 0 {
                         continue;
                     }
-                    let value = duration(part, start, end, step)?;
-                    if value <= 0.0 {
-                        bail!("duration must be greater than 0")
-                    };
-                    out.push_str(&format!("{}ms", (value * 1000.0).round() as u64));
+                    out.push_str(&replace_duration(part, true, &mut expressions, context)?);
                 }
                 out.push(']');
                 i = end_index + 1;
             }
-            b'o' if query[i..].starts_with("offset")
-                && (i == 0 || !identifier(bytes[i - 1]))
-                && bytes.get(i + 6).is_none_or(|b| !identifier(*b)) =>
+            b'{' => {
+                braces += 1;
+                out.push('{');
+                i += 1;
+            }
+            b'}' => {
+                braces -= 1;
+                out.push('}');
+                i += 1;
+            }
+            b'o' | b'O'
+                if braces == 0
+                    && i > 0
+                    && query[i..]
+                        .get(..6)
+                        .is_some_and(|s| s.eq_ignore_ascii_case("offset"))
+                    && (i == 0 || !identifier(bytes[i - 1]))
+                    && bytes.get(i + 6).is_none_or(|b| !identifier(*b)) =>
             {
                 out.push_str("offset ");
                 i += 6;
@@ -80,15 +101,12 @@ pub(super) fn parse(query: &str, start: i64, end: i64, step: i64) -> Result<Expr
                 if finish <= begin {
                     bail!("expected duration after offset")
                 }
-                let value = duration(&query[begin..finish], start, end, step)?;
-                if value < 0.0 {
-                    out.push('-')
-                }
-                if value == 0.0 {
-                    out.push('0')
-                } else {
-                    out.push_str(&format!("{}ms", (value.abs() * 1000.0).round() as u64));
-                }
+                out.push_str(&replace_duration(
+                    &query[begin..finish],
+                    false,
+                    &mut expressions,
+                    context,
+                )?);
                 i = finish;
             }
             _ => {
@@ -98,7 +116,9 @@ pub(super) fn parse(query: &str, start: i64, end: i64, step: i64) -> Result<Expr
             }
         }
     }
-    parser::parse(&out).map_err(anyhow::Error::msg)
+    let mut parsed = parser::parse(&out).map_err(anyhow::Error::msg)?;
+    restore(&mut parsed, &expressions)?;
+    Ok(parsed)
 }
 fn identifier(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
@@ -132,54 +152,180 @@ fn paren_end(bytes: &[u8], start: usize) -> Result<usize> {
     }
     bail!("unclosed duration expression")
 }
-fn duration(text: &str, start: i64, end: i64, step: i64) -> Result<f64> {
-    fn evaluate(e: &Expr, start: i64, end: i64, step: i64) -> Result<f64> {
-        Ok(match e {
-            Expr::NumberLiteral(v) => v.val,
-            Expr::Paren(p) => evaluate(&p.expr, start, end, step)?,
-            Expr::Unary(u) => -evaluate(&u.expr, start, end, step)?,
-            Expr::Binary(b) => {
-                let a = evaluate(&b.lhs, start, end, step)?;
-                let c = evaluate(&b.rhs, start, end, step)?;
+fn evaluate(e: &Expr, start: i64, end: i64, step: i64) -> Result<f64> {
+    Ok(match e {
+        Expr::NumberLiteral(v) => v.val,
+        Expr::Paren(p) => evaluate(&p.expr, start, end, step)?,
+        Expr::Unary(u) => {
+            evaluate(&u.expr, start, end, step)? * if u.positive { 1.0 } else { -1.0 }
+        }
+        Expr::Binary(b) => {
+            if matches!(b.rhs.as_ref(),Expr::NumberLiteral(n) if n.val==0.0) {
                 match b.op.to_string().as_str() {
-                    "+" => a + c,
-                    "-" => a - c,
-                    "*" => a * c,
-                    "/" => a / c,
-                    "%" => a % c,
-                    "^" => a.powf(c),
-                    _ => bail!("invalid duration operator"),
+                    "/" => bail!("division by zero"),
+                    "%" => bail!("modulo by zero"),
+                    _ => {}
                 }
             }
-            Expr::Call(c) => match c.func.name {
-                "step" => step as f64 / 1000.0,
-                "range" => (end as f64 - start as f64) / 1000.0,
-                "min_of" | "max_of" => {
-                    let a = evaluate(&c.args.args[0], start, end, step)?;
-                    let b = evaluate(&c.args.args[1], start, end, step)?;
-                    if a.is_nan() || b.is_nan() {
-                        f64::NAN
-                    } else if c.func.name == "min_of" {
-                        a.min(b)
-                    } else {
-                        a.max(b)
-                    }
+            let a = evaluate(&b.lhs, start, end, step)?;
+            let c = evaluate(&b.rhs, start, end, step)?;
+            match b.op.to_string().as_str() {
+                "+" => a + c,
+                "-" => a - c,
+                "*" => a * c,
+                "/" => a / c,
+                "%" => a % c,
+                "^" => a.powf(c),
+                _ => bail!("invalid duration operator"),
+            }
+        }
+        Expr::Call(c) => match c.func.name {
+            "step" => step as f64 / 1000.0,
+            "range" => (end as f64 - start as f64) / 1000.0,
+            "min_of" | "max_of" => {
+                let a = evaluate(&c.args.args[0], start, end, step)?;
+                let b = evaluate(&c.args.args[1], start, end, step)?;
+                if a.is_nan() || b.is_nan() {
+                    f64::NAN
+                } else if c.func.name == "min_of" {
+                    a.min(b)
+                } else {
+                    a.max(b)
                 }
-                _ => bail!("invalid duration function"),
-            },
-            _ => bail!("duration expression must be constant"),
-        })
-    }
+            }
+            _ => bail!("invalid duration function"),
+        },
+        _ => bail!("duration expression must be constant"),
+    })
+}
+fn duration_expr(text: &str) -> Result<Expr> {
     let text = regex::Regex::new(r"(?i)\bstep\(\)")
         .unwrap()
         .replace_all(text, "step()");
     let text = regex::Regex::new(r"\b0(?:ms|[smhdwy])\b")
         .unwrap()
         .replace_all(&text, "0");
-    let expr = parser::parse(&text).map_err(anyhow::Error::msg)?;
-    let value = evaluate(&expr, start, end, step)?;
-    if !value.is_finite() || value.abs() > i64::MAX as f64 / 1000.0 {
-        bail!("duration expression overflows milliseconds")
+    let mut expr = parser::parse(&text).map_err(anyhow::Error::msg)?;
+    fn positive(expr: &mut Expr) {
+        if let Expr::Unary(u) = expr
+            && u.positive
+        {
+            *expr = *u.expr.clone();
+            positive(expr);
+            return;
+        }
+        match expr {
+            Expr::Unary(u) => positive(&mut u.expr),
+            Expr::Paren(p) => positive(&mut p.expr),
+            Expr::Binary(b) => {
+                positive(&mut b.lhs);
+                positive(&mut b.rhs)
+            }
+            Expr::Call(c) => {
+                for a in &mut c.args.args {
+                    positive(a)
+                }
+            }
+            _ => {}
+        }
     }
-    Ok(value)
+    positive(&mut expr);
+    // Validate the permitted expression grammar without imposing query-time values.
+    evaluate(&expr, 0, 1_000, 1_000)?;
+    Ok(expr)
+}
+fn replace_duration(
+    text: &str,
+    positive: bool,
+    expressions: &mut BTreeMap<u64, (Expr, f64)>,
+    context: Option<(i64, i64, i64)>,
+) -> Result<String> {
+    let expr = duration_expr(text)?;
+    let literal = matches!(expr, Expr::NumberLiteral(_));
+    let (start, end, step) = context.unwrap_or((0, 1000, 1000));
+    let value = evaluate(&expr, start, end, step)?;
+    if literal || context.is_some() {
+        if !value.is_finite() || value.abs() >= i64::MAX as f64 / 1e9 {
+            bail!("duration out of range");
+        }
+        if positive && value <= 0.0 {
+            bail!("duration must be greater than 0");
+        }
+    }
+    if literal {
+        if value == 0.0 {
+            return Ok("0".into());
+        }
+        return Ok(format!(
+            "{}{}ms",
+            if value < 0.0 { "-" } else { "" },
+            (value.abs() * 1000.0).round() as u64
+        ));
+    }
+    let marker = MARKER + expressions.len() as u64;
+    expressions.insert(marker, (expr, if context.is_some() { value } else { 0.0 }));
+    Ok(format!("{marker}ms"))
+}
+fn restore(expr: &mut Expr, expressions: &BTreeMap<u64, (Expr, f64)>) -> Result<()> {
+    fn range(
+        value: &mut Duration,
+        expression: &mut Option<Box<Expr>>,
+        map: &BTreeMap<u64, (Expr, f64)>,
+    ) {
+        if let Some((expr, seconds)) = map.get(&(value.as_millis() as u64)) {
+            *expression = Some(Box::new(expr.clone()));
+            *value = Duration::from_millis((seconds * 1000.0).round().max(0.0) as u64);
+        }
+    }
+    fn offset(
+        value: &mut Option<Offset>,
+        expression: &mut Option<Box<Expr>>,
+        map: &BTreeMap<u64, (Expr, f64)>,
+    ) {
+        if let Some(Offset::Pos(duration)) = value
+            && let Some((expr, seconds)) = map.get(&(duration.as_millis() as u64))
+        {
+            *expression = Some(Box::new(expr.clone()));
+            let d = Duration::from_millis((seconds.abs() * 1000.0).round() as u64);
+            *value = Some(if *seconds < 0.0 {
+                Offset::Neg(d)
+            } else {
+                Offset::Pos(d)
+            });
+        }
+    }
+    match expr {
+        Expr::VectorSelector(v) => offset(&mut v.offset, &mut v.offset_expr, expressions),
+        Expr::MatrixSelector(m) => {
+            range(&mut m.range, &mut m.range_expr, expressions);
+            offset(&mut m.vs.offset, &mut m.vs.offset_expr, expressions);
+        }
+        Expr::Subquery(s) => {
+            restore(&mut s.expr, expressions)?;
+            range(&mut s.range, &mut s.range_expr, expressions);
+            if let Some(step) = &mut s.step {
+                range(step, &mut s.step_expr, expressions)
+            }
+            offset(&mut s.offset, &mut s.offset_expr, expressions);
+        }
+        Expr::Call(c) => {
+            for a in &mut c.args.args {
+                restore(a, expressions)?
+            }
+        }
+        Expr::Aggregate(a) => {
+            restore(&mut a.expr, expressions)?;
+            if let Some(p) = &mut a.param {
+                restore(p, expressions)?
+            }
+        }
+        Expr::Binary(b) => {
+            restore(&mut b.lhs, expressions)?;
+            restore(&mut b.rhs, expressions)?
+        }
+        Expr::Unary(u) => restore(&mut u.expr, expressions)?,
+        Expr::Paren(p) => restore(&mut p.expr, expressions)?,
+        _ => {}
+    }
+    Ok(())
 }

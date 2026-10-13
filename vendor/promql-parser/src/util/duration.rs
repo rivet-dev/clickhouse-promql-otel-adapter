@@ -77,7 +77,7 @@ pub fn parse_duration(ds: &str) -> Result<Duration, String> {
 
     // the duration is float number of seconds
     if let Ok(float_duration) = ds.parse::<f64>() {
-        return Ok(Duration::from_secs_f64(float_duration));
+        return Duration::try_from_secs_f64(float_duration).map_err(|_| "duration overflowed".into());
     }
 
     if !DURATION_RE.is_match(ds) {
@@ -85,19 +85,12 @@ pub fn parse_duration(ds: &str) -> Result<Duration, String> {
     }
 
     let caps = DURATION_RE.captures(ds).unwrap();
-    let dur = ALL_CAPS
-        .into_iter()
-        // map captured string to Option<Duration> iterator
-        // FIXME: None is ignored in closure. It is better to tell users which part is wrong.
-        .map(|(title, duration)| {
-            caps.name(title)
-                .and_then(|cap| cap.as_str().parse::<u32>().ok())
-                .and_then(|v| duration.checked_mul(v))
-        })
-        .try_fold(Duration::ZERO, |acc, x| {
-            acc.checked_add(x.unwrap_or(Duration::ZERO))
-                .ok_or_else(|| "duration overflowed".into())
-        });
+    let dur = ALL_CAPS.into_iter().try_fold(Duration::ZERO, |acc, (title, unit)| {
+        let Some(cap)=caps.name(title) else {return Ok(acc)};
+        let value=cap.as_str().parse::<u64>().map_err(|_|"duration overflowed".to_owned())?;
+        let millis=(unit.as_millis() as u64).checked_mul(value).ok_or("duration overflowed")?;
+        acc.checked_add(Duration::from_millis(millis)).ok_or_else(||"duration overflowed".to_owned())
+    });
 
     if matches!(dur, Ok(d) if d == Duration::ZERO) {
         Err("duration must be greater than 0".into())

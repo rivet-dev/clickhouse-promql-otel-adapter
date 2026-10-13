@@ -57,8 +57,9 @@ pub fn parse_str_radix(s: &str) -> Result<f64, String> {
             .map(|x| x as f64)
             .map_err(|_| format!("ParseFloatError. {s} can't be parsed into i64"));
     }
-    st.parse()
-        .map_err(|_| format!("ParseFloatError. {s} can't be parsed into f64"))
+    let value=st.parse::<f64>().map_err(|_| format!("ParseFloatError. {s} can't be parsed into f64"))?;
+    if value.is_infinite() && !matches!(st.as_str(), "inf"|"+inf"|"-inf") {return Err(format!("error parsing number: strconv.ParseFloat: parsing {s:?}: value out of range"));}
+    Ok(value)
 }
 
 #[cfg(test)]

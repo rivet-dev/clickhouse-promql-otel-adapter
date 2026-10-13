@@ -564,7 +564,7 @@ impl Lexer {
     /// scans a quoted string. The initial quote has already been consumed.
     fn accept_string(&mut self, symbol: char) -> State {
         while let Some(ch) = self.pop() {
-            if ch == '\\' {
+            if ch == '\\' && symbol != '`' {
                 return State::Escape(symbol);
             }
 
@@ -869,8 +869,8 @@ mod tests {
             ),
             (
                 "`test\\.expression`",
-                vec![],
-                Some("unknown escape sequence '.'"),
+                vec![(T_STRING,0,18)],
+                None,
             ),
             (".٩", vec![], Some("unexpected character after '.': '٩'")),
             // TODO: accept_escape SHOULD support invalid escape character

@@ -364,10 +364,7 @@ where
             map.serialize_entry("startOrEnd", &None::<&str>)?;
             map.serialize_entry(
                 "timestamp",
-                &time
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or(Duration::ZERO)
-                    .as_millis(),
+                &match time.duration_since(SystemTime::UNIX_EPOCH) {Ok(d)=>d.as_millis() as i128,Err(e)=>-(e.duration().as_millis() as i128)},
             )?;
         }
         None => {
@@ -430,10 +427,8 @@ impl fmt::Display for AtModifier {
             AtModifier::Start => write!(f, "@ {}()", token_display(T_START)),
             AtModifier::End => write!(f, "@ {}()", token_display(T_END)),
             AtModifier::At(time) => {
-                let d = time
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or(Duration::ZERO); // This should not happen
-                write!(f, "@ {:.3}", d.as_secs_f64())
+                let seconds=match time.duration_since(SystemTime::UNIX_EPOCH){Ok(d)=>d.as_secs_f64(),Err(e)=>-e.duration().as_secs_f64()};
+                write!(f, "@ {seconds:.3}")
             }
         }
     }
@@ -487,7 +482,7 @@ impl TryFrom<f64> for AtModifier {
     fn try_from(secs: f64) -> Result<Self, Self::Error> {
         let err_info = format!("timestamp out of bounds for @ modifier: {secs}");
 
-        if secs.is_nan() || secs.is_infinite() || secs >= f64::MAX || secs <= f64::MIN {
+        if secs.is_nan() || secs.is_infinite() || secs * 1000.0 >= i64::MAX as f64 || secs * 1000.0 <= i64::MIN as f64 {
             return Err(err_info);
         }
         let milli = (secs * 1000f64).round().abs() as u64;
@@ -603,12 +598,13 @@ impl Prettier for AggregateExpr {
 /// UnaryExpr will negate the expr
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnaryExpr {
+    pub positive: bool,
     pub expr: Box<Expr>,
 }
 
 impl fmt::Display for UnaryExpr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "-{}", self.expr)
+        write!(f, "{}{}", if self.positive {"+"}else{"-"}, self.expr)
     }
 }
 
@@ -630,7 +626,7 @@ impl serde::Serialize for UnaryExpr {
     {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(2))?;
-        map.serialize_entry("op", "-")?;
+        map.serialize_entry("op", if self.positive {"+"}else{"-"})?;
         map.serialize_entry("expr", &self.expr)?;
 
         map.end()
@@ -745,6 +741,12 @@ impl Prettier for ParenExpr {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ser", derive(serde::Serialize))]
 pub struct SubqueryExpr {
+    #[cfg_attr(feature = "ser", serde(rename = "rangeExpr", skip_serializing_if = "Option::is_none"))]
+    pub range_expr: Option<Box<Expr>>,
+    #[cfg_attr(feature = "ser", serde(rename = "stepExpr", skip_serializing_if = "Option::is_none"))]
+    pub step_expr: Option<Box<Expr>>,
+    #[cfg_attr(feature = "ser", serde(rename = "offsetExpr", skip_serializing_if = "Option::is_none"))]
+    pub offset_expr: Option<Box<Expr>>,
     pub expr: Box<Expr>,
     #[cfg_attr(feature = "ser", serde(serialize_with = "Offset::serialize_offset"))]
     pub offset: Option<Offset>,
@@ -766,11 +768,11 @@ pub struct SubqueryExpr {
 
 impl SubqueryExpr {
     fn get_time_suffix_string(&self) -> String {
-        let step = match &self.step {
+        let step = if let Some(expr)=&self.step_expr {expr.to_string()}else{match &self.step {
             Some(step) => display_duration(step),
             None => String::from(""),
-        };
-        let range = display_duration(&self.range);
+        }};
+        let range = self.range_expr.as_ref().map_or_else(||display_duration(&self.range),ToString::to_string);
 
         let mut s = format!("[{range}:{step}]");
 
@@ -778,7 +780,7 @@ impl SubqueryExpr {
             write!(s, " {at}").unwrap();
         }
 
-        if let Some(offset) = &self.offset {
+        if let Some(expr)=&self.offset_expr {write!(s," offset {expr}").unwrap();} else if let Some(offset) = &self.offset {
             write!(s, " offset {offset}").unwrap();
         }
         s
@@ -804,11 +806,12 @@ impl Prettier for SubqueryExpr {
 #[derive(Debug, Clone)]
 pub struct NumberLiteral {
     pub val: f64,
+    pub duration: bool,
 }
 
 impl NumberLiteral {
     pub fn new(val: f64) -> Self {
-        Self { val }
+        Self { val, duration: false }
     }
 }
 
@@ -824,14 +827,18 @@ impl Neg for NumberLiteral {
     type Output = Self;
 
     fn neg(self) -> Self::Output {
-        NumberLiteral { val: -self.val }
+        NumberLiteral { val: -self.val, duration: self.duration }
     }
 }
 
 impl fmt::Display for NumberLiteral {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.duration {
+            if self.val<0.0 {write!(f,"-")?;}
+            return write!(f,"{}", display_duration(&Duration::from_secs_f64(self.val.abs())));
+        }
         if self.val == f64::INFINITY {
-            write!(f, "Inf")
+            write!(f, "+Inf")
         } else if self.val == f64::NEG_INFINITY {
             write!(f, "-Inf")
         } else if f64::is_nan(self.val) {
@@ -850,7 +857,8 @@ impl serde::Serialize for NumberLiteral {
     {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(1))?;
-        map.serialize_entry("val", &self.to_string())?;
+        map.serialize_entry("val", &NumberLiteral::new(self.val).to_string())?;
+        if self.duration {map.serialize_entry("duration", &true)?;}
 
         map.end()
     }
@@ -919,6 +927,8 @@ impl Prettier for StringLiteral {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ser", derive(serde::Serialize))]
 pub struct VectorSelector {
+    #[cfg_attr(feature = "ser", serde(rename = "offsetExpr", skip_serializing_if = "Option::is_none"))]
+    pub offset_expr: Option<Box<Expr>>,
     #[cfg_attr(feature = "ser", serde(skip_serializing_if = "is_false"))]
     pub anchored: bool,
     #[cfg_attr(feature = "ser", serde(skip_serializing_if = "is_false"))]
@@ -936,6 +946,7 @@ pub struct VectorSelector {
 impl VectorSelector {
     pub fn new(name: Option<String>, matchers: Matchers) -> Self {
         VectorSelector {
+            offset_expr: None,
             anchored: false,
             smoothed: false,
             name,
@@ -949,6 +960,7 @@ impl VectorSelector {
 impl Default for VectorSelector {
     fn default() -> Self {
         Self {
+            offset_expr: None,
             anchored: false,
             smoothed: false,
             name: None,
@@ -962,6 +974,7 @@ impl Default for VectorSelector {
 impl From<String> for VectorSelector {
     fn from(name: String) -> Self {
         VectorSelector {
+            offset_expr: None,
             anchored: false,
             smoothed: false,
             name: Some(name),
@@ -1003,7 +1016,7 @@ impl Neg for VectorSelector {
 
     fn neg(self) -> Self::Output {
         let ex = Expr::VectorSelector(self);
-        UnaryExpr { expr: Box::new(ex) }
+        UnaryExpr { positive: false, expr: Box::new(ex) }
     }
 }
 
@@ -1019,7 +1032,7 @@ impl fmt::Display for VectorSelector {
         if let Some(at) = &self.at {
             write!(f, " {at}")?;
         }
-        if let Some(offset) = &self.offset {
+        if let Some(expr)=&self.offset_expr {write!(f," offset {expr}")?;} else if let Some(offset) = &self.offset {
             write!(f, " offset {offset}")?;
         }
         if self.anchored {
@@ -1041,6 +1054,8 @@ impl Prettier for VectorSelector {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ser", derive(serde::Serialize))]
 pub struct MatrixSelector {
+    #[cfg_attr(feature = "ser", serde(rename = "rangeExpr", skip_serializing_if = "Option::is_none"))]
+    pub range_expr: Option<Box<Expr>>,
     #[cfg_attr(feature = "ser", serde(skip_serializing_if = "is_false"))]
     pub anchored: bool,
     #[cfg_attr(feature = "ser", serde(skip_serializing_if = "is_false"))]
@@ -1065,7 +1080,7 @@ impl fmt::Display for MatrixSelector {
             write!(f, "{{{matchers}}}")?;
         }
 
-        write!(f, "[{}]", display_duration(&self.range))?;
+        write!(f, "[{}]", self.range_expr.as_ref().map_or_else(||display_duration(&self.range),ToString::to_string))?;
         if self.anchored {
             write!(f, " anchored")?;
         }
@@ -1077,7 +1092,7 @@ impl fmt::Display for MatrixSelector {
             write!(f, " {at}")?;
         }
 
-        if let Some(offset) = &self.vs.offset {
+        if let Some(expr)=&self.vs.offset_expr {write!(f," offset {expr}")?;} else if let Some(offset) = &self.vs.offset {
             write!(f, " offset {offset}")?;
         }
 
@@ -1238,6 +1253,13 @@ impl Expr {
         Ok(Self::VectorSelector(vs))
     }
 
+    pub(crate) fn new_positive_expr(expr:Expr)->Result<Self,String> {
+        match expr.value_type() {
+            ValueType::Scalar|ValueType::Vector=>{},
+            _=>return Err("unary expression only allowed on expressions of type scalar or vector".into()),
+        }
+        if matches!(expr,Expr::NumberLiteral(_)){Ok(expr)}else{Ok(Expr::Unary(UnaryExpr{positive:true,expr:Box::new(expr)}))}
+    }
     pub(crate) fn new_unary_expr(expr: Expr) -> Result<Self, String> {
         match expr {
             Expr::StringLiteral(_) => Err("unary expression only allowed on expressions of type scalar or vector, got: string".into()),
@@ -1252,6 +1274,7 @@ impl Expr {
         step: Option<Duration>,
     ) -> Result<Self, String> {
         let se = Expr::Subquery(SubqueryExpr {
+            range_expr: None, step_expr: None, offset_expr: None,
             expr: Box::new(expr),
             offset: None,
             at: None,
@@ -1279,6 +1302,7 @@ impl Expr {
             }
             Expr::VectorSelector(vs) => {
                 let ms = Expr::MatrixSelector(MatrixSelector {
+                    range_expr: None,
                     vs,
                     range,
                     anchored: false,
@@ -1488,7 +1512,7 @@ impl From<&str> for Expr {
 
 impl From<f64> for Expr {
     fn from(val: f64) -> Self {
-        Expr::NumberLiteral(NumberLiteral { val })
+        Expr::NumberLiteral(NumberLiteral { val, duration: false })
     }
 }
 
@@ -1520,7 +1544,7 @@ impl Neg for Expr {
         match self {
             Expr::NumberLiteral(nl) => Expr::NumberLiteral(-nl),
             _ => Expr::Unary(UnaryExpr {
-                expr: Box::new(self),
+                positive: false,                expr: Box::new(self),
             }),
         }
     }
@@ -1929,7 +1953,7 @@ mod tests {
         assert_eq!(
             -VectorSelector::from("foo"),
             UnaryExpr {
-                expr: Box::new(Expr::from(VectorSelector::from("foo")))
+                positive: false,                expr: Box::new(Expr::from(VectorSelector::from("foo")))
             }
         )
     }
@@ -2014,9 +2038,9 @@ mod tests {
             ("1", "1"),
             ("- 1", "-1"),
             ("+ 1", "1"),
-            ("Inf", "Inf"),
-            ("inf", "Inf"),
-            ("+Inf", "Inf"),
+            ("Inf", "+Inf"),
+            ("inf", "+Inf"),
+            ("+Inf", "+Inf"),
             ("- Inf", "-Inf"),
             (".5", "0.5"),
             ("5.", "5"),
@@ -2112,7 +2136,7 @@ mod tests {
             ),
             ("some_metric OFFSET 1m [10m:5s]", "some_metric offset 1m[10m:5s]"),
             ("some_metric @123 [10m:5s]", "some_metric @ 123.000[10m:5s]"),
-            ("some_metric <= 1ms", "some_metric <= 0.001"),
+            ("some_metric <= 1ms", "some_metric <= 1ms"),
         ];
 
         // the following cases are from https://github.com/prometheus/prometheus/blob/main/promql/parser/printer_test.go
