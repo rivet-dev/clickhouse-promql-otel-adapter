@@ -480,14 +480,23 @@ pub fn plan(
             Expr::VectorSelector(v) => {
                 let a = engine.selector_time(a, &v.at, &v.offset)?;
                 let b = engine.selector_time(b, &v.at, &v.offset)?;
-                out.push((a.saturating_sub(lookback), b, v.clone()));
+                out.push((
+                    a.saturating_sub(lookback),
+                    b.saturating_add(if v.smoothed { lookback } else { 0 }),
+                    v.clone(),
+                ));
             }
             Expr::MatrixSelector(m) => {
                 let a = engine.selector_time(a, &m.vs.at, &m.vs.offset)?;
                 let b = engine.selector_time(b, &m.vs.at, &m.vs.offset)?;
                 out.push((
-                    a.saturating_sub(m.range.as_millis().try_into()?),
-                    b,
+                    a.saturating_sub(m.range.as_millis().try_into()?)
+                        .saturating_sub(if m.anchored || m.smoothed {
+                            lookback
+                        } else {
+                            0
+                        }),
+                    b.saturating_add(if m.smoothed { lookback } else { 0 }),
                     m.vs.clone(),
                 ));
             }
@@ -511,6 +520,13 @@ pub fn plan(
                 }
             }
             Expr::Call(c) => {
+                if c.func.name == "info" {
+                    out.push((
+                        a.saturating_sub(lookback),
+                        b,
+                        crate::engine::info::info_selector(c),
+                    ));
+                }
                 for arg in &c.args.args {
                     visit(arg, a, b, root_a, root_b, lookback, out)?
                 }

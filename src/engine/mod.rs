@@ -1,11 +1,14 @@
 mod aggregate;
 mod binary;
+mod extended;
+mod frontend;
 mod functions;
+pub(crate) mod info;
 mod native;
 
 use crate::model::{Labels, Point, Sample, Series, Value};
 use anyhow::{Result, bail};
-use promql_parser::parser::{self, AtModifier, Expr, Offset, VectorSelector};
+use promql_parser::parser::{AtModifier, Expr, Offset, VectorSelector};
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant, UNIX_EPOCH},
@@ -48,11 +51,14 @@ impl<'a> Engine<'a> {
         self.eval(expr, t)
     }
     pub fn parse(query: &str) -> Result<Expr> {
-        parser::parse(query).map_err(anyhow::Error::msg)
+        frontend::parse(query, 0, 0, 0)
+    }
+    pub fn parse_at(query: &str, start: i64, end: i64, step: i64) -> Result<Expr> {
+        frontend::parse(query, start, end, step)
     }
     pub fn instant(&mut self, query: &str, timestamp: i64) -> Result<Value> {
         self.source = query.into();
-        self.eval(&Self::parse(query)?, timestamp)
+        self.eval(&Self::parse_at(query, self.start, self.end, 0)?, timestamp)
     }
     pub fn range(&mut self, expr: &Expr, step: i64) -> Result<Value> {
         self.is_range = true;
@@ -84,6 +90,7 @@ impl<'a> Engine<'a> {
                             value: s.value,
                             histogram: s.histogram,
                             start_timestamp: s.start_timestamp,
+                            drop_name: s.drop_name,
                             ..Default::default()
                         });
                     }
@@ -136,11 +143,14 @@ impl<'a> Engine<'a> {
             message.as_ref(),
             self.position(expr)
         );
-        if warning {
-            self.warnings.insert(text);
+        let annotations = if warning {
+            &mut self.warnings
         } else {
-            self.infos.insert(text);
-        }
+            &mut self.infos
+        };
+        let base = text.rsplit_once(" (").map(|x| x.0).unwrap_or(&text);
+        annotations.retain(|old| old.rsplit_once(" (").map(|x| x.0) != Some(base));
+        annotations.insert(text);
     }
     fn charge(&mut self, count: usize) -> Result<()> {
         self.samples = self.samples.saturating_add(count);
@@ -158,8 +168,27 @@ impl<'a> Engine<'a> {
             bail!("expression nesting exceeds limit")
         }
         self.depth += 1;
-        let result = self.eval_inner(expr, timestamp);
+        let mut result = self.eval_inner(expr, timestamp);
         self.depth -= 1;
+        if self.depth == 0 {
+            match &mut result {
+                Ok(Value::Vector(v)) => {
+                    for s in v {
+                        if s.drop_name {
+                            crate::model::drop_name(&mut s.labels);
+                        }
+                    }
+                }
+                Ok(Value::Matrix(v)) => {
+                    for s in v {
+                        if s.points.iter().any(|p| p.drop_name) {
+                            crate::model::drop_name(&mut s.labels);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         if let Ok(Value::Vector(v)) = &result {
             let mut seen = BTreeSet::new();
             for sample in v {
@@ -184,7 +213,7 @@ impl<'a> Engine<'a> {
                             h.scale(-1.0);
                             h.reset_hint = 3;
                         }
-                        crate::model::drop_name(&mut s.labels);
+                        s.drop_name = true;
                     }
                     Ok(Value::Vector(v))
                 }
@@ -193,6 +222,40 @@ impl<'a> Engine<'a> {
             Expr::VectorSelector(v) => {
                 let target = self.target(timestamp, &v.at, &v.offset)?;
                 let mut samples = Vec::new();
+                if v.smoothed {
+                    let selected = self
+                        .series
+                        .iter()
+                        .filter(|s| matches(v, &s.labels))
+                        .collect::<Vec<_>>();
+                    for s in selected {
+                        match extended::smooth(s, target, self.lookback) {
+                            Ok(Some(p)) => samples.push(Sample {
+                                labels: s.labels.clone(),
+                                value: p.value,
+                                histogram: p.histogram,
+                                timestamp: target,
+                                ..Default::default()
+                            }),
+                            Ok(None) => {}
+                            Err(e) => {
+                                let metric = s.labels.get("__name__").cloned().unwrap_or_default();
+                                let message = if e.to_string() == "mixed sample types" {
+                                    format!(
+                                        "encountered a mix of histograms and floats for metric name {metric:?}"
+                                    )
+                                } else {
+                                    format!(
+                                        "encountered a mix of exponential and custom buckets in histograms for metric name {metric:?}"
+                                    )
+                                };
+                                self.annotation(true, message, expr);
+                            }
+                        }
+                    }
+                    self.charge(samples.len())?;
+                    return Ok(Value::Vector(samples));
+                }
                 for s in self.series.iter().filter(|s| matches(v, &s.labels)) {
                     let index = s.points.partition_point(|p| p.timestamp <= target);
                     if index > 0 {
@@ -217,8 +280,20 @@ impl<'a> Engine<'a> {
                 let begin = target.saturating_sub(m.range.as_millis().try_into()?);
                 let mut result = Vec::new();
                 for s in self.series.iter().filter(|s| matches(&m.vs, &s.labels)) {
-                    let a = s.points.partition_point(|p| p.timestamp <= begin);
-                    let b = s.points.partition_point(|p| p.timestamp <= target);
+                    let mut a = s.points.partition_point(|p| p.timestamp <= begin);
+                    let mut b = s.points.partition_point(|p| p.timestamp <= target);
+                    if (m.anchored || m.smoothed)
+                        && a > 0
+                        && s.points[a - 1].timestamp > begin.saturating_sub(self.lookback)
+                    {
+                        a -= 1;
+                    }
+                    if m.smoothed
+                        && b < s.points.len()
+                        && s.points[b].timestamp <= target.saturating_add(self.lookback)
+                    {
+                        b += 1;
+                    }
                     let points = s.points[a..b]
                         .iter()
                         .filter(|p| !p.stale())
@@ -258,8 +333,14 @@ impl<'a> Engine<'a> {
                         result.entry(s.labels).or_default().push(Point {
                             timestamp: t,
                             value: s.value,
-                            histogram: s.histogram,
-                            start_timestamp: s.start_timestamp,
+                            histogram: s.histogram.map(|mut h| {
+                                if h.reset_hint != 3 {
+                                    h.reset_hint = 0
+                                }
+                                h
+                            }),
+                            start_timestamp: 0,
+                            drop_name: s.drop_name,
                             ..Default::default()
                         });
                         self.charge(1)?;

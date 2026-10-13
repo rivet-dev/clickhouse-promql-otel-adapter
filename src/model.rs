@@ -10,6 +10,8 @@ pub struct Point {
     pub value: f64,
     pub histogram: Option<crate::histogram::Histogram>,
     pub start_timestamp: i64,
+    /// Preserve names within the expression; remove them when returning results.
+    pub drop_name: bool,
 }
 impl Point {
     pub fn stale(&self) -> bool {
@@ -40,6 +42,8 @@ pub struct Sample {
     pub value: f64,
     pub histogram: Option<crate::histogram::Histogram>,
     pub start_timestamp: i64,
+    /// Preserve names within the expression; remove them when returning results.
+    pub drop_name: bool,
     /// Original sample timestamp, used by timestamp(); otherwise query evaluation time.
     pub timestamp: i64,
 }

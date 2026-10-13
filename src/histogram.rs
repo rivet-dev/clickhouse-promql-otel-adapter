@@ -140,10 +140,18 @@ impl Histogram {
         if (self.schema == -53) != (other.schema == -53) {
             bail!("incompatible histogram schemas")
         }
-        if self.schema == -53 && self.custom != other.custom {
-            bail!("incompatible custom buckets")
-        }
         let mut other = other.clone();
+        if self.schema == -53 && self.custom != other.custom {
+            let common = self
+                .custom
+                .iter()
+                .copied()
+                .filter(|v| other.custom.contains(v))
+                .collect::<Vec<_>>();
+            self.coarsen_custom(&common);
+            other.coarsen_custom(&common);
+        }
+
         let schema = self.schema.min(other.schema);
         self.reduce(schema)?;
         other.reduce(schema)?;
@@ -183,6 +191,20 @@ impl Histogram {
         }
         self.zero_threshold = threshold;
     }
+    fn coarsen_custom(&mut self, bounds: &[f64]) {
+        let mut buckets = BTreeMap::new();
+        for (&i, &value) in &self.positive {
+            let upper = self
+                .custom
+                .get(i as usize)
+                .copied()
+                .unwrap_or(f64::INFINITY);
+            let index = bounds.partition_point(|b| *b < upper) as i32;
+            *buckets.entry(index).or_insert(0.0) += value;
+        }
+        self.positive = buckets;
+        self.custom = bounds.to_vec();
+    }
     pub fn detects_reset(&self, previous: &Self) -> bool {
         if self.reset_hint == 1 {
             return true;
@@ -193,11 +215,14 @@ impl Histogram {
         if self.count < previous.count
             || self.schema > previous.schema
             || self.zero_threshold < previous.zero_threshold
-            || self.custom != previous.custom
+            || (self.schema == -53 && self.custom.iter().any(|v| !previous.custom.contains(v)))
         {
             return true;
         }
         let mut previous = previous.clone();
+        if self.schema == -53 {
+            previous.coarsen_custom(&self.custom);
+        }
         if previous.reduce(self.schema).is_err() {
             return true;
         }
@@ -306,5 +331,120 @@ impl Histogram {
                 .powf((-upper).log2() + ((-lower).log2() - (-upper).log2()) * (1.0 - fraction));
         }
         f64::NAN
+    }
+}
+
+// Adapted from Prometheus model/histogram/float_histogram.go (Apache-2.0).
+// Approximate the sum only when observations are actually trimmed.
+impl Histogram {
+    pub fn trim(&mut self, threshold: f64, upper_trim: bool) {
+        let buckets = self.buckets();
+        let mut replacements = Vec::new();
+        let mut sum = 0.0;
+        let mut count = 0.0;
+        let mut changed = false;
+        for bucket in buckets {
+            if bucket.count == 0.0 {
+                replacements.push(0.0);
+                continue;
+            }
+            let zero = self.schema != -53 && bucket.lower <= 0.0 && bucket.upper >= 0.0;
+            let mut bucket = bucket;
+            if zero {
+                if self.negative.values().all(|v| *v == 0.0) {
+                    bucket.lower = 0.0
+                }
+                if self.positive.values().all(|v| *v == 0.0) {
+                    bucket.upper = 0.0
+                }
+            }
+            let (keep, mid) =
+                trim_bucket(&bucket, threshold, upper_trim, self.schema == -53 || zero);
+            if keep != bucket.count {
+                changed = true
+            }
+            count += keep;
+            sum += mid * keep;
+            replacements.push(keep);
+        }
+        if !changed {
+            return;
+        }
+        let mut replacement = replacements.into_iter();
+        if self.schema != -53 {
+            for value in self.negative.values_mut().rev() {
+                *value = replacement.next().unwrap();
+            }
+            if self.zero_count != 0.0 {
+                self.zero_count = replacement.next().unwrap();
+            }
+        }
+        for value in self.positive.values_mut() {
+            *value = replacement.next().unwrap();
+        }
+        self.positive.retain(|_, v| *v != 0.0);
+        self.negative.retain(|_, v| *v != 0.0);
+        self.count = count;
+        self.sum = sum;
+    }
+}
+fn midpoint(lower: f64, upper: f64, linear: bool) -> f64 {
+    if lower.is_infinite() {
+        if upper.is_infinite() {
+            return 0.0;
+        }
+        return if upper > 0.0 { upper / 2.0 } else { upper };
+    }
+    if upper.is_infinite() {
+        return lower;
+    }
+    if linear {
+        (lower + upper) / 2.0
+    } else {
+        (if upper > 0.0 { 1.0 } else { -1.0 }) * (lower * upper).abs().sqrt()
+    }
+}
+fn trim_bucket(b: &Bucket, rhs: f64, upper: bool, linear: bool) -> (f64, f64) {
+    let all = if upper {
+        b.upper <= rhs
+    } else {
+        b.lower >= rhs
+    };
+    let partial = if upper { b.lower < rhs } else { b.upper > rhs };
+    if all {
+        return (b.count, midpoint(b.lower, b.upper, linear));
+    }
+    if !partial {
+        return (0.0, 0.0);
+    }
+    if b.lower == f64::NEG_INFINITY {
+        if upper {
+            if rhs > 0.0 && b.upper > 0.0 && b.upper.is_finite() {
+                return (b.count * rhs / b.upper, rhs / 2.0);
+            }
+            if b.upper <= 0.0 {
+                return (b.count, rhs);
+            }
+            return (0.0, 0.0);
+        }
+        if rhs >= 0.0 && b.upper > rhs && b.upper.is_finite() {
+            return (b.count * (1.0 - rhs / b.upper), (rhs + b.upper) / 2.0);
+        }
+        return (0.0, 0.0);
+    }
+    if b.upper == f64::INFINITY {
+        return if upper { (0.0, 0.0) } else { (b.count, rhs) };
+    }
+    let fraction = if linear {
+        (rhs - b.lower) / (b.upper - b.lower)
+    } else if b.lower >= 0.0 {
+        (rhs.log2() - b.lower.log2()) / (b.upper.log2() - b.lower.log2())
+    } else {
+        1.0 - ((-rhs).log2() - (-b.upper).log2()) / ((-b.lower).log2() - (-b.upper).log2())
+    };
+    if upper {
+        (b.count * fraction, midpoint(b.lower, rhs, linear))
+    } else {
+        (b.count * (1.0 - fraction), midpoint(rhs, b.upper, linear))
     }
 }

@@ -45,30 +45,50 @@ pub(super) fn histogram_range(
             let first = if instant { histograms.len() - 2 } else { 0 };
             let last = histograms.len() - 1;
             result = histograms[last].clone();
-            if !counter || !histograms[last].detects_reset(histograms[first]) || !instant {
+            if !counter
+                || !(histograms[last].detects_reset(histograms[first])
+                    || super::functions::start_reset(&points[first], &points[last]))
+                || !instant
+            {
                 result.combine(histograms[first], -1.0)?
             }
             if counter && !instant {
-                for pair in histograms[first..].windows(2) {
-                    if pair[1].detects_reset(pair[0]) {
+                for (i, pair) in histograms[first..].windows(2).enumerate() {
+                    if pair[1].detects_reset(pair[0])
+                        || super::functions::start_reset(&points[first + i], &points[first + i + 1])
+                    {
                         result.combine(pair[0], 1.0)?
                     }
                 }
             }
-            let sampled = (points[last].timestamp - points[first].timestamp) as f64 / 1000.0;
+            let mut sampled = (points[last].timestamp - points[first].timestamp) as f64 / 1000.0;
             let mut factor = 1.0;
             if !instant {
                 let avg = sampled / (last - first) as f64;
                 let mut left = (points[first].timestamp - start) as f64 / 1000.0;
                 let mut right = (end - points[last].timestamp) as f64 / 1000.0;
-                if left >= avg * 1.1 {
-                    left = avg / 2.0
-                }
-                if right >= avg * 1.1 {
-                    right = avg / 2.0
-                }
-                if counter && result.count > 0.0 && histograms[first].count >= 0.0 {
-                    left = left.min(sampled * histograms[first].count / result.count)
+                if counter
+                    && points[first].start_timestamp != 0
+                    && points[first].start_timestamp > start
+                    && points[first].start_timestamp < points[first].timestamp
+                {
+                    left = 0.0;
+                    sampled =
+                        (points[last].timestamp - points[first].start_timestamp) as f64 / 1000.0;
+                    result.combine(histograms[first], 1.0)?;
+                    if right >= avg * 1.1 {
+                        right = avg / 2.0
+                    }
+                } else {
+                    if left >= avg * 1.1 {
+                        left = avg / 2.0
+                    }
+                    if right >= avg * 1.1 {
+                        right = avg / 2.0
+                    }
+                    if counter && result.count > 0.0 && histograms[first].count >= 0.0 {
+                        left = left.min(sampled * histograms[first].count / result.count)
+                    }
                 }
                 factor = (sampled + left + right) / sampled;
             }
@@ -86,6 +106,11 @@ pub(super) fn histogram_range(
 }
 pub(super) fn histogram_binary(op: &str, a: &Sample, b: &Sample) -> Result<Option<Histogram>> {
     match (&a.histogram, &b.histogram) {
+        (Some(h), None) if op == "</" || op == ">/" => {
+            let mut h = h.clone();
+            h.trim(b.value, op == "</");
+            Ok(Some(h))
+        }
         (Some(a), Some(b)) if op == "+" || op == "-" => {
             let mut h = a.clone();
             h.combine(b, if op == "+" { 1.0 } else { -1.0 })?;

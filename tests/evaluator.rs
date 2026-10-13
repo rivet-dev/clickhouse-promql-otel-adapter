@@ -158,3 +158,28 @@ fn resource_limits() {
             .contains("too many samples")
     );
 }
+
+#[test]
+fn delayed_metric_name_removal_allows_relabeling_and_aggregation() {
+    let data = [
+        series("a_total", &[], &[(0, 0.0), (60_000, 6.0)]),
+        series("b_total", &[], &[(0, 0.0), (60_000, 12.0)]),
+    ];
+    let mut engine = Engine::new(&data, 60_000, 60_000);
+    let result = engine.instant(r#"label_replace(rate({__name__=~".+_total"}[2m]), "original", "$1", "__name__", "(.+)")"#, 60_000).unwrap().vector().unwrap();
+    assert_eq!(result.len(), 2);
+    assert!(result.iter().all(|s| !s.labels.contains_key("__name__")));
+    assert_eq!(result[0].labels["original"], "a_total");
+    assert_eq!(result[1].labels["original"], "b_total");
+    assert!(
+        engine
+            .instant(
+                r#"sum by (__name__) (rate({__name__=~".+_total"}[2m]))"#,
+                60_000
+            )
+            .is_err()
+    );
+    assert!(
+        (values(&data, r#"sum(rate({__name__=~".+_total"}[2m]))"#, 60_000)[0] - 0.3).abs() < 1e-12
+    );
+}

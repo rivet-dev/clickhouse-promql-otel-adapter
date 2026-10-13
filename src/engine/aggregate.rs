@@ -83,7 +83,44 @@ impl Engine<'_> {
             groups.entry(key).or_default().push(s);
         }
         let mut result = Vec::new();
-        for (labels, mut samples) in groups {
+        'groups: for (labels, mut samples) in groups {
+            let drop_name = samples.iter().any(|s| s.drop_name);
+            if op == "limitk" || op == "limit_ratio" {
+                let parameter = parameter.as_ref().unwrap().scalar()?;
+                if parameter.is_nan() {
+                    bail!("parameter to {op} is NaN")
+                }
+                if op == "limitk" {
+                    result.extend(samples.into_iter().take(parameter.max(0.0) as usize));
+                } else {
+                    let ratio = parameter.clamp(-1.0, 1.0);
+                    if ratio != parameter {
+                        self.annotation(true,format!("ratio value should be between -1 and 1, got {parameter}, capping to {ratio}"),a.param.as_ref().unwrap());
+                    }
+                    for sample in samples {
+                        let mut bytes = Vec::new();
+                        for (k, v) in &sample.labels {
+                            for text in [k, v] {
+                                if text.len() < 255 {
+                                    bytes.push(text.len() as u8)
+                                } else {
+                                    bytes.push(255);
+                                    bytes
+                                        .extend_from_slice(&(text.len() as u32).to_le_bytes()[..3]);
+                                }
+                                bytes.extend_from_slice(text.as_bytes());
+                            }
+                        }
+                        let offset = xxhash_rust::xxh64::xxh64(&bytes, 0) as f64 / u64::MAX as f64;
+                        if (ratio >= 0.0 && offset < ratio)
+                            || (ratio < 0.0 && offset >= 1.0 + ratio)
+                        {
+                            result.push(sample)
+                        }
+                    }
+                }
+                continue;
+            }
             let histograms = samples
                 .iter()
                 .filter_map(|s| s.histogram.as_ref())
@@ -108,12 +145,16 @@ impl Engine<'_> {
                 }
                 let mut histogram = histograms[0].clone();
                 for h in &histograms[1..] {
-                    histogram.combine(h, 1.0)?
+                    if histogram.combine(h, 1.0).is_err() {
+                        self.annotation(true,"vector contains a mix of histograms with exponential and custom buckets schemas for metric name \"\"",&a.expr);
+                        continue 'groups;
+                    }
                 }
                 if op == "avg" {
                     histogram.scale(1.0 / histograms.len() as f64)
                 }
                 result.push(Sample {
+                    drop_name,
                     labels,
                     histogram: Some(histogram),
                     timestamp: t,
@@ -171,6 +212,7 @@ impl Engine<'_> {
                 _ => bail!("aggregation {op} is not implemented"),
             };
             result.push(Sample {
+                drop_name,
                 labels,
                 value,
                 timestamp: t,

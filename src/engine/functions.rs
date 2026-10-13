@@ -14,6 +14,12 @@ use std::collections::BTreeMap;
 impl Engine<'_> {
     pub(super) fn call(&mut self, c: &Call, t: i64) -> Result<Value> {
         let name = c.func.name;
+        if name == "start_timestamp" && !matches!(&*c.args.args[0], Expr::VectorSelector(_)) {
+            return Ok(Value::Vector(vec![]));
+        }
+        if name == "info" {
+            return self.info(c, t);
+        }
         if self.is_range
             && matches!(
                 name,
@@ -170,7 +176,7 @@ impl Engine<'_> {
                         }
                     }
                 };
-                drop_name(&mut s.labels);
+                s.drop_name = true;
                 s.timestamp = t;
                 result.push(s);
             }
@@ -326,7 +332,7 @@ impl Engine<'_> {
                 _ if calendar => calendar_value(name, x),
                 _ => bail!("function {name} is not implemented"),
             };
-            drop_name(&mut s.labels);
+            s.drop_name = true;
             s.histogram = None;
             s.timestamp = t;
             result.push(s);
@@ -341,20 +347,30 @@ impl Engine<'_> {
             .unwrap();
         let matrix = std::mem::replace(&mut args[mi], Value::Scalar(0.0)).matrix()?;
         let mut result = Vec::new();
-        for Series { mut labels, points } in matrix {
+        for Series { labels, points } in matrix {
+            let mut drop_name = points.iter().any(|p| p.drop_name);
             let metric = labels.get("__name__").cloned().unwrap_or_default();
             let all_float = points.iter().all(|p| p.histogram.is_none());
-            if matches!(name, "rate" | "increase") && all_float && !metric.is_empty() {
-                if let Some(typ) = labels.get("__type__") {
-                    if typ != "counter" {
-                        self.annotation(false,format!("metric might not be a counter, __type__ label is not counter, got {typ:?}: {metric:?}"),&c.args.args[mi]);
-                    }
-                } else if !["_total", "_sum", "_count", "_bucket"]
+            if matches!(name, "rate" | "increase")
+                && all_float
+                && points.len() > 1
+                && !metric.is_empty()
+            {
+                if !["_total", "_sum", "_count", "_bucket"]
                     .iter()
                     .any(|suffix| metric.ends_with(suffix))
                 {
                     self.annotation(false,format!("metric might not be a counter, name does not end in _total/_sum/_count/_bucket: {metric:?}"),&c.args.args[mi]);
                 }
+            }
+            if matches!(name, "rate" | "increase" | "irate" | "resets")
+                && points.windows(2).any(|p| {
+                    p[1].start_timestamp != 0
+                        && p[1].start_timestamp < p[0].timestamp
+                        && p[1].start_timestamp != p[0].start_timestamp
+                })
+            {
+                self.annotation(true,format!("sample has start time that overlaps with previous sample timestamp for metric name {metric:?}"),&c.args.args[mi]);
             }
             let hist_count = points.iter().filter(|p| p.histogram.is_some()).count();
             if hist_count > 0 {
@@ -417,6 +433,28 @@ impl Engine<'_> {
                         &c.args.args[mi],
                     );
                 }
+                if matches!(name, "rate" | "increase" | "delta") && hist_count == points.len() {
+                    if let Expr::MatrixSelector(m) = &*c.args.args[mi] {
+                        if m.anchored || m.smoothed {
+                            let (start, end) = self.range_bounds(&c.args.args[mi], t)?;
+                            if let Some(mut sample) = super::extended::rate(
+                                &points,
+                                start,
+                                end,
+                                m.smoothed,
+                                name != "delta",
+                                name == "rate",
+                            )? {
+                                drop_name = true;
+                                sample.labels = labels;
+                                sample.drop_name = true;
+                                sample.timestamp = t;
+                                result.push(sample);
+                            }
+                            continue;
+                        }
+                    }
+                }
                 let mut output = None;
                 if matches!(name, "last_over_time" | "first_over_time") {
                     let p = if name == "last_over_time" {
@@ -429,6 +467,7 @@ impl Engine<'_> {
                         value: p.value,
                         histogram: p.histogram.clone(),
                         timestamp: t,
+                        drop_name,
                         ..Default::default()
                     });
                 } else if matches!(
@@ -442,13 +481,21 @@ impl Engine<'_> {
                         | "idelta"
                 ) {
                     let (start, end) = self.range_bounds(&c.args.args[mi], t)?;
-                    if let Some(h) = super::native::histogram_range(name, &points, start, end)? {
-                        let mut labels = labels.clone();
-                        drop_name(&mut labels);
+                    let native = match super::native::histogram_range(name, &points, start, end) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            self.annotation(true,format!("vector contains a mix of histograms with exponential and custom buckets schemas for metric name {metric:?}"),&c.args.args[mi]);
+                            continue;
+                        }
+                    };
+                    if let Some(h) = native {
+                        let labels = labels.clone();
+                        drop_name = true;
                         output = Some(Sample {
                             labels,
                             histogram: Some(h),
                             timestamp: t,
+                            drop_name,
                             ..Default::default()
                         });
                     }
@@ -492,14 +539,37 @@ impl Engine<'_> {
                         _ => true,
                     })
                     .count();
-                drop_name(&mut labels);
+                drop_name = true;
                 result.push(Sample {
                     labels,
                     value: count as f64,
                     timestamp: t,
+                    drop_name,
                     ..Default::default()
                 });
                 continue;
+            }
+            if hist_count == 0 && matches!(name, "rate" | "increase" | "delta") {
+                if let Expr::MatrixSelector(m) = &*c.args.args[mi] {
+                    if m.anchored || m.smoothed {
+                        let (start, end) = self.range_bounds(&c.args.args[mi], t)?;
+                        if let Some(mut sample) = super::extended::rate(
+                            &points,
+                            start,
+                            end,
+                            m.smoothed,
+                            name != "delta",
+                            name == "rate",
+                        )? {
+                            drop_name = true;
+                            sample.labels = labels;
+                            sample.drop_name = true;
+                            sample.timestamp = t;
+                            result.push(sample);
+                        }
+                        continue;
+                    }
+                }
             }
             let points = if matches!(
                 name,
@@ -536,7 +606,10 @@ impl Engine<'_> {
                     .windows(2)
                     .filter(|p| p[0] != p[1] && !(p[0].is_nan() && p[1].is_nan()))
                     .count() as f64,
-                "resets" => values.windows(2).filter(|p| p[1] < p[0]).count() as f64,
+                "resets" => points
+                    .windows(2)
+                    .filter(|p| p[1].value < p[0].value || start_reset(&p[0], &p[1]))
+                    .count() as f64,
                 "ts_of_last_over_time" => points.last().unwrap().timestamp as f64 / 1000.0,
                 "ts_of_first_over_time" => points[0].timestamp as f64 / 1000.0,
                 "ts_of_max_over_time" | "ts_of_min_over_time" => {
@@ -571,7 +644,7 @@ impl Engine<'_> {
                     let a = &points[points.len() - 2];
                     let b = points.last().unwrap();
                     let mut delta = b.value - a.value;
-                    if name == "irate" && b.value < a.value {
+                    if name == "irate" && (b.value < a.value || start_reset(a, b)) {
                         delta = b.value
                     }
                     if name == "irate" {
@@ -581,10 +654,15 @@ impl Engine<'_> {
                     }
                 }
                 "rate" | "increase" | "delta" => {
-                    if points.len() < 2 {
+                    let (start, end) = self.range_bounds(&c.args.args[mi], t)?;
+                    if points.len() < 2
+                        && !(name != "delta"
+                            && points[0].start_timestamp > start
+                            && points[0].start_timestamp < points[0].timestamp
+                            && points[0].start_timestamp != 0)
+                    {
                         continue;
                     }
-                    let (start, end) = self.range_bounds(&c.args.args[mi], t)?;
                     extrapolate(&points, start, end, name != "delta", name == "rate")
                 }
                 "deriv" | "predict_linear" => {
@@ -634,12 +712,13 @@ impl Engine<'_> {
             };
             if !omit {
                 if !matches!(name, "last_over_time" | "first_over_time") {
-                    drop_name(&mut labels)
+                    drop_name = true
                 }
                 result.push(Sample {
                     labels,
                     value,
                     timestamp: t,
+                    drop_name,
                     ..Default::default()
                 });
             }
@@ -691,6 +770,9 @@ fn label_function(name: &str, mut args: Vec<Value>, t: i64) -> Result<Value> {
         for s in &mut v {
             let input = s.labels.get(source).map(String::as_str).unwrap_or("");
             if re.is_match(input) {
+                if dest == "__name__" {
+                    s.drop_name = false;
+                }
                 let value = re.replace(input, replacement).to_string();
                 if value.is_empty() {
                     s.labels.remove(dest);
@@ -711,6 +793,9 @@ fn label_function(name: &str, mut args: Vec<Value>, t: i64) -> Result<Value> {
             }
         }
         for s in &mut v {
+            if dest == "__name__" {
+                s.drop_name = false;
+            }
             let value = sources
                 .iter()
                 .map(|k| s.labels.get(*k).map(String::as_str).unwrap_or(""))
@@ -769,28 +854,46 @@ fn extrapolate(
     let mut result = last.value - first.value;
     if counter {
         for pair in points.windows(2) {
-            if pair[1].value < pair[0].value {
+            if pair[1].value < pair[0].value || start_reset(&pair[0], &pair[1]) {
                 result += pair[0].value
             }
         }
     }
-    let sampled = (last.timestamp - first.timestamp) as f64 / 1000.0;
-    let average = sampled / (points.len() - 1) as f64;
+    let mut sampled = (last.timestamp - first.timestamp) as f64 / 1000.0;
+    let average = if points.len() > 1 {
+        sampled / (points.len() - 1) as f64
+    } else {
+        0.0
+    };
     let mut to_start = (first.timestamp - start) as f64 / 1000.0;
     let mut to_end = (end - last.timestamp) as f64 / 1000.0;
-    if to_start >= average * 1.1 {
-        to_start = average / 2.0
-    }
-    if counter && result > 0.0 && first.value >= 0.0 {
-        let zero = sampled * first.value / result;
-        if zero < to_start {
-            to_start = zero
+    if counter
+        && first.start_timestamp != 0
+        && first.start_timestamp > start
+        && first.start_timestamp < first.timestamp
+    {
+        to_start = 0.0;
+        sampled = (last.timestamp - first.start_timestamp) as f64 / 1000.0;
+        result += first.value;
+    } else {
+        if to_start >= average * 1.1 {
+            to_start = average / 2.0
+        }
+        if counter && result > 0.0 && first.value >= 0.0 {
+            let zero = sampled * first.value / result;
+            if zero < to_start {
+                to_start = zero
+            }
         }
     }
     if to_end >= average * 1.1 {
         to_end = average / 2.0
     }
-    let mut factor = (sampled + to_start + to_end) / sampled;
+    let mut factor = if sampled == 0.0 {
+        1.0
+    } else {
+        (sampled + to_start + to_end) / sampled
+    };
     if rate {
         factor /= (end - start) as f64 / 1000.0
     }
@@ -830,9 +933,9 @@ fn histogram_quantile(
     let mut groups: BTreeMap<Labels, Vec<(f64, f64)>> = BTreeMap::new();
     for s in v {
         if let Some(h) = s.histogram {
-            let mut labels = s.labels;
-            drop_name(&mut labels);
+            let labels = s.labels;
             native.push(Sample {
+                drop_name: true,
                 labels,
                 value: h.quantile(q),
                 timestamp: t,
@@ -943,15 +1046,16 @@ fn histogram_fraction(mut args: Vec<Value>, t: i64) -> Result<Value> {
     let mut groups: BTreeMap<Labels, Vec<(f64, f64)>> = BTreeMap::new();
     for s in vector {
         let mut labels = s.labels;
-        drop_name(&mut labels);
         if let Some(h) = s.histogram {
             result.push(Sample {
                 labels,
                 value: h.fraction(lower, upper),
+                drop_name: true,
                 timestamp: t,
                 ..Default::default()
             })
         } else if let Some(le) = labels.remove("le").and_then(|v| v.parse::<f64>().ok()) {
+            drop_name(&mut labels);
             groups.entry(labels).or_default().push((le, s.value));
         }
     }
@@ -990,4 +1094,20 @@ fn histogram_fraction(mut args: Vec<Value>, t: i64) -> Result<Value> {
         });
     }
     Ok(Value::Vector(result))
+}
+
+pub(super) fn start_reset(a: &crate::model::Point, b: &crate::model::Point) -> bool {
+    if a.start_timestamp == b.start_timestamp
+        || b.start_timestamp == 0
+        || b.start_timestamp >= b.timestamp
+    {
+        return false;
+    }
+    if b.start_timestamp < a.timestamp {
+        return false;
+    }
+    if b.start_timestamp > a.timestamp {
+        return true;
+    }
+    a.start_timestamp <= a.timestamp && a.start_timestamp != 0 && a.start_timestamp != a.timestamp
 }

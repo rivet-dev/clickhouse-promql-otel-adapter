@@ -177,7 +177,13 @@ impl Engine<'_> {
                             histogram = sa.histogram.clone();
                             (0.0, if op == "==" { equal } else { !equal })
                         } else {
-                            histogram = super::native::histogram_binary(&op, sa, sb)?;
+                            histogram = match super::native::histogram_binary(&op, sa, sb) {
+                                Ok(h) => h,
+                                Err(_) => {
+                                    self.annotation(true,format!("incompatible bucket layout encountered for binary operator {op}"),&promql_parser::parser::Expr::Binary(b.clone()));
+                                    continue;
+                                }
+                            };
                             if histogram.is_none() {
                                 continue;
                             }
@@ -193,7 +199,7 @@ impl Engine<'_> {
                         continue;
                     }
                     let mut labels = m.labels.clone();
-                    if !comparison || modifier.return_bool {
+                    if !comparison && !matches!(op.as_str(), "</" | ">/") {
                         drop_name(&mut labels)
                     }
                     if matches!(modifier.card, VectorMatchCardinality::OneToOne) {
@@ -225,6 +231,7 @@ impl Engine<'_> {
                         value
                     };
                     result.push(Sample {
+                        drop_name: modifier.return_bool,
                         labels,
                         value,
                         histogram,
@@ -265,7 +272,9 @@ fn scalar_vector(
             }
             s.histogram = h;
             s.timestamp = t;
-            drop_name(&mut s.labels);
+            if !matches!(op, "</" | ">/") {
+                s.drop_name = true;
+            }
             result.push(s);
             continue;
         }
@@ -286,7 +295,7 @@ fn scalar_vector(
             value
         };
         if !comparison || bool_mode {
-            drop_name(&mut s.labels)
+            s.drop_name = true
         }
         s.timestamp = t;
         result.push(s);

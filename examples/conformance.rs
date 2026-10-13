@@ -104,7 +104,7 @@ fn compare(case: &Value, data: Result<&Vec<Series>, &String>) -> Result<(), Stri
     let mut engine = Engine::new(data, start, end);
     engine.source = query.into();
     engine.lookback = case["lookback"].as_i64().unwrap();
-    let result = Engine::parse(query).and_then(|expr| {
+    let result = Engine::parse_at(query, start, end, step).and_then(|expr| {
         if step == 0 {
             engine.evaluate(&expr, start)
         } else {
@@ -147,11 +147,17 @@ fn compare(case: &Value, data: Result<&Vec<Series>, &String>) -> Result<(), Stri
         .map(|v| v.as_str().unwrap().to_string())
         .collect::<Vec<_>>();
     infos.sort();
-    if engine.warnings.into_iter().collect::<Vec<_>>() != warnings {
-        return Err(format!("warnings mismatch: expected {warnings:?}"));
+    let actual_warnings = engine.warnings.into_iter().collect::<Vec<_>>();
+    if actual_warnings != warnings {
+        return Err(format!(
+            "warnings mismatch: actual {actual_warnings:?}; expected {warnings:?}"
+        ));
     }
-    if engine.infos.into_iter().collect::<Vec<_>>() != infos {
-        return Err(format!("infos mismatch: expected {infos:?}"));
+    let actual_infos = engine.infos.into_iter().collect::<Vec<_>>();
+    if actual_infos != infos {
+        return Err(format!(
+            "infos mismatch: actual {actual_infos:?}; expected {infos:?}"
+        ));
     }
     Ok(())
 }

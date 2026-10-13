@@ -228,7 +228,7 @@ fn success(data: JsonValue) -> JsonValue {
 }
 async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Result<JsonValue> {
     let query = p.required("query")?;
-    let expr = Engine::parse(query).map_err(ApiError::bad)?;
+
     let now = chrono::Utc::now().timestamp_millis();
     let (start, end, step) = if range {
         let start = parse_time(p.required("start")?)?;
@@ -252,6 +252,7 @@ async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Res
         let t = p.time("time", now)?;
         (t, t, 0)
     };
+    let expr = Engine::parse_at(query, start, end, step).map_err(ApiError::bad)?;
     let lookback = p
         .get("lookback_delta")
         .map(parse_duration)
