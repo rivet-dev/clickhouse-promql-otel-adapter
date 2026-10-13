@@ -270,8 +270,10 @@ async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Res
             .await
             .map_err(ApiError::exec)?
     };
+    let query_source = query.to_owned();
     let result = tokio::task::spawn_blocking(move || {
         let mut engine = Engine::new(&loaded.series, start, end);
+        engine.source = query_source;
         engine.lookback = lookback;
         engine.deadline = deadline;
         let value = if range {
@@ -288,6 +290,7 @@ async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Res
         })?;
         let mut data = value.json(start);
         let mut warnings = engine.warnings.into_iter().collect::<Vec<_>>();
+        warnings.extend(loaded.warnings);
         if limit > 0 && matches!(data["resultType"].as_str(), Some("vector" | "matrix")) {
             let values = data["result"].as_array_mut().unwrap();
             if values.len() > limit {

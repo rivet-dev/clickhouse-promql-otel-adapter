@@ -84,6 +84,56 @@ impl Engine<'_> {
         }
         let mut result = Vec::new();
         for (labels, mut samples) in groups {
+            let histograms = samples
+                .iter()
+                .filter_map(|s| s.histogram.as_ref())
+                .collect::<Vec<_>>();
+            if (op == "sum" || op == "avg") && !histograms.is_empty() {
+                if histograms.len() != samples.len() {
+                    self.annotation(
+                        true,
+                        "encountered a mix of histograms and floats for aggregation",
+                        &a.expr,
+                    );
+                    continue;
+                }
+                if histograms.iter().any(|h| h.reset_hint == 1)
+                    && histograms.iter().any(|h| h.reset_hint == 2)
+                {
+                    self.annotation(
+                        true,
+                        "conflicting counter resets during histogram aggregation",
+                        &a.expr,
+                    );
+                }
+                let mut histogram = histograms[0].clone();
+                for h in &histograms[1..] {
+                    histogram.combine(h, 1.0)?
+                }
+                if op == "avg" {
+                    histogram.scale(1.0 / histograms.len() as f64)
+                }
+                result.push(Sample {
+                    labels,
+                    histogram: Some(histogram),
+                    timestamp: t,
+                    ..Default::default()
+                });
+                continue;
+            }
+            if !matches!(op.as_str(), "count" | "group" | "count_values") {
+                if !histograms.is_empty() {
+                    self.annotation(
+                        false,
+                        format!("ignored histogram in {op} aggregation"),
+                        &promql_parser::parser::Expr::Aggregate(a.clone()),
+                    );
+                }
+                samples.retain(|s| s.histogram.is_none());
+                if samples.is_empty() {
+                    continue;
+                }
+            }
             if op == "topk" || op == "bottomk" {
                 let k = parameter.as_ref().unwrap().scalar()?;
                 if k.is_nan() {
@@ -106,10 +156,10 @@ impl Engine<'_> {
             }
             let mut values = samples.iter().map(|s| s.value).collect::<Vec<_>>();
             let value = match op.as_str() {
-                "sum" => values.iter().sum(),
+                "sum" => compensated_sum(&values),
                 "avg" => {
                     let n = values.len() as f64;
-                    values.iter().map(|v| v / n).sum()
+                    compensated_sum(&values.iter().map(|v| v / n).collect::<Vec<_>>())
                 }
                 "count" | "count_values" => values.len() as f64,
                 "group" => 1.0,
@@ -124,6 +174,7 @@ impl Engine<'_> {
                 labels,
                 value,
                 timestamp: t,
+                ..Default::default()
             });
         }
         Ok(Value::Vector(result))
@@ -135,4 +186,21 @@ pub(super) fn valid_label(s: &str) -> bool {
         .next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+pub(super) fn compensated_sum(values: &[f64]) -> f64 {
+    let mut sum = 0.0f64;
+    let mut correction = 0.0;
+    for &value in values {
+        let next = sum + value;
+        if next.is_infinite() {
+            correction = 0.0
+        } else if sum.abs() >= value.abs() {
+            correction += (sum - next) + value
+        } else {
+            correction += (value - next) + sum
+        }
+        sum = next;
+    }
+    sum + correction
 }

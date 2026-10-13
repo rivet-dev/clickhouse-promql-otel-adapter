@@ -14,6 +14,7 @@ fn series(name: &str, labels: &[(&str, &str)], values: &[(i64, f64)]) -> Series 
             .map(|(timestamp, value)| Point {
                 timestamp: *timestamp,
                 value: *value,
+                ..Default::default()
             })
             .collect(),
     }

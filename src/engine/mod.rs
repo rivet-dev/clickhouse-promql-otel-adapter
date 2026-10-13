@@ -1,6 +1,7 @@
 mod aggregate;
 mod binary;
 mod functions;
+mod native;
 
 use crate::model::{Labels, Point, Sample, Series, Value};
 use anyhow::{Result, bail};
@@ -22,6 +23,8 @@ pub struct Engine<'a> {
     depth: usize,
     pub warnings: BTreeSet<String>,
     pub infos: BTreeSet<String>,
+    pub source: String,
+    pub is_range: bool,
 }
 impl<'a> Engine<'a> {
     pub fn new(series: &'a [Series], start: i64, end: i64) -> Self {
@@ -37,6 +40,8 @@ impl<'a> Engine<'a> {
             depth: 0,
             warnings: BTreeSet::new(),
             infos: BTreeSet::new(),
+            source: String::new(),
+            is_range: false,
         }
     }
     pub fn evaluate(&mut self, expr: &Expr, t: i64) -> Result<Value> {
@@ -46,9 +51,14 @@ impl<'a> Engine<'a> {
         parser::parse(query).map_err(anyhow::Error::msg)
     }
     pub fn instant(&mut self, query: &str, timestamp: i64) -> Result<Value> {
+        self.source = query.into();
         self.eval(&Self::parse(query)?, timestamp)
     }
     pub fn range(&mut self, expr: &Expr, step: i64) -> Result<Value> {
+        self.is_range = true;
+        if self.source.is_empty() {
+            self.source = expr.to_string();
+        }
         if step <= 0 {
             bail!("zero or negative query resolution step widths are not accepted")
         }
@@ -62,15 +72,19 @@ impl<'a> Engine<'a> {
         let mut timestamp = self.start;
         loop {
             match self.eval(expr, timestamp)? {
-                Value::Scalar(value) => result
-                    .entry(Labels::new())
-                    .or_default()
-                    .push(Point { timestamp, value }),
+                Value::Scalar(value) => result.entry(Labels::new()).or_default().push(Point {
+                    timestamp,
+                    value,
+                    ..Default::default()
+                }),
                 Value::Vector(samples) => {
                     for s in samples {
                         result.entry(s.labels).or_default().push(Point {
                             timestamp,
                             value: s.value,
+                            histogram: s.histogram,
+                            start_timestamp: s.start_timestamp,
+                            ..Default::default()
                         });
                     }
                 }
@@ -89,6 +103,44 @@ impl<'a> Engine<'a> {
                 .map(|(labels, points)| Series { labels, points })
                 .collect(),
         ))
+    }
+    pub(super) fn position(&self, expr: &Expr) -> String {
+        let text = expr.to_string();
+        let needle = text
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        let mut compact = String::new();
+        let mut indexes = Vec::new();
+        for (i, c) in self.source.char_indices() {
+            if !c.is_whitespace() {
+                for _ in 0..c.len_utf8() {
+                    indexes.push(i);
+                }
+                compact.push(c);
+            }
+        }
+        let index = compact
+            .find(&needle)
+            .and_then(|i| indexes.get(i).copied())
+            .unwrap_or(0);
+        let before = &self.source[..index];
+        let line = before.bytes().filter(|&b| b == b'\n').count() + 1;
+        let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+        format!("{line}:{column}")
+    }
+    pub(super) fn annotation(&mut self, warning: bool, message: impl AsRef<str>, expr: &Expr) {
+        let text = format!(
+            "PromQL {}: {} ({})",
+            if warning { "warning" } else { "info" },
+            message.as_ref(),
+            self.position(expr)
+        );
+        if warning {
+            self.warnings.insert(text);
+        } else {
+            self.infos.insert(text);
+        }
     }
     fn charge(&mut self, count: usize) -> Result<()> {
         self.samples = self.samples.saturating_add(count);
@@ -128,6 +180,10 @@ impl<'a> Engine<'a> {
                 Value::Vector(mut v) => {
                     for s in &mut v {
                         s.value = -s.value;
+                        if let Some(h) = &mut s.histogram {
+                            h.scale(-1.0);
+                            h.reset_hint = 3;
+                        }
                         crate::model::drop_name(&mut s.labels);
                     }
                     Ok(Value::Vector(v))
@@ -146,6 +202,9 @@ impl<'a> Engine<'a> {
                                 labels: s.labels.clone(),
                                 timestamp: p.timestamp,
                                 value: p.value,
+                                histogram: p.histogram.clone(),
+                                start_timestamp: p.start_timestamp,
+                                ..Default::default()
                             })
                         }
                     }
@@ -199,6 +258,9 @@ impl<'a> Engine<'a> {
                         result.entry(s.labels).or_default().push(Point {
                             timestamp: t,
                             value: s.value,
+                            histogram: s.histogram,
+                            start_timestamp: s.start_timestamp,
+                            ..Default::default()
                         });
                         self.charge(1)?;
                     }

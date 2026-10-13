@@ -58,7 +58,6 @@ async fn rejects_lossy_and_delta_data() {
         for (query, error) in [
             ("subsecond", "conflicting samples"),
             ("delta_requests_total", "delta temporality"),
-            ("size", "native histogram"),
         ] {
             let expr = Engine::parse(query).unwrap();
             let (a, b, s) = plan(&expr, START, START, 300_000).unwrap();
@@ -80,6 +79,23 @@ async fn discovers_all_five_types_without_evaluating_them() {
                 .any(|s| s.labels["__name__"] == "latency_bucket" && s.labels["le"] == "+Inf")
         );
         assert!(data.metadata.contains_key("requests_total"));
+    })
+    .await
+}
+
+#[tokio::test]
+async fn native_histogram_from_default_schema() {
+    common::database_test(|store| async move {
+        let expr = Engine::parse("histogram_count(size)").unwrap();
+        let (a, b, selectors) = plan(&expr, START, START, 300_000).unwrap();
+        let data = store.load(a, b, &selectors).await.unwrap();
+        assert_eq!(data.warnings.len(), 1);
+        let result = Engine::new(&data.series, START, START)
+            .evaluate(&expr, START)
+            .unwrap()
+            .vector()
+            .unwrap();
+        assert_eq!(result[0].value, 6.0);
     })
     .await
 }

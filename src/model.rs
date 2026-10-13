@@ -4,17 +4,27 @@ use std::collections::BTreeMap;
 pub type Labels = BTreeMap<String, String>;
 pub const STALE_BITS: u64 = 0x7ff0000000000002;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Point {
     pub timestamp: i64,
     pub value: f64,
+    pub histogram: Option<crate::histogram::Histogram>,
+    pub start_timestamp: i64,
 }
 impl Point {
     pub fn stale(&self) -> bool {
-        self.value.to_bits() == STALE_BITS
+        self.histogram
+            .as_ref()
+            .map_or(self.value, |h| h.sum)
+            .to_bits()
+            == STALE_BITS
     }
     pub fn json(&self) -> Json {
-        json!([self.timestamp as f64 / 1000.0, float_string(self.value)])
+        if let Some(h) = &self.histogram {
+            h.json(self.timestamp)
+        } else {
+            json!([self.timestamp as f64 / 1000.0, float_string(self.value)])
+        }
     }
 }
 
@@ -24,10 +34,12 @@ pub struct Series {
     pub points: Vec<Point>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Sample {
     pub labels: Labels,
     pub value: f64,
+    pub histogram: Option<crate::histogram::Histogram>,
+    pub start_timestamp: i64,
     /// Original sample timestamp, used by timestamp(); otherwise query evaluation time.
     pub timestamp: i64,
 }
@@ -43,16 +55,16 @@ impl Value {
     pub fn json(&self, timestamp: i64) -> Json {
         match self {
             Self::Scalar(value) => {
-                json!({"resultType":"scalar", "result": Point{timestamp,value:*value}.json()})
+                json!({"resultType":"scalar", "result": Point{timestamp,value:*value, ..Default::default()}.json()})
             }
             Self::String(value) => {
                 json!({"resultType":"string", "result":[timestamp as f64/1000.0,value]})
             }
             Self::Vector(samples) => {
-                json!({"resultType":"vector", "result":samples.iter().map(|s| json!({"metric":s.labels,"value":Point{timestamp,value:s.value}.json()})).collect::<Vec<_>>()})
+                json!({"resultType":"vector", "result":samples.iter().map(|s| {let mut v=json!({"metric":s.labels});if let Some(h)=&s.histogram{v["histogram"]=h.json(timestamp)}else{v["value"]=json!([timestamp as f64/1000.0,float_string(s.value)])}v}).collect::<Vec<_>>()})
             }
             Self::Matrix(series) => {
-                json!({"resultType":"matrix", "result":series.iter().map(|s| json!({"metric":s.labels,"values":s.points.iter().map(Point::json).collect::<Vec<_>>()})).collect::<Vec<_>>()})
+                json!({"resultType":"matrix", "result":series.iter().map(|s| {let mut v=json!({"metric":s.labels});let floats=s.points.iter().filter(|p|p.histogram.is_none()).map(Point::json).collect::<Vec<_>>();let histograms=s.points.iter().filter(|p|p.histogram.is_some()).map(Point::json).collect::<Vec<_>>();if !floats.is_empty(){v["values"]=json!(floats)}if !histograms.is_empty(){v["histograms"]=json!(histograms)}v}).collect::<Vec<_>>()})
             }
         }
     }
@@ -100,4 +112,6 @@ pub fn float_string(value: f64) -> String {
 
 pub fn drop_name(labels: &mut Labels) {
     labels.remove("__name__");
+    labels.remove("__type__");
+    labels.remove("__unit__");
 }

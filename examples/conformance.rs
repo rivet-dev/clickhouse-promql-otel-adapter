@@ -68,8 +68,13 @@ fn load(data: &Value) -> Result<Vec<Series>, String> {
                 .unwrap()
                 .iter()
                 .map(|p| {
-                    if p.get("histogram").is_some() {
-                        return Err("native histogram input not implemented".into());
+                    if let Some(h) = p.get("histogram") {
+                        return Ok(Point {
+                            timestamp: p["timestamp"].as_i64().unwrap(),
+                            start_timestamp: p["start_timestamp"].as_i64().unwrap_or(0),
+                            histogram: Some(load_histogram(h)?),
+                            ..Default::default()
+                        });
                     }
                     let text = p["value"].as_str().unwrap();
                     let value = if text == "stale" {
@@ -80,7 +85,9 @@ fn load(data: &Value) -> Result<Vec<Series>, String> {
                     };
                     Ok(Point {
                         timestamp: p["timestamp"].as_i64().unwrap(),
+                        start_timestamp: p["start_timestamp"].as_i64().unwrap_or(0),
                         value,
+                        ..Default::default()
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -95,6 +102,7 @@ fn compare(case: &Value, data: Result<&Vec<Series>, &String>) -> Result<(), Stri
     let step = case["step"].as_i64().unwrap();
     let query = case["query"].as_str().unwrap();
     let mut engine = Engine::new(data, start, end);
+    engine.source = query.into();
     engine.lookback = case["lookback"].as_i64().unwrap();
     let result = Engine::parse(query).and_then(|expr| {
         if step == 0 {
@@ -197,4 +205,45 @@ fn floats(a: f64, b: f64) -> bool {
     a == b
         || (a.is_nan() && b.is_nan())
         || (a.is_finite() && b.is_finite() && (a - b).abs() <= 1e-8 * a.abs().max(b.abs()).max(1.0))
+}
+
+fn load_histogram(h: &Value) -> Result<clickhouse_promql::histogram::Histogram, String> {
+    fn number(v: &Value) -> f64 {
+        v.as_str()
+            .and_then(|s| s.parse().ok())
+            .or_else(|| v.as_f64())
+            .unwrap_or(0.0)
+    }
+    fn buckets(spans: &Value, counts: &Value) -> BTreeMap<i32, f64> {
+        let mut out = BTreeMap::new();
+        let mut index = 0i32;
+        let mut offset = 0;
+        if let Some(spans) = spans.as_array() {
+            for span in spans {
+                index += span["Offset"].as_i64().unwrap() as i32;
+                for _ in 0..span["Length"].as_u64().unwrap() {
+                    out.insert(index, number(&counts[offset]));
+                    offset += 1;
+                    index += 1;
+                }
+            }
+        }
+        out
+    }
+    Ok(clickhouse_promql::histogram::Histogram {
+        schema: h["Schema"].as_i64().unwrap() as i32,
+        count: number(&h["Count"]),
+        sum: number(&h["Sum"]),
+        zero_count: number(&h["ZeroCount"]),
+        zero_threshold: number(&h["ZeroThreshold"]),
+        reset_hint: h["CounterResetHint"].as_u64().unwrap() as u8,
+        positive: buckets(&h["PositiveSpans"], &h["PositiveBuckets"]),
+        negative: buckets(&h["NegativeSpans"], &h["NegativeBuckets"]),
+        custom: h["CustomValues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(number)
+            .collect(),
+    })
 }

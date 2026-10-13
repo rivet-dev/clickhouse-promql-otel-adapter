@@ -1,0 +1,27 @@
+---
+source: tests/native.rs
+expression: result.json(0)
+---
+{
+  "result": [
+    {
+      "histogram": [
+        0.0,
+        {
+          "buckets": [
+            [
+              0,
+              "1",
+              "2",
+              "8"
+            ]
+          ],
+          "count": "8",
+          "sum": "12"
+        }
+      ],
+      "metric": {}
+    }
+  ],
+  "resultType": "vector"
+}

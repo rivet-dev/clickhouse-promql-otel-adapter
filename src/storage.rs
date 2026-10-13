@@ -27,6 +27,7 @@ pub struct Store {
 pub struct Loaded {
     pub series: Vec<Series>,
     pub metadata: BTreeMap<String, Vec<Json>>,
+    pub warnings: Vec<String>,
 }
 impl Store {
     pub fn new(url: String, database: String, username: String, password: String) -> Result<Self> {
@@ -90,7 +91,7 @@ impl Store {
         let mut total = 0usize;
         for kind in TABLES {
             let sql = format!(
-                "SELECT *, toUnixTimestamp64Milli(toDateTime64(TimeUnix, 3)) AS _timestamp FROM {}.otel_metrics_{} WHERE TimeUnix >= fromUnixTimestamp64Milli({{start:Int64}}) AND TimeUnix <= fromUnixTimestamp64Milli({{end:Int64}}) LIMIT {} SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow",
+                "SELECT *, toUnixTimestamp64Milli(toDateTime64(TimeUnix, 3)) AS _timestamp, toUnixTimestamp64Milli(toDateTime64(StartTimeUnix, 3)) AS _start_timestamp FROM {}.otel_metrics_{} WHERE TimeUnix >= fromUnixTimestamp64Milli({{start:Int64}}) AND TimeUnix <= fromUnixTimestamp64Milli({{end:Int64}}) LIMIT {} SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow",
                 self.database,
                 kind,
                 self.max_rows + 1
@@ -181,12 +182,7 @@ impl Store {
                     }
                     continue;
                 }
-                if kind == "exponential_histogram" {
-                    bail!(
-                        "native histogram evaluation is not implemented for {name}; default collector schema also omits ZeroThreshold"
-                    )
-                }
-                if matches!(kind, "sum" | "histogram")
+                if matches!(kind, "sum" | "histogram" | "exponential_histogram")
                     && integer(&row["AggregationTemporality"])? == 1
                 {
                     bail!(
@@ -195,6 +191,50 @@ impl Store {
                 }
                 let timestamp = integer(&row["_timestamp"])?;
                 let stale = integer(&row["Flags"]).unwrap_or(0) & 1 != 0;
+                let start_timestamp = integer(&row["_start_timestamp"])?;
+                if kind == "exponential_histogram" {
+                    let mut h = crate::histogram::Histogram {
+                        schema: integer(&row["Scale"])? as i32,
+                        count: number(&row["Count"])?,
+                        sum: number(&row["Sum"])?,
+                        zero_count: number(&row["ZeroCount"])?,
+                        zero_threshold: row
+                            .get("ZeroThreshold")
+                            .map(number)
+                            .transpose()?
+                            .unwrap_or(0.0),
+                        ..Default::default()
+                    };
+                    for (prefix, buckets) in
+                        [("Positive", &mut h.positive), ("Negative", &mut h.negative)]
+                    {
+                        let offset = integer(&row[format!("{prefix}Offset")])? as i32;
+                        for (i, v) in row[format!("{prefix}BucketCounts")]
+                            .as_array()
+                            .context("missing native bucket counts")?
+                            .iter()
+                            .enumerate()
+                        {
+                            buckets.insert(offset + i as i32 + 1, number(v)?);
+                        }
+                    }
+                    if row.get("ZeroThreshold").is_none() {
+                        let warning="Collector schema does not store exponential histogram ZeroThreshold; assuming zero".to_owned();
+                        if !loaded.warnings.contains(&warning) {
+                            loaded.warnings.push(warning)
+                        }
+                    }
+                    if stale {
+                        h.sum = f64::from_bits(STALE_BITS)
+                    }
+                    groups.entry(labels).or_default().push(Point {
+                        timestamp,
+                        start_timestamp,
+                        histogram: Some(h),
+                        ..Default::default()
+                    });
+                    continue;
+                }
                 let mut push = |suffix: &str, extra: Option<(&str, String)>, value: f64| {
                     let mut ls = labels.clone();
                     ls.insert("__name__".into(), format!("{name}{suffix}"));
@@ -204,11 +244,13 @@ impl Store {
                     if selectors.is_empty() || selectors.iter().any(|s| matches(s, &ls)) {
                         groups.entry(ls).or_default().push(Point {
                             timestamp,
+                            start_timestamp,
                             value: if stale {
                                 f64::from_bits(STALE_BITS)
                             } else {
                                 value
                             },
+                            ..Default::default()
                         });
                     }
                 };
@@ -261,7 +303,8 @@ impl Store {
             points.sort_by_key(|p| p.timestamp);
             for pair in points.windows(2) {
                 if pair[0].timestamp == pair[1].timestamp
-                    && pair[0].value.to_bits() != pair[1].value.to_bits()
+                    && (pair[0].value.to_bits() != pair[1].value.to_bits()
+                        || pair[0].histogram != pair[1].histogram)
                 {
                     bail!(
                         "conflicting samples at timestamp {} for {labels:?}; default DateTime columns lose subsecond precision",
@@ -270,7 +313,9 @@ impl Store {
                 }
             }
             points.dedup_by(|a, b| {
-                a.timestamp == b.timestamp && a.value.to_bits() == b.value.to_bits()
+                a.timestamp == b.timestamp
+                    && a.value.to_bits() == b.value.to_bits()
+                    && a.histogram == b.histogram
             });
             loaded.series.push(Series { labels, points });
         }

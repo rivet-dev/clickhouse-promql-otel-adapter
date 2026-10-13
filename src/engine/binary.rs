@@ -48,9 +48,6 @@ impl Engine<'_> {
         let op = b.op.to_string();
         let comparison = matches!(op.as_str(), "==" | "!=" | ">" | "<" | ">=" | "<=");
         let modifier = b.modifier.clone().unwrap_or_default();
-        if modifier.fill_values.lhs.is_some() || modifier.fill_values.rhs.is_some() {
-            bail!("fill modifiers are not implemented")
-        }
         match (lhs, rhs) {
             (Value::Scalar(a), Value::Scalar(b)) => {
                 let (v, keep) = operation(&op, a, b)?;
@@ -66,7 +63,48 @@ impl Engine<'_> {
             (Value::Scalar(s), Value::Vector(v)) => {
                 scalar_vector(v, s, true, &op, comparison, modifier.return_bool, t)
             }
-            (Value::Vector(left), Value::Vector(right)) => {
+            (Value::Vector(mut left), Value::Vector(mut right)) => {
+                let left_keys = left
+                    .iter()
+                    .map(|s| key(&s.labels, &modifier.matching))
+                    .collect::<std::collections::BTreeSet<_>>();
+                let right_keys = right
+                    .iter()
+                    .map(|s| key(&s.labels, &modifier.matching))
+                    .collect::<std::collections::BTreeSet<_>>();
+                if let Some(value) = modifier.fill_values.lhs {
+                    let mut added = std::collections::BTreeSet::new();
+                    for s in &right {
+                        let signature = key(&s.labels, &modifier.matching);
+                        if !left_keys.contains(&signature) && added.insert(signature) {
+                            let mut labels = s.labels.clone();
+                            drop_name(&mut labels);
+                            left.push(Sample {
+                                labels,
+                                value,
+                                timestamp: t,
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+                if let Some(value) = modifier.fill_values.rhs {
+                    let mut added = std::collections::BTreeSet::new();
+                    for s in &left {
+                        let signature = key(&s.labels, &modifier.matching);
+                        if !right_keys.contains(&signature) && added.insert(signature) {
+                            let mut labels = s.labels.clone();
+                            drop_name(&mut labels);
+                            right.push(Sample {
+                                labels,
+                                value,
+                                timestamp: t,
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+
                 let mut rhs: BTreeMap<Labels, Vec<&Sample>> = BTreeMap::new();
                 let mut lhs: BTreeMap<Labels, Vec<&Sample>> = BTreeMap::new();
                 for s in &right {
@@ -128,7 +166,29 @@ impl Engine<'_> {
                     } else {
                         (m.value, o.value)
                     };
-                    let (value, keep) = operation(&op, a, c)?;
+                    let (sa, sb) = if one_to_many { (o, m) } else { (m, o) };
+                    let mut histogram = None;
+                    let (value, keep) = if sa.histogram.is_some() || sb.histogram.is_some() {
+                        if sa.histogram.is_some()
+                            && sb.histogram.is_some()
+                            && (op == "==" || op == "!=")
+                        {
+                            let equal = sa.histogram == sb.histogram;
+                            histogram = sa.histogram.clone();
+                            (0.0, if op == "==" { equal } else { !equal })
+                        } else {
+                            histogram = super::native::histogram_binary(&op, sa, sb)?;
+                            if histogram.is_none() {
+                                continue;
+                            }
+                            (0.0, true)
+                        }
+                    } else {
+                        operation(&op, a, c)?
+                    };
+                    if modifier.return_bool {
+                        histogram = None;
+                    }
                     if !keep && !modifier.return_bool {
                         continue;
                     }
@@ -167,7 +227,9 @@ impl Engine<'_> {
                     result.push(Sample {
                         labels,
                         value,
+                        histogram,
                         timestamp: t,
+                        ..Default::default()
                     });
                 }
                 Ok(Value::Vector(result))
@@ -187,6 +249,26 @@ fn scalar_vector(
 ) -> Result<Value> {
     let mut result = Vec::new();
     for mut s in v {
+        if s.histogram.is_some() {
+            let scalar_sample = Sample {
+                value: scalar,
+                ..Default::default()
+            };
+            let (a, b) = if swap {
+                (&scalar_sample, &s)
+            } else {
+                (&s, &scalar_sample)
+            };
+            let h = super::native::histogram_binary(op, a, b)?;
+            if h.is_none() {
+                continue;
+            }
+            s.histogram = h;
+            s.timestamp = t;
+            drop_name(&mut s.labels);
+            result.push(s);
+            continue;
+        }
         let (a, b) = if swap {
             (scalar, s.value)
         } else {
