@@ -13,30 +13,56 @@
 // limitations under the License.
 
 use crate::parser::{lex, Expr, INVALID_QUERY_INFO};
+use lrpar::Lexer;
 
 /// Parse the given query literal to an AST (which is [`Expr`] in this crate).
 pub fn parse(input: &str) -> Result<Expr, String> {
     match lex::lexer(input) {
         Err(e) => Err(e),
         Ok(lexer) => {
+            if lexer.iter().take(2049).count() > 2048 {
+                return Err("query exceeds 2048 token limit".into());
+            }
             // NOTE: the errs is ignored so far.
             let (res, _errs) = crate::promql_y::parse(&lexer);
-            let expr=res.ok_or_else(|| String::from(INVALID_QUERY_INFO))??;
+            let expr = res.ok_or_else(|| String::from(INVALID_QUERY_INFO))??;
             validate_selectors(&expr)?;
             Ok(expr)
         }
     }
 }
 
-fn validate_selectors(expr:&Expr)->Result<(),String>{
-    match expr{
-        Expr::VectorSelector(v)=>{if v.name.is_none()&&v.matchers.is_empty_matchers(){return Err("vector selector must contain at least one non-empty matcher".into())}},
-        Expr::MatrixSelector(m)=>validate_selectors(&Expr::VectorSelector(m.vs.clone()))?,
-        Expr::Subquery(s)=>validate_selectors(&s.expr)?,Expr::Paren(p)=>validate_selectors(&p.expr)?,Expr::Unary(u)=>validate_selectors(&u.expr)?,
-        Expr::Binary(b)=>{validate_selectors(&b.lhs)?;validate_selectors(&b.rhs)?},
-        Expr::Aggregate(a)=>{validate_selectors(&a.expr)?;if let Some(p)=&a.param{validate_selectors(p)?}},
-        Expr::Call(c)=>for(i,a)in c.args.args.iter().enumerate(){if c.func.name!="info"||i!=1{validate_selectors(a)?}},_=>{},
-    }Ok(())
+fn validate_selectors(expr: &Expr) -> Result<(), String> {
+    match expr {
+        Expr::VectorSelector(v) => {
+            if v.name.is_none() && v.matchers.is_empty_matchers() {
+                return Err("vector selector must contain at least one non-empty matcher".into());
+            }
+        }
+        Expr::MatrixSelector(m) => validate_selectors(&Expr::VectorSelector(m.vs.clone()))?,
+        Expr::Subquery(s) => validate_selectors(&s.expr)?,
+        Expr::Paren(p) => validate_selectors(&p.expr)?,
+        Expr::Unary(u) => validate_selectors(&u.expr)?,
+        Expr::Binary(b) => {
+            validate_selectors(&b.lhs)?;
+            validate_selectors(&b.rhs)?
+        }
+        Expr::Aggregate(a) => {
+            validate_selectors(&a.expr)?;
+            if let Some(p) = &a.param {
+                validate_selectors(p)?
+            }
+        }
+        Expr::Call(c) => {
+            for (i, a) in c.args.args.iter().enumerate() {
+                if c.func.name != "info" || i != 1 {
+                    validate_selectors(a)?
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// cases in original prometheus is a huge slices which are constructed more than 3000 lines,
@@ -154,11 +180,27 @@ mod tests {
             // \a is not valid character in rust, use \u{7} instead
             (
                 r#""\a\b\f\n\r\t\v\\\" - \xFF\377\u1234\U00010111\U0001011111☺""#,
-                Expr::from("\u{7}\u{8}\u{c}\n\r\t\u{b}\\\" - ÿÿሴ𐄑𐄑11☺"),
+                Expr::StringLiteral(crate::parser::StringLiteral {
+                    val: "\u{7}\u{8}\u{c}\n\r\t\u{b}\\\" - ��ሴ𐄑𐄑11☺".into(),
+                    raw: [
+                        "\u{7}\u{8}\u{c}\n\r\t\u{b}\\\" - ".as_bytes(),
+                        b"\xff\xff",
+                        "ሴ𐄑𐄑11☺".as_bytes(),
+                    ]
+                    .concat(),
+                }),
             ),
             (
                 r"'\a\b\f\n\r\t\v\\\' - \xFF\377\u1234\U00010111\U0001011111☺'",
-                Expr::from("\u{7}\u{8}\u{c}\n\r\t\u{b}\\' - ÿÿሴ𐄑𐄑11☺"),
+                Expr::StringLiteral(crate::parser::StringLiteral {
+                    val: "\u{7}\u{8}\u{c}\n\r\t\u{b}\\' - ��ሴ𐄑𐄑11☺".into(),
+                    raw: [
+                        "\u{7}\u{8}\u{c}\n\r\t\u{b}\\' - ".as_bytes(),
+                        b"\xff\xff",
+                        "ሴ𐄑𐄑11☺".as_bytes(),
+                    ]
+                    .concat(),
+                }),
             ),
             // no escape in ` quoted string
             (
@@ -2384,8 +2426,7 @@ mod tests {
             // This is testing that we are not re-rendering the expression string for each error, which would timeout.
             {
                 let input = "(".to_string() + &"-{}-1".repeat(10_000) + ")" + &"[1m:]".repeat(1000);
-                let expected =
-                    Err("vector selector must contain at least one non-empty matcher".into());
+                let expected = Err("query exceeds 2048 token limit".into());
                 Case { input, expected }
             },
         ];

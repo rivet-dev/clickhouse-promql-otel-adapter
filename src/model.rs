@@ -65,10 +65,48 @@ impl Value {
                 json!({"resultType":"string", "result":[timestamp as f64/1000.0,value]})
             }
             Self::Vector(samples) => {
-                json!({"resultType":"vector", "result":samples.iter().map(|s| {let mut v=json!({"metric":s.labels});if let Some(h)=&s.histogram{v["histogram"]=h.json(timestamp)}else{v["value"]=json!([timestamp as f64/1000.0,float_string(s.value)])}v}).collect::<Vec<_>>()})
+                let result = samples
+                    .iter()
+                    .map(|s| {
+                        let mut value = json!({"metric":s.labels});
+                        if let Some(h) = &s.histogram {
+                            value["histogram"] = h.json(timestamp);
+                        } else {
+                            value["value"] =
+                                json!([timestamp as f64 / 1000.0, float_string(s.value)]);
+                        }
+                        value
+                    })
+                    .collect::<Vec<_>>();
+                json!({"resultType":"vector","result":result})
             }
             Self::Matrix(series) => {
-                json!({"resultType":"matrix", "result":series.iter().map(|s| {let mut v=json!({"metric":s.labels});let floats=s.points.iter().filter(|p|p.histogram.is_none()).map(Point::json).collect::<Vec<_>>();let histograms=s.points.iter().filter(|p|p.histogram.is_some()).map(Point::json).collect::<Vec<_>>();if !floats.is_empty(){v["values"]=json!(floats)}if !histograms.is_empty(){v["histograms"]=json!(histograms)}v}).collect::<Vec<_>>()})
+                let result = series
+                    .iter()
+                    .map(|s| {
+                        let mut value = json!({"metric":s.labels});
+                        let floats = s
+                            .points
+                            .iter()
+                            .filter(|p| p.histogram.is_none())
+                            .map(Point::json)
+                            .collect::<Vec<_>>();
+                        let histograms = s
+                            .points
+                            .iter()
+                            .filter(|p| p.histogram.is_some())
+                            .map(Point::json)
+                            .collect::<Vec<_>>();
+                        if !floats.is_empty() {
+                            value["values"] = json!(floats);
+                        }
+                        if !histograms.is_empty() {
+                            value["histograms"] = json!(histograms);
+                        }
+                        value
+                    })
+                    .collect::<Vec<_>>();
+                json!({"resultType":"matrix","result":result})
             }
         }
     }
@@ -118,4 +156,15 @@ pub fn drop_name(labels: &mut Labels) {
     labels.remove("__name__");
     labels.remove("__type__");
     labels.remove("__unit__");
+}
+
+pub fn labels_string(labels: &Labels) -> String {
+    format!(
+        "{{{}}}",
+        labels
+            .iter()
+            .map(|(k, v)| format!("{k}={}", serde_json::to_string(v).unwrap()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }

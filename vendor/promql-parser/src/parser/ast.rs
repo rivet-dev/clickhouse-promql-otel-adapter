@@ -866,11 +866,47 @@ impl Prettier for NumberLiteral {
 #[cfg_attr(feature = "ser", derive(serde::Serialize))]
 pub struct StringLiteral {
     pub val: String,
+    #[cfg_attr(feature = "ser", serde(skip))]
+    pub raw: Vec<u8>,
 }
 
+impl StringLiteral {
+    pub fn from_quoted(s: &str) -> Result<Self, String> {
+        let raw = crate::util::unquote_bytes(s)?;
+        Ok(Self {
+            val: String::from_utf8_lossy(&raw).into_owned(),
+            raw,
+        })
+    }
+    pub fn quoted(&self) -> String {
+        let mut output = String::from("\"");
+        let mut bytes = self.raw.as_slice();
+        while !bytes.is_empty() {
+            match std::str::from_utf8(bytes) {
+                Ok(text) => {
+                    output.push_str(&escape_string(text));
+                    break;
+                }
+                Err(error) => {
+                    let valid = error.valid_up_to();
+                    output.push_str(&escape_string(
+                        std::str::from_utf8(&bytes[..valid]).unwrap(),
+                    ));
+                    let len = error.error_len().unwrap_or(bytes.len() - valid);
+                    for b in &bytes[valid..valid + len] {
+                        output.push_str(&format!("\\x{b:02x}"));
+                    }
+                    bytes = &bytes[valid + len..];
+                }
+            }
+        }
+        output.push('"');
+        output
+    }
+}
 impl fmt::Display for StringLiteral {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "\"{}\"", escape_string(&self.val))
+        write!(f, "{}", self.quoted())
     }
 }
 
@@ -883,8 +919,10 @@ impl Prettier for StringLiteral {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ser", derive(serde::Serialize))]
 pub struct VectorSelector {
-    pub anchored:bool,
-    pub smoothed:bool,
+    #[cfg_attr(feature = "ser", serde(skip_serializing_if = "is_false"))]
+    pub anchored: bool,
+    #[cfg_attr(feature = "ser", serde(skip_serializing_if = "is_false"))]
+    pub smoothed: bool,
     pub name: Option<String>,
     #[cfg_attr(feature = "ser", serde(flatten))]
     pub matchers: Matchers,
@@ -898,7 +936,8 @@ pub struct VectorSelector {
 impl VectorSelector {
     pub fn new(name: Option<String>, matchers: Matchers) -> Self {
         VectorSelector {
-            anchored:false,smoothed:false,
+            anchored: false,
+            smoothed: false,
             name,
             matchers,
             offset: None,
@@ -910,7 +949,8 @@ impl VectorSelector {
 impl Default for VectorSelector {
     fn default() -> Self {
         Self {
-            anchored:false,smoothed:false,
+            anchored: false,
+            smoothed: false,
             name: None,
             matchers: Matchers::empty(),
             offset: None,
@@ -922,7 +962,8 @@ impl Default for VectorSelector {
 impl From<String> for VectorSelector {
     fn from(name: String) -> Self {
         VectorSelector {
-            anchored:false,smoothed:false,
+            anchored: false,
+            smoothed: false,
             name: Some(name),
             offset: None,
             at: None,
@@ -981,7 +1022,12 @@ impl fmt::Display for VectorSelector {
         if let Some(offset) = &self.offset {
             write!(f, " offset {offset}")?;
         }
-        if self.anchored{write!(f," anchored")?;}if self.smoothed{write!(f," smoothed")?;}
+        if self.anchored {
+            write!(f, " anchored")?;
+        }
+        if self.smoothed {
+            write!(f, " smoothed")?;
+        }
         Ok(())
     }
 }
@@ -995,7 +1041,9 @@ impl Prettier for VectorSelector {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ser", derive(serde::Serialize))]
 pub struct MatrixSelector {
+    #[cfg_attr(feature = "ser", serde(skip_serializing_if = "is_false"))]
     pub anchored: bool,
+    #[cfg_attr(feature = "ser", serde(skip_serializing_if = "is_false"))]
     pub smoothed: bool,
     #[cfg_attr(feature = "ser", serde(flatten))]
     pub vs: VectorSelector,
@@ -1018,8 +1066,12 @@ impl fmt::Display for MatrixSelector {
         }
 
         write!(f, "[{}]", display_duration(&self.range))?;
-        if self.anchored { write!(f," anchored")?; }
-        if self.smoothed { write!(f," smoothed")?; }
+        if self.anchored {
+            write!(f, " anchored")?;
+        }
+        if self.smoothed {
+            write!(f, " smoothed")?;
+        }
 
         if let Some(at) = &self.vs.at {
             write!(f, " {at}")?;
@@ -1226,15 +1278,38 @@ impl Expr {
                 Err("no @ modifiers allowed before range".into())
             }
             Expr::VectorSelector(vs) => {
-                let ms = Expr::MatrixSelector(MatrixSelector { vs, range, anchored:false, smoothed:false });
+                let ms = Expr::MatrixSelector(MatrixSelector {
+                    vs,
+                    range,
+                    anchored: false,
+                    smoothed: false,
+                });
                 Ok(ms)
             }
             _ => Err("ranges only allowed for vector selectors".into()),
         }
     }
 
-    pub(crate) fn extended_range(self,smoothed:bool)->Result<Self,String>{
-        match self {Self::VectorSelector(mut v)=>{if v.anchored||v.smoothed{return Err("extended modifier may not be set multiple times".into())}v.smoothed=smoothed;v.anchored=!smoothed;Ok(Self::VectorSelector(v))},Self::MatrixSelector(mut m)=>{if m.anchored||m.smoothed{return Err("extended range modifier may not be set multiple times".into())}m.smoothed=smoothed;m.anchored=!smoothed;Ok(Self::MatrixSelector(m))},_=>Err("extended range modifiers only allowed on range selectors".into())}
+    pub(crate) fn extended_range(self, smoothed: bool) -> Result<Self, String> {
+        match self {
+            Self::VectorSelector(mut v) => {
+                if v.anchored || v.smoothed {
+                    return Err("extended modifier may not be set multiple times".into());
+                }
+                v.smoothed = smoothed;
+                v.anchored = !smoothed;
+                Ok(Self::VectorSelector(v))
+            }
+            Self::MatrixSelector(mut m) => {
+                if m.anchored || m.smoothed {
+                    return Err("extended range modifier may not be set multiple times".into());
+                }
+                m.smoothed = smoothed;
+                m.anchored = !smoothed;
+                Ok(Self::MatrixSelector(m))
+            }
+            _ => Err("extended range modifiers only allowed on range selectors".into()),
+        }
     }
 
     pub(crate) fn at_expr(self, at: AtModifier) -> Result<Self, String> {
@@ -1395,13 +1470,19 @@ impl Expr {
 
 impl From<String> for Expr {
     fn from(val: String) -> Self {
-        Expr::StringLiteral(StringLiteral { val })
+        Expr::StringLiteral(StringLiteral {
+            raw: val.as_bytes().to_vec(),
+            val,
+        })
     }
 }
 
 impl From<&str> for Expr {
     fn from(s: &str) -> Self {
-        Expr::StringLiteral(StringLiteral { val: s.into() })
+        Expr::StringLiteral(StringLiteral {
+            raw: s.as_bytes().to_vec(),
+            val: s.into(),
+        })
     }
 }
 
@@ -3021,4 +3102,9 @@ or
             );
         }
     }
+}
+
+#[cfg(feature = "ser")]
+fn is_false(value: &bool) -> bool {
+    !value
 }

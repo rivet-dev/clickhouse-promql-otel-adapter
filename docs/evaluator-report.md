@@ -1,0 +1,36 @@
+# Evaluator conformance evidence
+
+Target: Prometheus v3.15.0 (`5241a27fe3c6983549fccc32f6e65917408c63cd`).
+Run: `python3 scripts/conformance.py`, October 13, 2026.
+
+All 21,442 captured query executions pass. Values, exact labels, explicit sort ordering, expected evaluation errors, warnings and infos are compared. Each fixture includes generated instant/range/@ variants, so this is not a count of independent source assertions.
+
+| Upstream fixture | Passed | Failed |
+| --- | ---: | ---: |
+| `aggregators.test` | 1625 | 0 |
+| `at_modifier.test` | 665 | 0 |
+| `collision.test` | 16 | 0 |
+| `duration_expression.test` | 383 | 0 |
+| `extended_vectors.test` | 1923 | 0 |
+| `fill-modifier.test` | 319 | 0 |
+| `functions.test` | 3972 | 0 |
+| `histograms.test` | 2136 | 0 |
+| `info.test` | 147 | 0 |
+| `limit.test` | 180 | 0 |
+| `literals.test` | 270 | 0 |
+| `name_label_dropping.test` | 343 | 0 |
+| `native_histograms.test` | 6032 | 0 |
+| `operators.test` | 1405 | 0 |
+| `range_queries.test` | 43 | 0 |
+| `selectors.test` | 352 | 0 |
+| `staleness.test` | 200 | 0 |
+| `start_timestamps.test` | 103 | 0 |
+| `subquery.test` | 408 | 0 |
+| `trig_functions.test` | 224 | 0 |
+| `type_and_unit.test` | 696 | 0 |
+
+The compressed, checksummed corpus is committed in `tests/conformance/`. Regeneration runs the actual upstream test assertions against its pinned reference evaluator before recording results. Go is used only for reference generation.
+
+Remaining acceptance gates: query-creation/parser errors, complete HTTP contracts, ClickHouse-backed differential execution, manual live Collector/Grafana verification, and independent review. This report does not claim complete replacement readiness.
+
+The vendored parser also runs its own unit, serialization, custom-function and documentation tests. The adapter enforces 65,536 input bytes, 2,048 parser tokens and 128 evaluator nesting levels; these limits are explicit resource protections.

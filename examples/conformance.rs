@@ -127,8 +127,22 @@ fn compare(case: &Value, data: Result<&Vec<Series>, &String>) -> Result<(), Stri
             let mut expected = case["expected"].clone();
             // API vectors are generally unordered. Sort by labels for comparison;
             // sort() ordering is tested separately by evaluator regression tests.
-            normalize(&mut actual);
-            normalize(&mut expected);
+            let ordered = step == 0
+                && [
+                    "sort(",
+                    "sort_desc(",
+                    "sort_by_label(",
+                    "sort_by_label_desc(",
+                ]
+                .iter()
+                .any(|prefix| query.trim_start().starts_with(prefix));
+            normalize(&mut actual, ordered);
+            normalize(&mut expected, ordered);
+            if actual["resultType"] == "string" && actual["result"][1] != expected["result"][1] {
+                return Err(format!(
+                    "string result mismatch: actual={actual}; expected={expected}"
+                ));
+            }
             equal(&actual, &expected)
                 .map_err(|e| format!("{e}; actual={actual}; expected={expected}"))?;
         }
@@ -161,12 +175,12 @@ fn compare(case: &Value, data: Result<&Vec<Series>, &String>) -> Result<(), Stri
     }
     Ok(())
 }
-fn normalize(value: &mut Value) {
+fn normalize(value: &mut Value, ordered: bool) {
     if matches!(value["resultType"].as_str(), Some("matrix" | "vector")) {
         if value["result"].is_null() {
             value["result"] = json!([])
         }
-        if let Some(values) = value["result"].as_array_mut() {
+        if !ordered && let Some(values) = value["result"].as_array_mut() {
             values.sort_by_key(|v| v["metric"].to_string());
         }
     }
@@ -178,6 +192,15 @@ fn equal(a: &Value, b: &Value) -> Result<(), String> {
                 return Err("object key count mismatch".into());
             }
             for (k, a) in a {
+                if k == "metric" {
+                    if Some(a) != b.get(k) {
+                        return Err(format!(
+                            "labels mismatch: actual={a}; expected={:?}",
+                            b.get(k)
+                        ));
+                    }
+                    continue;
+                }
                 equal(a, b.get(k).ok_or_else(|| format!("missing key {k}"))?)?;
             }
         }

@@ -28,32 +28,56 @@ pub(super) fn histogram_range(
     let mut result = histograms[0].clone();
     match name {
         "sum_over_time" | "avg_over_time" => {
-            for h in &histograms[1..] {
-                result.combine(h, 1.0)?
-            }
-            if name == "avg_over_time" {
-                result.scale(1.0 / histograms.len() as f64)
-            }
+            result = Histogram::aggregate(&histograms, name == "avg_over_time")?;
             result.reset_hint = 3;
         }
         "rate" | "increase" | "delta" | "irate" | "idelta" => {
             if histograms.len() < 2 {
+                if matches!(name, "rate" | "increase")
+                    && points[0].start_timestamp != 0
+                    && points[0].start_timestamp > start
+                    && points[0].start_timestamp < points[0].timestamp
+                {
+                    if name == "rate" {
+                        result.scale(1000.0 / (end - start) as f64);
+                    }
+                    result.reset_hint = 3;
+                    return Ok(Some(result));
+                }
                 return Ok(None);
             }
             let instant = name == "irate" || name == "idelta";
             let counter = name != "delta" && name != "idelta";
             let first = if instant { histograms.len() - 2 } else { 0 };
             let last = histograms.len() - 1;
+            let reset_first = counter
+                && !instant
+                && (histograms[1].detects_reset(histograms[0])
+                    || super::functions::start_reset(&points[0], &points[1]));
             result = histograms[last].clone();
-            if !counter
-                || !(histograms[last].detects_reset(histograms[first])
-                    || super::functions::start_reset(&points[first], &points[last]))
-                || !instant
+            if counter && !instant {
+                let relevant = &histograms[usize::from(reset_first)..];
+                if relevant
+                    .iter()
+                    .any(|h| (h.schema == -53) != (result.schema == -53))
+                {
+                    anyhow::bail!("incompatible histogram schemas");
+                }
+                result.reduce(relevant.iter().map(|h| h.schema).min().unwrap())?;
+            }
+            if !reset_first
+                && (!counter
+                    || !(histograms[last].detects_reset(histograms[first])
+                        || super::functions::start_reset(&points[first], &points[last]))
+                    || !instant)
             {
                 result.combine(histograms[first], -1.0)?
             }
             if counter && !instant {
                 for (i, pair) in histograms[first..].windows(2).enumerate() {
+                    if reset_first && i == 0 {
+                        continue;
+                    }
                     if pair[1].detects_reset(pair[0])
                         || super::functions::start_reset(&points[first + i], &points[first + i + 1])
                     {

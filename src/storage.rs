@@ -373,10 +373,8 @@ fn row_labels(row: &Json) -> Result<Labels> {
         for (k, v) in attrs {
             let key = label_name(k);
             let value = v.as_str().context("attribute is not a string")?;
-            if !value.is_empty() {
-                if labels.insert(key.clone(), value.into()).is_some() {
-                    bail!("attribute normalization collision at {key}")
-                }
+            if !value.is_empty() && labels.insert(key.clone(), value.into()).is_some() {
+                bail!("attribute normalization collision at {key}")
             }
         }
     }

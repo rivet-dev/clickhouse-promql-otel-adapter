@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 /// Prometheus exponential bucket index i has upper bound 2^(i * 2^-schema).
 /// Custom-bucket schema uses the same sparse indexes into `custom` boundaries.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct Histogram {
     pub schema: i32,
     pub count: f64,
@@ -27,7 +27,14 @@ pub struct Bucket {
 }
 impl Histogram {
     pub fn buckets(&self) -> Vec<Bucket> {
-        let bound = |i: i32| 2.0f64.powf(i as f64 * 2.0f64.powi(-self.schema));
+        let bound = |i: i32| {
+            let exponent = i as f64 * 2.0f64.powi(-self.schema);
+            if exponent == 1024.0 {
+                f64::MAX
+            } else {
+                2.0f64.powf(exponent)
+            }
+        };
         let mut buckets = Vec::new();
         if self.schema == -53 {
             for (&i, &count) in &self.positive {
@@ -61,7 +68,7 @@ impl Histogram {
                 boundaries: 1,
             });
         }
-        if self.zero_count != 0.0 {
+        if self.zero_count > 0.0 {
             buckets.push(Bucket {
                 lower: -self.zero_threshold,
                 upper: self.zero_threshold,
@@ -98,6 +105,45 @@ impl Histogram {
             value["buckets"] = json!(buckets)
         }
         json!([t as f64 / 1000.0, value])
+    }
+    pub fn aggregate(values: &[&Self], average: bool) -> Result<Self> {
+        let mut result = values[0].clone();
+        for h in &values[1..] {
+            result.combine(h, 1.0)?;
+        }
+        let mut inputs = Vec::with_capacity(values.len());
+        for h in values {
+            let mut h = (*h).clone();
+            h.reduce(result.schema)?;
+            if result.schema == -53 {
+                h.coarsen_custom(&result.custom);
+            }
+            h.reconcile_zero(result.zero_threshold);
+            inputs.push(h);
+        }
+        let sum = |v: Vec<f64>| {
+            if average {
+                crate::numeric::mean(&v)
+            } else {
+                crate::numeric::sum(&v)
+            }
+        };
+        result.count = sum(inputs.iter().map(|h| h.count).collect());
+        result.sum = sum(inputs.iter().map(|h| h.sum).collect());
+        result.zero_count = sum(inputs.iter().map(|h| h.zero_count).collect());
+        for (&k, v) in &mut result.positive {
+            *v = sum(inputs
+                .iter()
+                .map(|h| h.positive.get(&k).copied().unwrap_or(0.0))
+                .collect());
+        }
+        for (&k, v) in &mut result.negative {
+            *v = sum(inputs
+                .iter()
+                .map(|h| h.negative.get(&k).copied().unwrap_or(0.0))
+                .collect());
+        }
+        Ok(result)
     }
     pub fn scale(&mut self, factor: f64) {
         self.count *= factor;
@@ -178,7 +224,14 @@ impl Histogram {
         if threshold <= self.zero_threshold || self.schema == -53 {
             return;
         }
-        let bound = |i: i32| 2.0f64.powf(i as f64 * 2.0f64.powi(-self.schema));
+        let bound = |i: i32| {
+            let exponent = i as f64 * 2.0f64.powi(-self.schema);
+            if exponent == 1024.0 {
+                f64::MAX
+            } else {
+                2.0f64.powf(exponent)
+            }
+        };
         for map in [&mut self.positive, &mut self.negative] {
             let keys = map
                 .keys()
@@ -215,13 +268,33 @@ impl Histogram {
         if self.count < previous.count
             || self.schema > previous.schema
             || self.zero_threshold < previous.zero_threshold
-            || (self.schema == -53 && self.custom.iter().any(|v| !previous.custom.contains(v)))
+            || (self.schema == -53) != (previous.schema == -53)
         {
             return true;
         }
         let mut previous = previous.clone();
-        if self.schema == -53 {
-            previous.coarsen_custom(&self.custom);
+        if self.schema == -53 && self.custom != previous.custom {
+            let common = self
+                .custom
+                .iter()
+                .copied()
+                .filter(|v| previous.custom.contains(v))
+                .collect::<Vec<_>>();
+            previous.coarsen_custom(&common);
+            let mut current = self.clone();
+            current.coarsen_custom(&common);
+            return current.detects_reset(&previous);
+        }
+        if previous.buckets().iter().any(|b| {
+            b.count != 0.0
+                && ((b.lower < self.zero_threshold
+                    && b.upper > self.zero_threshold
+                    && b.lower > 0.0)
+                    || (b.upper > -self.zero_threshold
+                        && b.lower < -self.zero_threshold
+                        && b.upper < 0.0))
+        }) {
+            return true;
         }
         if previous.reduce(self.schema).is_err() {
             return true;
@@ -244,53 +317,69 @@ impl Histogram {
         if lower >= upper {
             return 0.0;
         }
+        let buckets = self.buckets();
+        let count = if self.sum.is_nan() {
+            buckets.iter().map(|b| b.count).sum::<f64>()
+        } else {
+            self.count
+        };
         let cdf = |x: f64| {
-            let mut count = 0.0;
-            for b in self.buckets() {
-                if x >= b.upper {
-                    count += b.count;
-                    continue;
+            let mut rank = 0.0;
+            for b in &buckets {
+                let (mut lo, mut hi) = (b.lower, b.upper);
+                let zero = lo <= 0.0 && hi >= 0.0;
+                if zero {
+                    if self.negative.is_empty() && !self.positive.is_empty() {
+                        lo = 0.0;
+                    }
+                    if self.positive.is_empty() && !self.negative.is_empty() {
+                        hi = 0.0;
+                    }
                 }
-                if x <= b.lower {
-                    continue;
+                if lo >= x {
+                    return rank;
                 }
-                let fraction = if self.schema == -53 || b.lower <= 0.0 && b.upper >= 0.0 {
-                    let lo = if b.lower == f64::NEG_INFINITY {
-                        0.0f64.min(b.upper)
+                if lo < x && x < hi {
+                    if self.schema == -53 || zero {
+                        if lo == f64::NEG_INFINITY {
+                            return b.count;
+                        }
+                        return rank + b.count * (x - lo) / (hi - lo);
+                    }
+                    let fraction = if lo > 0.0 {
+                        (x.log2() - lo.log2()) / (hi.log2() - lo.log2())
                     } else {
-                        b.lower
+                        1.0 - ((-x).log2() - (-hi).log2()) / ((-lo).log2() - (-hi).log2())
                     };
-                    let hi = if b.upper == f64::INFINITY {
-                        0.0f64.max(b.lower)
-                    } else {
-                        b.upper
-                    };
-                    (x - lo) / (hi - lo)
-                } else if b.lower >= 0.0 {
-                    (x.log2() - b.lower.log2()) / (b.upper.log2() - b.lower.log2())
-                } else {
-                    1.0 - ((-x).log2() - (-b.upper).log2())
-                        / ((-b.lower).log2() - (-b.upper).log2())
-                };
-                count += b.count * fraction.clamp(0.0, 1.0);
+                    return rank + b.count * fraction;
+                }
+                rank += b.count;
             }
             count
         };
-        (cdf(upper) - cdf(lower)) / self.count
+        (cdf(upper).min(count) - cdf(lower).min(count)) / self.count
     }
     pub fn quantile(&self, q: f64) -> f64 {
-        if q.is_nan() || self.count == 0.0 {
-            return f64::NAN;
-        }
         if q < 0.0 {
             return f64::NEG_INFINITY;
         }
         if q > 1.0 {
             return f64::INFINITY;
         }
-        let rank = q * self.count;
+        if q.is_nan() || self.count == 0.0 {
+            return f64::NAN;
+        }
+        let reverse = !self.sum.is_nan() && q >= 0.5;
+        let rank = if reverse {
+            (1.0 - q) * self.count
+        } else {
+            q * self.count
+        };
         let mut count = 0.0;
-        let buckets = self.buckets();
+        let mut buckets = self.buckets();
+        if reverse {
+            buckets.reverse();
+        }
         for b in &buckets {
             if b.count == 0.0 {
                 continue;
@@ -299,7 +388,12 @@ impl Histogram {
             if count < rank {
                 continue;
             }
-            let fraction = (rank - (count - b.count)) / b.count;
+            let count = count.min(self.count);
+            let fraction = if reverse {
+                (count - rank) / b.count
+            } else {
+                (rank - (count - b.count)) / b.count
+            };
             let mut lower = b.lower;
             let mut upper = b.upper;
             if self.schema == -53 {
@@ -314,10 +408,10 @@ impl Histogram {
                 }
             }
             if lower < 0.0 && upper > 0.0 {
-                if self.negative.is_empty() {
+                if self.negative.is_empty() && !self.positive.is_empty() {
                     lower = 0.0
                 }
-                if self.positive.is_empty() {
+                if self.positive.is_empty() && !self.negative.is_empty() {
                     upper = 0.0
                 }
             }
@@ -351,10 +445,14 @@ impl Histogram {
             let zero = self.schema != -53 && bucket.lower <= 0.0 && bucket.upper >= 0.0;
             let mut bucket = bucket;
             if zero {
-                if self.negative.values().all(|v| *v == 0.0) {
+                if self.negative.values().all(|v| *v == 0.0)
+                    && self.positive.values().any(|v| *v != 0.0)
+                {
                     bucket.lower = 0.0
                 }
-                if self.positive.values().all(|v| *v == 0.0) {
+                if self.positive.values().all(|v| *v == 0.0)
+                    && self.negative.values().any(|v| *v != 0.0)
+                {
                     bucket.upper = 0.0
                 }
             }
@@ -375,7 +473,7 @@ impl Histogram {
             for value in self.negative.values_mut().rev() {
                 *value = replacement.next().unwrap();
             }
-            if self.zero_count != 0.0 {
+            if self.zero_count > 0.0 {
                 self.zero_count = replacement.next().unwrap();
             }
         }
@@ -446,5 +544,60 @@ fn trim_bucket(b: &Bucket, rhs: f64, upper: bool, linear: bool) -> (f64, f64) {
         (b.count * fraction, midpoint(b.lower, rhs, linear))
     } else {
         (b.count * (1.0 - fraction), midpoint(rhs, b.upper, linear))
+    }
+}
+
+impl PartialEq for Histogram {
+    fn eq(&self, other: &Self) -> bool {
+        self.schema == other.schema
+            && self.count.to_bits() == other.count.to_bits()
+            && self.sum.to_bits() == other.sum.to_bits()
+            && self.zero_threshold == other.zero_threshold
+            && self.zero_count.to_bits() == other.zero_count.to_bits()
+            && self.custom == other.custom
+            && self.positive.len() == other.positive.len()
+            && self.negative.len() == other.negative.len()
+            && self.positive.iter().all(|(k, v)| {
+                other
+                    .positive
+                    .get(k)
+                    .is_some_and(|b| b.to_bits() == v.to_bits())
+            })
+            && self.negative.iter().all(|(k, v)| {
+                other
+                    .negative
+                    .get(k)
+                    .is_some_and(|b| b.to_bits() == v.to_bits())
+            })
+    }
+}
+impl std::fmt::Display for Histogram {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{{count:{}, sum:{}",
+            float_string(self.count),
+            float_string(self.sum)
+        )?;
+        for b in self.buckets().into_iter().filter(|b| b.count != 0.0) {
+            write!(
+                f,
+                ", {}{},{}{}:{}",
+                if b.boundaries == 1 || b.boundaries == 3 {
+                    "["
+                } else {
+                    "("
+                },
+                float_string(b.lower),
+                float_string(b.upper),
+                if b.boundaries == 0 || b.boundaries == 3 {
+                    "]"
+                } else {
+                    ")"
+                },
+                float_string(b.count)
+            )?;
+        }
+        write!(f, "}}")
     }
 }

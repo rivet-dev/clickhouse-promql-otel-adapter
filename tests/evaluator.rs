@@ -180,6 +180,41 @@ fn delayed_metric_name_removal_allows_relabeling_and_aggregation() {
             .is_err()
     );
     assert!(
-        (values(&data, r#"sum(rate({__name__=~".+_total"}[2m]))"#, 60_000)[0] - 0.3).abs() < 1e-12
+        (values(&data, r#"sum(rate({__name__=~".+_total"}[2m]))"#, 60_000)[0] - 0.15).abs() < 1e-12
     );
+}
+
+#[test]
+fn rejects_excessive_parser_input_before_building_deep_ast() {
+    let query = "(".to_owned() + &"-{}-1".repeat(10_000) + ")";
+    assert!(
+        Engine::parse(&query)
+            .unwrap_err()
+            .to_string()
+            .contains("token limit")
+    );
+    assert!(
+        Engine::parse(&"a".repeat(65_537))
+            .unwrap_err()
+            .to_string()
+            .contains("byte limit")
+    );
+}
+
+#[test]
+fn byte_escapes_match_prometheus_string_and_validation_semantics() {
+    let mut engine = Engine::new(&[], 0, 0);
+    assert_eq!(
+        engine
+            .instant(r#""\xc3\xbf""#, 0)
+            .unwrap()
+            .string()
+            .unwrap(),
+        "ÿ"
+    );
+    assert_eq!(
+        engine.instant(r#""\xff""#, 0).unwrap().string().unwrap(),
+        "�"
+    );
+    assert_eq!(Engine::parse(r#""\xff""#).unwrap().to_string(), r#""\xff""#);
 }

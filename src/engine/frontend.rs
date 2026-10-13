@@ -3,6 +3,9 @@
 use anyhow::{Context, Result, bail};
 use promql_parser::parser::{self, Expr};
 pub(super) fn parse(query: &str, start: i64, end: i64, step: i64) -> Result<Expr> {
+    if query.len() > 65536 {
+        bail!("query exceeds 65536 byte limit");
+    }
     let bytes = query.as_bytes();
     let mut out = String::new();
     let mut i = 0;

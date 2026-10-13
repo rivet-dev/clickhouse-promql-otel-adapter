@@ -34,6 +34,9 @@ pub fn escape_string(s: &str) -> String {
 /// This function is modified from original go version
 /// https://github.com/prometheus/prometheus/blob/v3.8.0/util/strutil/quote.go
 pub fn unquote_string(s: &str) -> Result<String, String> {
+    unquote_bytes(s).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+pub fn unquote_bytes(s: &str) -> Result<Vec<u8>, String> {
     let n = s.len();
     if n < 2 {
         return Err("invalid syntax".to_string());
@@ -51,7 +54,7 @@ pub fn unquote_string(s: &str) -> Result<String, String> {
         if inner.contains('`') {
             return Err("invalid syntax".to_string());
         }
-        return Ok(inner.to_string());
+        return Ok(inner.as_bytes().to_vec());
     }
 
     if quote != b'"' && quote != b'\'' {
@@ -63,15 +66,26 @@ pub fn unquote_string(s: &str) -> Result<String, String> {
     }
 
     if !inner.contains('\\') && !inner.contains(quote as char) {
-        return Ok(inner.to_string());
+        return Ok(inner.as_bytes().to_vec());
     }
 
-    let mut res = String::with_capacity(3 * inner.len() / 2);
+    let mut res = Vec::with_capacity(3 * inner.len() / 2);
     let mut rest = inner;
 
     while !rest.is_empty() {
         let (c, tail) = unquote_char(rest, quote)?;
-        res.push(c);
+        if rest.starts_with("\\x")
+            || (rest.starts_with('\\')
+                && rest
+                    .as_bytes()
+                    .get(1)
+                    .is_some_and(|v| (b'0'..=b'7').contains(v)))
+        {
+            res.push(c as u8);
+        } else {
+            let mut buf = [0u8; 4];
+            res.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        }
         rest = tail;
     }
 

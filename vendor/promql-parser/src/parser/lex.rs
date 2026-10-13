@@ -323,7 +323,10 @@ impl Lexer {
                 None => State::Err("'!' can not be at the end".into()),
             },
             '<' => match self.peek() {
-                Some('/') => {self.pop();State::Lexeme(T_TRIM_UPPER)},
+                Some('/') => {
+                    self.pop();
+                    State::Lexeme(T_TRIM_UPPER)
+                }
                 Some('=') => {
                     self.pop();
                     State::Lexeme(T_LTE)
@@ -331,7 +334,10 @@ impl Lexer {
                 _ => State::Lexeme(T_LSS),
             },
             '>' => match self.peek() {
-                Some('/') => {self.pop();State::Lexeme(T_TRIM_LOWER)},
+                Some('/') => {
+                    self.pop();
+                    State::Lexeme(T_TRIM_LOWER)
+                }
                 Some('=') => {
                     self.pop();
                     State::Lexeme(T_GTE)

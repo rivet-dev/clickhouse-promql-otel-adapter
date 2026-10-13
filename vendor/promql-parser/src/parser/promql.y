@@ -679,7 +679,7 @@ number_literal -> Result<Expr, String>:
 ;
 
 string_literal -> Result<Expr, String>:
-                STRING { Ok(Expr::from(unquote_string(&span_to_string($lexer, $span))?)) }
+                STRING { Ok(Expr::StringLiteral(crate::parser::ast::StringLiteral::from_quoted(&span_to_string($lexer, $span))?)) }
 ;
 
 string_identifier -> Result<String, String>:

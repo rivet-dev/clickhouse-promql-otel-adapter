@@ -1,11 +1,23 @@
 use crate::model::{Point, Sample};
 use anyhow::Result;
 pub(super) fn interpolate(a: &Point, b: &Point, t: i64, counter: bool) -> Result<Point> {
+    if t == a.timestamp {
+        return Ok(a.clone());
+    }
+    if t == b.timestamp {
+        return Ok(b.clone());
+    }
     let fraction = (t - a.timestamp) as f64 / (b.timestamp - a.timestamp) as f64;
     if let (Some(ha), Some(hb)) = (&a.histogram, &b.histogram) {
         let mut left = ha.clone();
         if counter && hb.detects_reset(ha) {
-            left.scale(0.0)
+            let mut h = hb.clone();
+            h.scale(fraction);
+            return Ok(Point {
+                timestamp: t,
+                histogram: Some(h),
+                ..Default::default()
+            });
         }
         let mut difference = hb.clone();
         difference.combine(&left, -1.0)?;
@@ -70,18 +82,33 @@ pub(super) fn rate(
         let mut histogram = b.clone();
         histogram.combine(a, -1.0)?;
         if counter {
+            let mut next = first + 1;
             let mut previous = a;
-            for p in middle {
-                let Some(h) = &p.histogram else {
-                    return Ok(None);
-                };
-                if h.detects_reset(previous) {
-                    histogram.combine(previous, 1.0)?
-                }
-                previous = h;
+            if smoothed
+                && points[first].timestamp < start
+                && first + 1 < points.len()
+                && points[first + 1]
+                    .histogram
+                    .as_ref()
+                    .unwrap()
+                    .detects_reset(points[first].histogram.as_ref().unwrap())
+            {
+                previous = points[first + 1].histogram.as_ref().unwrap();
+                next += 1;
             }
-            if b.detects_reset(previous) {
-                histogram.combine(previous, 1.0)?
+            if next <= last {
+                for point in &points[next..last] {
+                    let Some(h) = &point.histogram else {
+                        return Ok(None);
+                    };
+                    if h.detects_reset(previous) {
+                        histogram.combine(previous, 1.0)?;
+                    }
+                    previous = h;
+                }
+                if b.detects_reset(previous) {
+                    histogram.combine(previous, 1.0)?;
+                }
             }
         }
         if rate {
@@ -149,6 +176,11 @@ pub(super) fn smooth(
     }
     let a = points[index - 1];
     let b = points[index];
+    if let (Some(ha), Some(hb)) = (&a.histogram, &b.histogram)
+        && (ha.schema == -53) != (hb.schema == -53)
+    {
+        anyhow::bail!("incompatible histogram schemas");
+    }
     let counter = a
         .histogram
         .as_ref()

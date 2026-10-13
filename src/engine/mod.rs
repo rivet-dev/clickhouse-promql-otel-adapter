@@ -1,5 +1,6 @@
 mod aggregate;
 mod binary;
+mod distributions;
 mod extended;
 mod frontend;
 mod functions;
@@ -28,6 +29,12 @@ pub struct Engine<'a> {
     pub infos: BTreeSet<String>,
     pub source: String,
     pub is_range: bool,
+    pub query_step: i64,
+    invariant_cache: BTreeMap<String, Value>,
+    overlaps: BTreeMap<String, usize>,
+    monotonic: BTreeMap<String, (i64, i64, f64, f64, f64, usize)>,
+    histogram_stats: bool,
+    histogram_stats_blocked: bool,
 }
 impl<'a> Engine<'a> {
     pub fn new(series: &'a [Series], start: i64, end: i64) -> Self {
@@ -45,6 +52,12 @@ impl<'a> Engine<'a> {
             infos: BTreeSet::new(),
             source: String::new(),
             is_range: false,
+            query_step: 0,
+            invariant_cache: BTreeMap::new(),
+            overlaps: BTreeMap::new(),
+            monotonic: BTreeMap::new(),
+            histogram_stats: false,
+            histogram_stats_blocked: false,
         }
     }
     pub fn evaluate(&mut self, expr: &Expr, t: i64) -> Result<Value> {
@@ -62,6 +75,7 @@ impl<'a> Engine<'a> {
     }
     pub fn range(&mut self, expr: &Expr, step: i64) -> Result<Value> {
         self.is_range = true;
+        self.query_step = step;
         if self.source.is_empty() {
             self.source = expr.to_string();
         }
@@ -91,7 +105,6 @@ impl<'a> Engine<'a> {
                             histogram: s.histogram,
                             start_timestamp: s.start_timestamp,
                             drop_name: s.drop_name,
-                            ..Default::default()
                         });
                     }
                 }
@@ -130,6 +143,47 @@ impl<'a> Engine<'a> {
         let index = compact
             .find(&needle)
             .and_then(|i| indexes.get(i).copied())
+            .or_else(|| {
+                let selector = match expr {
+                    Expr::MatrixSelector(m) => Some(&m.vs),
+                    Expr::VectorSelector(v) => Some(v),
+                    _ => None,
+                };
+                if let Some(v) = selector
+                    && let Some(name) = &v.name
+                {
+                    for (idx, _) in compact.match_indices(name) {
+                        let tail = &compact[idx + name.len()..];
+                        if !tail.starts_with('{') {
+                            if v.matchers.matchers.is_empty() {
+                                return indexes.get(idx).copied();
+                            }
+                            continue;
+                        }
+                        let end = tail.find('}')?;
+                        let candidate = &tail[..=end];
+                        if v.matchers.matchers.iter().all(|m| {
+                            candidate.contains(
+                                &m.to_string()
+                                    .chars()
+                                    .filter(|c| !c.is_whitespace())
+                                    .collect::<String>(),
+                            )
+                        }) {
+                            return indexes.get(idx).copied();
+                        }
+                    }
+                }
+                let prefix = match expr {
+                    Expr::MatrixSelector(m) => m.vs.name.clone(),
+                    Expr::VectorSelector(v) => v.name.clone(),
+                    Expr::Call(c) => Some(format!("{}(", c.func.name)),
+                    Expr::Aggregate(a) => Some(a.op.to_string()),
+                    _ => None,
+                }?;
+                let idx = compact.find(&prefix)?;
+                indexes.get(idx).copied()
+            })
             .unwrap_or(0);
         let before = &self.source[..index];
         let line = before.bytes().filter(|&b| b == b'\n').count() + 1;
@@ -149,8 +203,55 @@ impl<'a> Engine<'a> {
             &mut self.infos
         };
         let base = text.rsplit_once(" (").map(|x| x.0).unwrap_or(&text);
+        let position = |s: &str| -> (usize, usize) {
+            s.rsplit_once(" (")
+                .and_then(|(_, p)| p.trim_end_matches(')').split_once(':'))
+                .map(|(l, c)| (l.parse().unwrap_or(0), c.parse().unwrap_or(0)))
+                .unwrap_or_default()
+        };
+        if annotations.iter().any(|old| {
+            old.rsplit_once(" (").map(|x| x.0) == Some(base) && position(old) > position(&text)
+        }) {
+            return;
+        }
         annotations.retain(|old| old.rsplit_once(" (").map(|x| x.0) != Some(base));
         annotations.insert(text);
+    }
+    pub(super) fn monotonic_annotation(
+        &mut self,
+        metric: &str,
+        t: i64,
+        min: f64,
+        max: f64,
+        diff: f64,
+        expr: &Expr,
+    ) {
+        let base = format!(
+            "PromQL info: input to histogram_quantile needed to be fixed for monotonicity (see https://prometheus.io/docs/prometheus/latest/querying/functions/#histogram_quantile) for metric name {metric:?}"
+        );
+        let (start, end, min, max, diff, count) = {
+            let e = self
+                .monotonic
+                .entry(base.clone())
+                .or_insert((t, t, min, max, diff, 0));
+            if e.5 > 0 && e.1 == t {
+                return;
+            }
+            e.0 = e.0.min(t);
+            e.1 = e.1.max(t);
+            e.2 = e.2.min(min);
+            e.3 = e.3.max(max);
+            e.4 = e.4.max(diff);
+            e.5 = if e.5 == 0 { 1 } else { 2 * (e.5 + 1) }; // Upstream rangeEval merges the accumulated annotation twice per subsequent step.
+            *e
+        };
+        let date = |t: i64| {
+            chrono::DateTime::from_timestamp(t / 1000, 0)
+                .unwrap()
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        };
+        self.infos.retain(|v| !v.starts_with(&base));
+        self.infos.insert(format!("{base}, from buckets {} to {}, with a max diff of {}, over {count} samples from {} to {} ({})",crate::model::float_string(min),crate::model::float_string(max),crate::model::float_string(diff),date(start),date(end),self.position(expr)));
     }
     fn charge(&mut self, count: usize) -> Result<()> {
         self.samples = self.samples.saturating_add(count);
@@ -168,7 +269,48 @@ impl<'a> Engine<'a> {
             bail!("expression nesting exceeds limit")
         }
         self.depth += 1;
-        let mut result = self.eval_inner(expr, timestamp);
+        let old_stats = (self.histogram_stats, self.histogram_stats_blocked);
+        if matches!(expr, Expr::Subquery(_))
+            || matches!(expr, Expr::Binary(b) if matches!(b.op.to_string().as_str(),"</"|">/"))
+            || matches!(expr, Expr::Call(c) if matches!(c.func.name,"histogram_quantile"|"histogram_quantiles"|"histogram_fraction"|"histogram_stddev"|"histogram_stdvar"))
+        {
+            self.histogram_stats_blocked = true;
+            self.histogram_stats = false;
+        }
+        if !self.histogram_stats_blocked
+            && matches!(expr, Expr::Call(c) if matches!(c.func.name,"histogram_count"|"histogram_sum"|"histogram_avg"))
+        {
+            self.histogram_stats = true;
+        }
+        let cache_key = if self.is_range && invariant(expr) {
+            Some(format!(
+                "{}:{}:{expr}",
+                self.histogram_stats, self.histogram_stats_blocked
+            ))
+        } else {
+            None
+        };
+        let mut result = if let Some(value) = cache_key
+            .as_ref()
+            .and_then(|key| self.invariant_cache.get(key))
+        {
+            let mut value = value.clone();
+            if !matches!(expr, Expr::VectorSelector(_))
+                && let Value::Vector(v) = &mut value
+            {
+                for s in v {
+                    s.timestamp = timestamp;
+                }
+            }
+            Ok(value)
+        } else {
+            let result = self.eval_inner(expr, timestamp);
+            if let (Some(key), Ok(value)) = (cache_key, &result) {
+                self.invariant_cache.insert(key, value.clone());
+            }
+            result
+        };
+        (self.histogram_stats, self.histogram_stats_blocked) = old_stats;
         self.depth -= 1;
         if self.depth == 0 {
             match &mut result {
@@ -246,7 +388,7 @@ impl<'a> Engine<'a> {
                                     )
                                 } else {
                                     format!(
-                                        "encountered a mix of exponential and custom buckets in histograms for metric name {metric:?}"
+                                        "vector contains a mix of histograms with exponential and custom buckets schemas for metric name {metric:?}"
                                     )
                                 };
                                 self.annotation(true, message, expr);
@@ -265,7 +407,7 @@ impl<'a> Engine<'a> {
                                 labels: s.labels.clone(),
                                 timestamp: p.timestamp,
                                 value: p.value,
-                                histogram: p.histogram.clone(),
+                                histogram: resolved_histogram(s, index - 1, self.histogram_stats),
                                 start_timestamp: p.start_timestamp,
                                 ..Default::default()
                             })
@@ -294,10 +436,13 @@ impl<'a> Engine<'a> {
                     {
                         b += 1;
                     }
-                    let points = s.points[a..b]
-                        .iter()
-                        .filter(|p| !p.stale())
-                        .cloned()
+                    let points = (a..b)
+                        .filter(|&i| !s.points[i].stale())
+                        .map(|i| {
+                            let mut p = s.points[i].clone();
+                            p.histogram = resolved_histogram(s, i, self.histogram_stats);
+                            p
+                        })
                         .collect::<Vec<_>>();
                     if !points.is_empty() {
                         result.push(Series {
@@ -341,7 +486,6 @@ impl<'a> Engine<'a> {
                             }),
                             start_timestamp: 0,
                             drop_name: s.drop_name,
-                            ..Default::default()
                         });
                         self.charge(1)?;
                     }
@@ -412,5 +556,60 @@ pub fn matches(selector: &VectorSelector, labels: &Labels) -> bool {
         check(&selector.matchers.matchers)
     } else {
         selector.matchers.or_matchers.iter().any(|ms| check(ms))
+    }
+}
+
+fn resolved_histogram(
+    series: &Series,
+    index: usize,
+    stats: bool,
+) -> Option<crate::histogram::Histogram> {
+    let mut h = series.points[index].histogram.clone()?;
+    if !stats {
+        return Some(h);
+    }
+    if h.reset_hint == 0
+        && index > 0
+        && let Some(previous) = &series.points[index - 1].histogram
+        && !series.points[index - 1].stale()
+    {
+        h.reset_hint = if h.detects_reset(previous) { 1 } else { 2 };
+    }
+    h.positive.clear();
+    h.negative.clear();
+    h.custom.clear();
+    h.zero_count = 0.0;
+    h.zero_threshold = 0.0;
+    Some(h)
+}
+
+pub(super) fn invariant(expr: &Expr) -> bool {
+    match expr {
+        Expr::NumberLiteral(_) | Expr::StringLiteral(_) => true,
+        Expr::VectorSelector(v) => v.at.is_some(),
+        Expr::MatrixSelector(m) => m.vs.at.is_some(),
+        Expr::Subquery(s) => s.at.is_some(),
+        Expr::Paren(p) => invariant(&p.expr),
+        Expr::Unary(u) => invariant(&u.expr),
+        Expr::Aggregate(a) => invariant(&a.expr) && a.param.as_ref().is_none_or(|p| invariant(p)),
+        Expr::Binary(b) => invariant(&b.lhs) && invariant(&b.rhs),
+        Expr::Call(c) => {
+            !matches!(c.func.name, "time" | "info" | "predict_linear")
+                && (c.func.name != "timestamp"
+                    || matches!(&*c.args.args[0], Expr::VectorSelector(_)))
+                && !matches!(
+                    c.func.name,
+                    "day_of_month"
+                        | "day_of_week"
+                        | "day_of_year"
+                        | "days_in_month"
+                        | "hour"
+                        | "minute"
+                        | "month"
+                        | "year"
+                )
+                && c.args.args.iter().all(|a| invariant(a))
+        }
+        _ => false,
     }
 }

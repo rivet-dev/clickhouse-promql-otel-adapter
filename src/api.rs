@@ -272,7 +272,8 @@ async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Res
             .map_err(ApiError::exec)?
     };
     let query_source = query.to_owned();
-    let result = tokio::task::spawn_blocking(move || {
+
+    tokio::task::spawn_blocking(move || {
         let mut engine = Engine::new(&loaded.series, start, end);
         engine.source = query_source;
         engine.lookback = lookback;
@@ -309,8 +310,7 @@ async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Res
         Ok(response)
     })
     .await
-    .map_err(ApiError::exec)?;
-    result
+    .map_err(ApiError::exec)?
 }
 async fn discovery_api(app: &App, p: &Params, path: &str) -> Result<JsonValue> {
     let start = p.time("start", 0)?;

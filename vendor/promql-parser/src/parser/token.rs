@@ -345,13 +345,15 @@ mod tests {
         assert_eq!(token_display(T_PREPROCESSOR_END), "preprocessors_end");
 
         // if new token added in promql.y, this has to be updated
-        for i in 80..=85 {
-            assert_eq!(token_display(i), "not used");
+        assert_eq!(token_display(T_TRIM_UPPER), "</");
+        assert_eq!(token_display(T_TRIM_LOWER), ">/");
+        for i in u16::MAX - 5..=u16::MAX {
+            assert_eq!(token_display(i), "unknown token");
         }
 
         // All tokens are now tested individually above
 
-        for i in 86..=u16::MAX {
+        for i in T_STARTSYMBOLS_END + 1..=u16::MAX {
             assert_eq!(token_display(i), "unknown token");
         }
     }

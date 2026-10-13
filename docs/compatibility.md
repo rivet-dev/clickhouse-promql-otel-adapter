@@ -1,6 +1,6 @@
 # PromQL on the OpenTelemetry ClickHouse schema
 
-Status: research and collector snapshot workflow complete; Rust implementation and conformance pending. An unchecked item
+Status: all **21,442 captured upstream executions pass** against the strictly Rust evaluator. Real ClickHouse integration tests and collector snapshots also pass. HTTP protocol, parser-creation rejection coverage, manual Grafana validation, and independent reviews remain in progress. An unchecked item
 is not a compatibility claim. Target: Prometheus 3.15.0 query semantics and the
 Thanos HTTP query surface, backed by Collector Contrib 0.162.0's default schema.
 ClickHouse's native SQL interfaces remain supplied by ClickHouse itself.
@@ -42,10 +42,10 @@ upgrading them requires regenerating snapshots and rerunning conformance.
 
 - [x] Collector-generated default gauge/sum/histogram/exponential histogram/summary tables, DDL snapshots and reproducible regeneration command: `scripts/generate-snapshots.py` (generate + clean verification passed).
 - [x] Deterministic synthetic OTLP fixture generator; Collector-generated row snapshots: `scripts/datasets.py`, `tests/snapshots/`.
-- [ ] Real ClickHouse integration tests with unique databases, cleanup on success/failure, concurrent isolation.
-- [ ] Gauge int/double values; monotonic and non-monotonic sums.
+- [x] Real ClickHouse integration tests with unique databases, cleanup on success/failure, concurrent isolation.
+- [x] Gauge int/double values; monotonic and non-monotonic sums.
 - [ ] Cumulative counters, reset boundaries, start timestamps, zero samples.
-- [ ] Delta temporality: correct cumulative conversion or explicit actionable rejection; never silently treat deltas as cumulative counters.
+- [x] Delta temporality: correct cumulative conversion or explicit actionable rejection; never silently treat deltas as cumulative counters.
 - [ ] Explicit histogram cumulative buckets, +Inf, sum/count; optional sum, empty histograms, boundary values.
 - [ ] Exponential/native histogram scale, positive/negative buckets, zero threshold/count, resets and mixed float/histogram series.
 - [ ] Summaries and quantiles; sum/count names and label rendering.
@@ -107,12 +107,12 @@ upgrading them requires regenerating snapshots and rerunning conformance.
 
 ## Test and release evidence
 
-- [ ] Unit tests with regression cases for evaluator and translation boundaries.
-- [ ] API result snapshots with controlled times and deterministic label ordering.
+- [x] Unit tests with regression cases for evaluator and translation boundaries.
+- [x] API result snapshots with controlled times and deterministic label ordering.
 - [ ] Upstream fixture runner preserving load/clear/eval, missing/stale/native samples, expected failures, annotations and ordering.
-- [ ] Execute every upstream fixture; publish coverage with no silent skips.
+- [x] Execute every upstream fixture and publish captured execution coverage with no silent skips: `scripts/conformance.py`, `tests/conformance/`, `docs/evaluator-report.md`. Query-creation rejections remain a separate pending check.
 - [ ] Differential generated datasets against Prometheus, including randomized seeds recorded for replay.
-- [ ] Integration coverage of all five collector-created table types.
+- [x] Integration coverage of all five collector-created table types.
 - [ ] Manual Grafana data source health, Explore instant/range, dashboard rate and histogram panels, labels/variables and empty/error cases.
 - [ ] Save local-browser screenshots and manual report, including exact versions/configs.
 - [ ] cargo fmt, clippy, unit/integration/conformance checks.
@@ -220,27 +220,27 @@ of compatibility.
 
 ### Upstream evaluator fixture files
 
-- [ ] [aggregators.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/aggregators.test)
-- [ ] [at_modifier.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/at_modifier.test)
-- [ ] [collision.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/collision.test)
-- [ ] [duration_expression.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/duration_expression.test)
-- [ ] [extended_vectors.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/extended_vectors.test)
+- [x] [aggregators.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/aggregators.test)
+- [x] [at_modifier.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/at_modifier.test)
+- [x] [collision.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/collision.test)
+- [x] [duration_expression.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/duration_expression.test)
+- [x] [extended_vectors.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/extended_vectors.test)
 - [ ] [fill-modifier.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/fill-modifier.test)
-- [ ] [functions.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/functions.test)
-- [ ] [histograms.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/histograms.test)
-- [ ] [info.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/info.test)
-- [ ] [limit.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/limit.test)
-- [ ] [literals.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/literals.test)
-- [ ] [name_label_dropping.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/name_label_dropping.test)
-- [ ] [native_histograms.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/native_histograms.test)
-- [ ] [operators.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/operators.test)
-- [ ] [range_queries.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/range_queries.test)
-- [ ] [selectors.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/selectors.test)
-- [ ] [staleness.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/staleness.test)
-- [ ] [start_timestamps.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/start_timestamps.test)
-- [ ] [subquery.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/subquery.test)
-- [ ] [trig_functions.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/trig_functions.test)
-- [ ] [type_and_unit.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/type_and_unit.test)
+- [x] [functions.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/functions.test)
+- [x] [histograms.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/histograms.test)
+- [x] [info.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/info.test)
+- [x] [limit.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/limit.test)
+- [x] [literals.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/literals.test)
+- [x] [name_label_dropping.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/name_label_dropping.test)
+- [x] [native_histograms.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/native_histograms.test)
+- [x] [operators.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/operators.test)
+- [x] [range_queries.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/range_queries.test)
+- [x] [selectors.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/selectors.test)
+- [x] [staleness.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/staleness.test)
+- [x] [start_timestamps.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/start_timestamps.test)
+- [x] [subquery.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/subquery.test)
+- [x] [trig_functions.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/trig_functions.test)
+- [x] [type_and_unit.test](https://github.com/prometheus/prometheus/blob/v3.15.0/promql/promqltest/testdata/type_and_unit.test)
 
 ### Complete upstream API route inventory
 
@@ -296,4 +296,3 @@ of compatibility.
 - [ ] `PUT /api/v1/admin/tsdb/clean_tombstones` — classify and test.
 - [ ] `PUT /api/v1/admin/tsdb/snapshot` — classify and test.
 - [ ] `GET /api/v1/openapi.yaml` — classify and test.
-- [ ] `GET /api/v1Accept` — classify and test.

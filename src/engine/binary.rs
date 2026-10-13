@@ -42,6 +42,19 @@ fn key(labels: &Labels, modifier: &Option<LabelModifier>) -> Labels {
     }
 }
 impl Engine<'_> {
+    fn incompatible(&mut self, b: &BinaryExpr, left: bool, right: bool) {
+        let lhs = if left { "histogram" } else { "float" };
+        let rhs = if right { "histogram" } else { "float" };
+        let op = b.op.to_string();
+        self.annotation(
+            false,
+            format!(
+                "incompatible sample types encountered for binary operator {op:?}: {lhs} {op} {rhs}"
+            ),
+            &promql_parser::parser::Expr::Binary(b.clone()),
+        );
+    }
+
     pub(super) fn binary(&mut self, b: &BinaryExpr, t: i64) -> Result<Value> {
         let lhs = self.eval(&b.lhs, t)?;
         let rhs = self.eval(&b.rhs, t)?;
@@ -58,9 +71,17 @@ impl Engine<'_> {
                 }))
             }
             (Value::Vector(v), Value::Scalar(s)) => {
+                if v.iter().any(|s| s.histogram.is_some())
+                    && !matches!(op.as_str(), "*" | "/" | "</" | ">/")
+                {
+                    self.incompatible(b, true, false);
+                }
                 scalar_vector(v, s, false, &op, comparison, modifier.return_bool, t)
             }
             (Value::Scalar(s), Value::Vector(v)) => {
+                if v.iter().any(|s| s.histogram.is_some()) && op != "*" {
+                    self.incompatible(b, false, true);
+                }
                 scalar_vector(v, s, true, &op, comparison, modifier.return_bool, t)
             }
             (Value::Vector(mut left), Value::Vector(mut right)) => {
@@ -72,13 +93,18 @@ impl Engine<'_> {
                     .iter()
                     .map(|s| key(&s.labels, &modifier.matching))
                     .collect::<std::collections::BTreeSet<_>>();
-                if let Some(value) = modifier.fill_values.lhs {
+                if let Some(value) =
+                    if matches!(modifier.card, VectorMatchCardinality::OneToMany(_)) {
+                        modifier.fill_values.rhs
+                    } else {
+                        modifier.fill_values.lhs
+                    }
+                {
                     let mut added = std::collections::BTreeSet::new();
                     for s in &right {
                         let signature = key(&s.labels, &modifier.matching);
                         if !left_keys.contains(&signature) && added.insert(signature) {
-                            let mut labels = s.labels.clone();
-                            drop_name(&mut labels);
+                            let labels = key(&s.labels, &modifier.matching);
                             left.push(Sample {
                                 labels,
                                 value,
@@ -88,13 +114,18 @@ impl Engine<'_> {
                         }
                     }
                 }
-                if let Some(value) = modifier.fill_values.rhs {
+                if let Some(value) =
+                    if matches!(modifier.card, VectorMatchCardinality::OneToMany(_)) {
+                        modifier.fill_values.lhs
+                    } else {
+                        modifier.fill_values.rhs
+                    }
+                {
                     let mut added = std::collections::BTreeSet::new();
                     for s in &left {
                         let signature = key(&s.labels, &modifier.matching);
                         if !right_keys.contains(&signature) && added.insert(signature) {
-                            let mut labels = s.labels.clone();
-                            drop_name(&mut labels);
+                            let labels = key(&s.labels, &modifier.matching);
                             right.push(Sample {
                                 labels,
                                 value,
@@ -140,11 +171,22 @@ impl Engine<'_> {
                 } else {
                     (&left, &rhs)
                 };
-                // Uniqueness is validated even if the other side has no matching series.
-                if one.values().any(|v| v.len() > 1) {
+                if many.is_empty() || one.is_empty() {
+                    return Ok(Value::Vector(vec![]));
+                }
+                if let Some((group, values)) = one.iter().find(|(_, v)| v.len() > 1) {
+                    let mut duplicates = values
+                        .iter()
+                        .map(|s| crate::model::labels_string(&s.labels))
+                        .collect::<Vec<_>>();
+                    duplicates.sort();
                     bail!(
-                        "found duplicate series for the match group; many-to-many matching not allowed: matching labels must be unique on one side"
-                    )
+                        "found duplicate series for the match group {} on the {} hand-side of the operation: [{}, {}];many-to-many matching not allowed: matching labels must be unique on one side",
+                        crate::model::labels_string(group),
+                        if one_to_many { "left" } else { "right" },
+                        duplicates[0],
+                        duplicates[1]
+                    );
                 }
                 let mut matched = BTreeMap::<Labels, usize>::new();
                 let mut result = Vec::new();
@@ -167,6 +209,29 @@ impl Engine<'_> {
                         (m.value, o.value)
                     };
                     let (sa, sb) = if one_to_many { (o, m) } else { (m, o) };
+                    if let (Some(a), Some(c)) = (&sa.histogram, &sb.histogram)
+                        && matches!(op.as_str(), "+" | "-")
+                    {
+                        let operation = if op == "+" { "addition" } else { "subtraction" };
+                        if (a.reset_hint == 1 && c.reset_hint == 2)
+                            || (a.reset_hint == 2 && c.reset_hint == 1)
+                        {
+                            self.annotation(
+                                true,
+                                format!("conflicting counter resets during histogram {operation}"),
+                                &promql_parser::parser::Expr::Binary(b.clone()),
+                            );
+                        }
+                        if a.schema == -53 && c.schema == -53 && a.custom != c.custom {
+                            self.annotation(
+                                false,
+                                format!(
+                                    "mismatched custom buckets were reconciled during {operation}"
+                                ),
+                                &promql_parser::parser::Expr::Binary(b.clone()),
+                            );
+                        }
+                    }
                     let mut histogram = None;
                     let (value, keep) = if sa.histogram.is_some() || sb.histogram.is_some() {
                         if sa.histogram.is_some()
@@ -185,6 +250,11 @@ impl Engine<'_> {
                                 }
                             };
                             if histogram.is_none() {
+                                self.incompatible(
+                                    b,
+                                    sa.histogram.is_some(),
+                                    sb.histogram.is_some(),
+                                );
                                 continue;
                             }
                             (0.0, true)

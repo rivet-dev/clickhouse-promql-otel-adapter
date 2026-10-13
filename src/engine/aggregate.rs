@@ -66,14 +66,51 @@ impl Engine<'_> {
             None => None,
         };
         let op = a.op.to_string();
+        if matches!(op.as_str(), "topk" | "bottomk" | "limitk" | "limit_ratio")
+            && parameter.as_ref().unwrap().scalar()?.is_nan()
+        {
+            bail!(
+                "{} value is NaN",
+                if op == "limit_ratio" {
+                    "Ratio"
+                } else {
+                    "Parameter"
+                }
+            );
+        }
+        if op == "quantile" {
+            let q = parameter.as_ref().unwrap().scalar()?;
+            if q.is_nan() || !(0.0..=1.0).contains(&q) {
+                self.annotation(
+                    true,
+                    format!(
+                        "quantile value should be between 0 and 1, got {}",
+                        float_string(q)
+                    ),
+                    a.param.as_ref().unwrap(),
+                );
+            }
+        }
         let mut groups: BTreeMap<Labels, Vec<Sample>> = BTreeMap::new();
         for mut s in vector {
             if op == "count_values" {
                 let name = parameter.as_ref().unwrap().string()?;
                 if !valid_label(name) {
-                    bail!("invalid label name {name}")
+                    let quoted = if let Some(promql_parser::parser::Expr::StringLiteral(s)) =
+                        a.param.as_deref()
+                    {
+                        s.quoted()
+                    } else {
+                        format!("{name:?}")
+                    };
+                    bail!("invalid label name {quoted}")
                 }
-                s.labels.insert(name.into(), float_string(s.value));
+                s.labels.insert(
+                    name.into(),
+                    s.histogram
+                        .as_ref()
+                        .map_or_else(|| float_string(s.value), ToString::to_string),
+                );
             }
             let mut key = grouping(&s.labels, &a.modifier);
             if op == "count_values" {
@@ -143,16 +180,31 @@ impl Engine<'_> {
                         &a.expr,
                     );
                 }
-                let mut histogram = histograms[0].clone();
-                for h in &histograms[1..] {
-                    if histogram.combine(h, 1.0).is_err() {
-                        self.annotation(true,"vector contains a mix of histograms with exponential and custom buckets schemas for metric name \"\"",&a.expr);
+                if histograms
+                    .iter()
+                    .any(|h| h.schema == -53 && h.custom != histograms[0].custom)
+                {
+                    self.annotation(
+                        false,
+                        "mismatched custom buckets were reconciled during aggregation",
+                        &a.expr,
+                    );
+                }
+                let histogram = match crate::histogram::Histogram::aggregate(
+                    &histograms,
+                    op == "avg",
+                ) {
+                    Ok(h) => h,
+                    Err(_) => {
+                        let metric = samples[0]
+                            .labels
+                            .get("__name__")
+                            .cloned()
+                            .unwrap_or_default();
+                        self.annotation(true,format!("vector contains a mix of histograms with exponential and custom buckets schemas for metric name {metric:?}"),&a.expr);
                         continue 'groups;
                     }
-                }
-                if op == "avg" {
-                    histogram.scale(1.0 / histograms.len() as f64)
-                }
+                };
                 result.push(Sample {
                     drop_name,
                     labels,
@@ -167,7 +219,11 @@ impl Engine<'_> {
                     self.annotation(
                         false,
                         format!("ignored histogram in {op} aggregation"),
-                        &promql_parser::parser::Expr::Aggregate(a.clone()),
+                        &if matches!(op.as_str(), "topk" | "bottomk") {
+                            promql_parser::parser::Expr::Aggregate(a.clone())
+                        } else {
+                            (*a.expr).clone()
+                        },
                     );
                 }
                 samples.retain(|s| s.histogram.is_none());
@@ -198,10 +254,7 @@ impl Engine<'_> {
             let mut values = samples.iter().map(|s| s.value).collect::<Vec<_>>();
             let value = match op.as_str() {
                 "sum" => compensated_sum(&values),
-                "avg" => {
-                    let n = values.len() as f64;
-                    compensated_sum(&values.iter().map(|v| v / n).collect::<Vec<_>>())
-                }
+                "avg" => crate::numeric::mean(&values),
                 "count" | "count_values" => values.len() as f64,
                 "group" => 1.0,
                 "min" => values.iter().copied().reduce(f64::min).unwrap(),
@@ -230,19 +283,4 @@ pub(super) fn valid_label(s: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-pub(super) fn compensated_sum(values: &[f64]) -> f64 {
-    let mut sum = 0.0f64;
-    let mut correction = 0.0;
-    for &value in values {
-        let next = sum + value;
-        if next.is_infinite() {
-            correction = 0.0
-        } else if sum.abs() >= value.abs() {
-            correction += (sum - next) + value
-        } else {
-            correction += (value - next) + sum
-        }
-        sum = next;
-    }
-    sum + correction
-}
+pub(super) use crate::numeric::sum as compensated_sum;
