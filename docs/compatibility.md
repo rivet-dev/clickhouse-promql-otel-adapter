@@ -1,6 +1,6 @@
 # PromQL on the OpenTelemetry ClickHouse schema
 
-Status: research complete; implementation and validation pending. An unchecked item
+Status: research and collector snapshot workflow complete; Rust implementation and conformance pending. An unchecked item
 is not a compatibility claim. Target: Prometheus 3.15.0 query semantics and the
 Thanos HTTP query surface, backed by Collector Contrib 0.162.0's default schema.
 ClickHouse's native SQL interfaces remain supplied by ClickHouse itself.
@@ -40,8 +40,8 @@ upgrading them requires regenerating snapshots and rerunning conformance.
 
 ## Storage and ingestion
 
-- [ ] Collector-generated default gauge/sum/histogram/exponential histogram/summary tables, DDL snapshots and reproducible regeneration command.
-- [ ] Deterministic synthetic OTLP fixture generator; Collector-generated row snapshots.
+- [x] Collector-generated default gauge/sum/histogram/exponential histogram/summary tables, DDL snapshots and reproducible regeneration command: `scripts/generate-snapshots.py` (generate + clean verification passed).
+- [x] Deterministic synthetic OTLP fixture generator; Collector-generated row snapshots: `scripts/datasets.py`, `tests/snapshots/`.
 - [ ] Real ClickHouse integration tests with unique databases, cleanup on success/failure, concurrent isolation.
 - [ ] Gauge int/double values; monotonic and non-monotonic sums.
 - [ ] Cumulative counters, reset boundaries, start timestamps, zero samples.

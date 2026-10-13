@@ -1,0 +1,2013 @@
+{
+  "otel_metrics_exponential_histogram": [
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Count": 12,
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:35"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "Max": 2,
+      "MetricDescription": "Fixture size",
+      "MetricName": "size",
+      "MetricUnit": "",
+      "Min": -1,
+      "NegativeBucketCounts": [
+        2
+      ],
+      "NegativeOffset": -1,
+      "PositiveBucketCounts": [
+        4,
+        4
+      ],
+      "PositiveOffset": 0,
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "Scale": 1,
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 8,
+      "TimeUnix": "2023-11-14 22:13:35",
+      "ZeroCount": 2
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Count": 18,
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:50"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "Max": 2,
+      "MetricDescription": "Fixture size",
+      "MetricName": "size",
+      "MetricUnit": "",
+      "Min": -1,
+      "NegativeBucketCounts": [
+        3
+      ],
+      "NegativeOffset": -1,
+      "PositiveBucketCounts": [
+        6,
+        6
+      ],
+      "PositiveOffset": 0,
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "Scale": 1,
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 12,
+      "TimeUnix": "2023-11-14 22:13:50",
+      "ZeroCount": 3
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Count": 24,
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:05"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "Max": 2,
+      "MetricDescription": "Fixture size",
+      "MetricName": "size",
+      "MetricUnit": "",
+      "Min": -1,
+      "NegativeBucketCounts": [
+        4
+      ],
+      "NegativeOffset": -1,
+      "PositiveBucketCounts": [
+        8,
+        8
+      ],
+      "PositiveOffset": 0,
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "Scale": 1,
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 16,
+      "TimeUnix": "2023-11-14 22:14:05",
+      "ZeroCount": 4
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Count": 30,
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:20"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "Max": 2,
+      "MetricDescription": "Fixture size",
+      "MetricName": "size",
+      "MetricUnit": "",
+      "Min": -1,
+      "NegativeBucketCounts": [
+        5
+      ],
+      "NegativeOffset": -1,
+      "PositiveBucketCounts": [
+        10,
+        10
+      ],
+      "PositiveOffset": 0,
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "Scale": 1,
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 20,
+      "TimeUnix": "2023-11-14 22:14:20",
+      "ZeroCount": 5
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Count": 36,
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:35"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "Max": 2,
+      "MetricDescription": "Fixture size",
+      "MetricName": "size",
+      "MetricUnit": "",
+      "Min": -1,
+      "NegativeBucketCounts": [
+        6
+      ],
+      "NegativeOffset": -1,
+      "PositiveBucketCounts": [
+        12,
+        12
+      ],
+      "PositiveOffset": 0,
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "Scale": 1,
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 24,
+      "TimeUnix": "2023-11-14 22:14:35",
+      "ZeroCount": 6
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Count": 6,
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:20"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "Max": 2,
+      "MetricDescription": "Fixture size",
+      "MetricName": "size",
+      "MetricUnit": "",
+      "Min": -1,
+      "NegativeBucketCounts": [
+        1
+      ],
+      "NegativeOffset": -1,
+      "PositiveBucketCounts": [
+        2,
+        2
+      ],
+      "PositiveOffset": 0,
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "Scale": 1,
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 4,
+      "TimeUnix": "2023-11-14 22:13:20",
+      "ZeroCount": 1
+    }
+  ],
+  "otel_metrics_gauge": [
+    {
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:20"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "MetricDescription": "Fixture temperature",
+      "MetricName": "temperature",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:13:20",
+      "Value": 20.5
+    },
+    {
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:35"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "MetricDescription": "Fixture temperature",
+      "MetricName": "temperature",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:13:35",
+      "Value": 21.5
+    },
+    {
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:50"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "MetricDescription": "Fixture temperature",
+      "MetricName": "temperature",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:13:50",
+      "Value": 22.5
+    },
+    {
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:05"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "MetricDescription": "Fixture temperature",
+      "MetricName": "temperature",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:14:05",
+      "Value": 23.5
+    },
+    {
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:20"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "MetricDescription": "Fixture temperature",
+      "MetricName": "temperature",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:14:20",
+      "Value": 24.5
+    },
+    {
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:35"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "MetricDescription": "Fixture temperature",
+      "MetricName": "temperature",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:14:35",
+      "Value": 25.5
+    },
+    {
+      "Attributes": {},
+      "Exemplars.FilteredAttributes": [],
+      "Exemplars.SpanId": [],
+      "Exemplars.TimeUnix": [],
+      "Exemplars.TraceId": [],
+      "Exemplars.Value": [],
+      "Flags": 0,
+      "MetricDescription": "",
+      "MetricName": "subsecond",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "1970-01-01 00:00:00",
+      "TimeUnix": "2023-11-14 22:13:20",
+      "Value": 1
+    },
+    {
+      "Attributes": {},
+      "Exemplars.FilteredAttributes": [],
+      "Exemplars.SpanId": [],
+      "Exemplars.TimeUnix": [],
+      "Exemplars.TraceId": [],
+      "Exemplars.Value": [],
+      "Flags": 0,
+      "MetricDescription": "",
+      "MetricName": "subsecond",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "1970-01-01 00:00:00",
+      "TimeUnix": "2023-11-14 22:13:20",
+      "Value": 2
+    },
+    {
+      "Attributes": {},
+      "Exemplars.FilteredAttributes": [],
+      "Exemplars.SpanId": [],
+      "Exemplars.TimeUnix": [],
+      "Exemplars.TraceId": [],
+      "Exemplars.Value": [],
+      "Flags": 1,
+      "MetricDescription": "",
+      "MetricName": "missing",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "1970-01-01 00:00:00",
+      "TimeUnix": "2023-11-14 22:13:20",
+      "Value": 0
+    }
+  ],
+  "otel_metrics_histogram": [
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "BucketCounts": [
+        1,
+        2,
+        3
+      ],
+      "Count": 6,
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:20"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "ExplicitBounds": [
+        0.1,
+        1
+      ],
+      "Flags": 0,
+      "Max": 2,
+      "MetricDescription": "Fixture latency",
+      "MetricName": "latency",
+      "MetricUnit": "",
+      "Min": 0.05,
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 4.5,
+      "TimeUnix": "2023-11-14 22:13:20"
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "BucketCounts": [
+        2,
+        4,
+        6
+      ],
+      "Count": 12,
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:35"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "ExplicitBounds": [
+        0.1,
+        1
+      ],
+      "Flags": 0,
+      "Max": 2,
+      "MetricDescription": "Fixture latency",
+      "MetricName": "latency",
+      "MetricUnit": "",
+      "Min": 0.05,
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 9,
+      "TimeUnix": "2023-11-14 22:13:35"
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "BucketCounts": [
+        3,
+        6,
+        9
+      ],
+      "Count": 18,
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:50"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "ExplicitBounds": [
+        0.1,
+        1
+      ],
+      "Flags": 0,
+      "Max": 2,
+      "MetricDescription": "Fixture latency",
+      "MetricName": "latency",
+      "MetricUnit": "",
+      "Min": 0.05,
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 13.5,
+      "TimeUnix": "2023-11-14 22:13:50"
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "BucketCounts": [
+        4,
+        8,
+        12
+      ],
+      "Count": 24,
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:05"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "ExplicitBounds": [
+        0.1,
+        1
+      ],
+      "Flags": 0,
+      "Max": 2,
+      "MetricDescription": "Fixture latency",
+      "MetricName": "latency",
+      "MetricUnit": "",
+      "Min": 0.05,
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 18,
+      "TimeUnix": "2023-11-14 22:14:05"
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "BucketCounts": [
+        5,
+        10,
+        15
+      ],
+      "Count": 30,
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:20"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "ExplicitBounds": [
+        0.1,
+        1
+      ],
+      "Flags": 0,
+      "Max": 2,
+      "MetricDescription": "Fixture latency",
+      "MetricName": "latency",
+      "MetricUnit": "",
+      "Min": 0.05,
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 22.5,
+      "TimeUnix": "2023-11-14 22:14:20"
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "BucketCounts": [
+        6,
+        12,
+        18
+      ],
+      "Count": 36,
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:35"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "ExplicitBounds": [
+        0.1,
+        1
+      ],
+      "Flags": 0,
+      "Max": 2,
+      "MetricDescription": "Fixture latency",
+      "MetricName": "latency",
+      "MetricUnit": "",
+      "Min": 0.05,
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 27,
+      "TimeUnix": "2023-11-14 22:14:35"
+    }
+  ],
+  "otel_metrics_sum": [
+    {
+      "AggregationTemporality": 1,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:20"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "Fixture delta_requests",
+      "MetricName": "delta_requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:13:20",
+      "Value": 0
+    },
+    {
+      "AggregationTemporality": 1,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:35"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "Fixture delta_requests",
+      "MetricName": "delta_requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:13:35",
+      "Value": 10
+    },
+    {
+      "AggregationTemporality": 1,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:50"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "Fixture delta_requests",
+      "MetricName": "delta_requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:13:50",
+      "Value": 20
+    },
+    {
+      "AggregationTemporality": 1,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:05"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "Fixture delta_requests",
+      "MetricName": "delta_requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:14:05",
+      "Value": 30
+    },
+    {
+      "AggregationTemporality": 1,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:20"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "Fixture delta_requests",
+      "MetricName": "delta_requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:14:20",
+      "Value": 40
+    },
+    {
+      "AggregationTemporality": 1,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:35"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "Fixture delta_requests",
+      "MetricName": "delta_requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:14:35",
+      "Value": 50
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:20"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": false,
+      "MetricDescription": "Fixture inflight",
+      "MetricName": "inflight",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:13:20",
+      "Value": 0
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:20"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "Fixture requests",
+      "MetricName": "requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:13:20",
+      "Value": 0
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:35"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": false,
+      "MetricDescription": "Fixture inflight",
+      "MetricName": "inflight",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:13:35",
+      "Value": 10
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:35"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "Fixture requests",
+      "MetricName": "requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:13:35",
+      "Value": 10
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:50"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": false,
+      "MetricDescription": "Fixture inflight",
+      "MetricName": "inflight",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:13:50",
+      "Value": 20
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:13:50"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "Fixture requests",
+      "MetricName": "requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:13:50",
+      "Value": 20
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:05"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": false,
+      "MetricDescription": "Fixture inflight",
+      "MetricName": "inflight",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:14:05",
+      "Value": 30
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:05"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "Fixture requests",
+      "MetricName": "requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:14:05",
+      "Value": 30
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:20"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": false,
+      "MetricDescription": "Fixture inflight",
+      "MetricName": "inflight",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:14:20",
+      "Value": 40
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:20"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "Fixture requests",
+      "MetricName": "requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:14:20",
+      "Value": 40
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:35"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": false,
+      "MetricDescription": "Fixture inflight",
+      "MetricName": "inflight",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:14:35",
+      "Value": 50
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Exemplars.FilteredAttributes": [
+        {
+          "sample": "yes"
+        }
+      ],
+      "Exemplars.SpanId": [
+        "0123456789abcdef"
+      ],
+      "Exemplars.TimeUnix": [
+        "2023-11-14 22:14:35"
+      ],
+      "Exemplars.TraceId": [
+        "0123456789abcdef0123456789abcdef"
+      ],
+      "Exemplars.Value": [
+        0.5
+      ],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "Fixture requests",
+      "MetricName": "requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:14:35",
+      "Value": 50
+    }
+  ],
+  "otel_metrics_summary": [
+    {
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Count": 10,
+      "Flags": 0,
+      "MetricDescription": "Fixture rpc_duration",
+      "MetricName": "rpc_duration",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 3,
+      "TimeUnix": "2023-11-14 22:13:20",
+      "ValueAtQuantiles.Quantile": [
+        0.5,
+        0.99
+      ],
+      "ValueAtQuantiles.Value": [
+        0.2,
+        0.9
+      ]
+    },
+    {
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Count": 20,
+      "Flags": 0,
+      "MetricDescription": "Fixture rpc_duration",
+      "MetricName": "rpc_duration",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 6,
+      "TimeUnix": "2023-11-14 22:13:35",
+      "ValueAtQuantiles.Quantile": [
+        0.5,
+        0.99
+      ],
+      "ValueAtQuantiles.Value": [
+        0.2,
+        0.9
+      ]
+    },
+    {
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Count": 30,
+      "Flags": 0,
+      "MetricDescription": "Fixture rpc_duration",
+      "MetricName": "rpc_duration",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 9,
+      "TimeUnix": "2023-11-14 22:13:50",
+      "ValueAtQuantiles.Quantile": [
+        0.5,
+        0.99
+      ],
+      "ValueAtQuantiles.Value": [
+        0.2,
+        0.9
+      ]
+    },
+    {
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Count": 40,
+      "Flags": 0,
+      "MetricDescription": "Fixture rpc_duration",
+      "MetricName": "rpc_duration",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 12,
+      "TimeUnix": "2023-11-14 22:14:05",
+      "ValueAtQuantiles.Quantile": [
+        0.5,
+        0.99
+      ],
+      "ValueAtQuantiles.Value": [
+        0.2,
+        0.9
+      ]
+    },
+    {
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Count": 50,
+      "Flags": 0,
+      "MetricDescription": "Fixture rpc_duration",
+      "MetricName": "rpc_duration",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 15,
+      "TimeUnix": "2023-11-14 22:14:20",
+      "ValueAtQuantiles.Quantile": [
+        0.5,
+        0.99
+      ],
+      "ValueAtQuantiles.Value": [
+        0.2,
+        0.9
+      ]
+    },
+    {
+      "Attributes": {
+        "region": "west",
+        "route": "/api"
+      },
+      "Count": 60,
+      "Flags": 0,
+      "MetricDescription": "Fixture rpc_duration",
+      "MetricName": "rpc_duration",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "Sum": 18,
+      "TimeUnix": "2023-11-14 22:14:35",
+      "ValueAtQuantiles.Quantile": [
+        0.5,
+        0.99
+      ],
+      "ValueAtQuantiles.Value": [
+        0.2,
+        0.9
+      ]
+    }
+  ]
+}

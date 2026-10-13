@@ -1,0 +1,1804 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "fixture"
+            }
+          },
+          {
+            "key": "service.namespace",
+            "value": {
+              "stringValue": "tests"
+            }
+          },
+          {
+            "key": "service.instance.id",
+            "value": {
+              "stringValue": "one"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "metrics": [
+            {
+              "description": "Fixture temperature",
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asDouble": 20.5,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000000000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000000000000000"
+                  },
+                  {
+                    "asDouble": 21.5,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000015000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000015000000000"
+                  },
+                  {
+                    "asDouble": 22.5,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000030000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000030000000000"
+                  },
+                  {
+                    "asDouble": 23.5,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000045000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000045000000000"
+                  },
+                  {
+                    "asDouble": 24.5,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000060000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000060000000000"
+                  },
+                  {
+                    "asDouble": 25.5,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000075000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000075000000000"
+                  }
+                ]
+              },
+              "name": "temperature",
+              "unit": ""
+            },
+            {
+              "description": "Fixture requests",
+              "name": "requests",
+              "sum": {
+                "aggregationTemporality": 2,
+                "dataPoints": [
+                  {
+                    "asDouble": 0.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000000000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000000000000000"
+                  },
+                  {
+                    "asDouble": 10.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000015000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000015000000000"
+                  },
+                  {
+                    "asDouble": 20.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000030000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000030000000000"
+                  },
+                  {
+                    "asDouble": 30.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000045000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000045000000000"
+                  },
+                  {
+                    "asDouble": 40.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000060000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000060000000000"
+                  },
+                  {
+                    "asDouble": 50.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000075000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000075000000000"
+                  }
+                ],
+                "isMonotonic": true
+              },
+              "unit": ""
+            },
+            {
+              "description": "Fixture inflight",
+              "name": "inflight",
+              "sum": {
+                "aggregationTemporality": 2,
+                "dataPoints": [
+                  {
+                    "asDouble": 0.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000000000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000000000000000"
+                  },
+                  {
+                    "asDouble": 10.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000015000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000015000000000"
+                  },
+                  {
+                    "asDouble": 20.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000030000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000030000000000"
+                  },
+                  {
+                    "asDouble": 30.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000045000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000045000000000"
+                  },
+                  {
+                    "asDouble": 40.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000060000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000060000000000"
+                  },
+                  {
+                    "asDouble": 50.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000075000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000075000000000"
+                  }
+                ],
+                "isMonotonic": false
+              },
+              "unit": ""
+            },
+            {
+              "description": "Fixture delta_requests",
+              "name": "delta_requests",
+              "sum": {
+                "aggregationTemporality": 1,
+                "dataPoints": [
+                  {
+                    "asDouble": 0.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000000000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000000000000000"
+                  },
+                  {
+                    "asDouble": 10.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000015000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000015000000000"
+                  },
+                  {
+                    "asDouble": 20.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000030000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000030000000000"
+                  },
+                  {
+                    "asDouble": 30.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000045000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000045000000000"
+                  },
+                  {
+                    "asDouble": 40.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000060000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000060000000000"
+                  },
+                  {
+                    "asDouble": 50.0,
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000075000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000075000000000"
+                  }
+                ],
+                "isMonotonic": true
+              },
+              "unit": ""
+            },
+            {
+              "description": "Fixture latency",
+              "histogram": {
+                "aggregationTemporality": 2,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "bucketCounts": [
+                      "1",
+                      "2",
+                      "3"
+                    ],
+                    "count": "6",
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000000000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "explicitBounds": [
+                      0.1,
+                      1.0
+                    ],
+                    "flags": 0,
+                    "max": 2.0,
+                    "min": 0.05,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 4.5,
+                    "timeUnixNano": "1700000000000000000"
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "bucketCounts": [
+                      "2",
+                      "4",
+                      "6"
+                    ],
+                    "count": "12",
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000015000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "explicitBounds": [
+                      0.1,
+                      1.0
+                    ],
+                    "flags": 0,
+                    "max": 2.0,
+                    "min": 0.05,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 9.0,
+                    "timeUnixNano": "1700000015000000000"
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "bucketCounts": [
+                      "3",
+                      "6",
+                      "9"
+                    ],
+                    "count": "18",
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000030000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "explicitBounds": [
+                      0.1,
+                      1.0
+                    ],
+                    "flags": 0,
+                    "max": 2.0,
+                    "min": 0.05,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 13.5,
+                    "timeUnixNano": "1700000030000000000"
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "bucketCounts": [
+                      "4",
+                      "8",
+                      "12"
+                    ],
+                    "count": "24",
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000045000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "explicitBounds": [
+                      0.1,
+                      1.0
+                    ],
+                    "flags": 0,
+                    "max": 2.0,
+                    "min": 0.05,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 18.0,
+                    "timeUnixNano": "1700000045000000000"
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "bucketCounts": [
+                      "5",
+                      "10",
+                      "15"
+                    ],
+                    "count": "30",
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000060000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "explicitBounds": [
+                      0.1,
+                      1.0
+                    ],
+                    "flags": 0,
+                    "max": 2.0,
+                    "min": 0.05,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 22.5,
+                    "timeUnixNano": "1700000060000000000"
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "bucketCounts": [
+                      "6",
+                      "12",
+                      "18"
+                    ],
+                    "count": "36",
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000075000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "explicitBounds": [
+                      0.1,
+                      1.0
+                    ],
+                    "flags": 0,
+                    "max": 2.0,
+                    "min": 0.05,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 27.0,
+                    "timeUnixNano": "1700000075000000000"
+                  }
+                ]
+              },
+              "name": "latency",
+              "unit": ""
+            },
+            {
+              "description": "Fixture size",
+              "exponentialHistogram": {
+                "aggregationTemporality": 2,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "count": "6",
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000000000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "max": 2.0,
+                    "min": -1.0,
+                    "negative": {
+                      "bucketCounts": [
+                        "1"
+                      ],
+                      "offset": -1
+                    },
+                    "positive": {
+                      "bucketCounts": [
+                        "2",
+                        "2"
+                      ],
+                      "offset": 0
+                    },
+                    "scale": 1,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 4.0,
+                    "timeUnixNano": "1700000000000000000",
+                    "zeroCount": "1",
+                    "zeroThreshold": 0.01
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "count": "12",
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000015000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "max": 2.0,
+                    "min": -1.0,
+                    "negative": {
+                      "bucketCounts": [
+                        "2"
+                      ],
+                      "offset": -1
+                    },
+                    "positive": {
+                      "bucketCounts": [
+                        "4",
+                        "4"
+                      ],
+                      "offset": 0
+                    },
+                    "scale": 1,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 8.0,
+                    "timeUnixNano": "1700000015000000000",
+                    "zeroCount": "2",
+                    "zeroThreshold": 0.01
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "count": "18",
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000030000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "max": 2.0,
+                    "min": -1.0,
+                    "negative": {
+                      "bucketCounts": [
+                        "3"
+                      ],
+                      "offset": -1
+                    },
+                    "positive": {
+                      "bucketCounts": [
+                        "6",
+                        "6"
+                      ],
+                      "offset": 0
+                    },
+                    "scale": 1,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 12.0,
+                    "timeUnixNano": "1700000030000000000",
+                    "zeroCount": "3",
+                    "zeroThreshold": 0.01
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "count": "24",
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000045000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "max": 2.0,
+                    "min": -1.0,
+                    "negative": {
+                      "bucketCounts": [
+                        "4"
+                      ],
+                      "offset": -1
+                    },
+                    "positive": {
+                      "bucketCounts": [
+                        "8",
+                        "8"
+                      ],
+                      "offset": 0
+                    },
+                    "scale": 1,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 16.0,
+                    "timeUnixNano": "1700000045000000000",
+                    "zeroCount": "4",
+                    "zeroThreshold": 0.01
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "count": "30",
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000060000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "max": 2.0,
+                    "min": -1.0,
+                    "negative": {
+                      "bucketCounts": [
+                        "5"
+                      ],
+                      "offset": -1
+                    },
+                    "positive": {
+                      "bucketCounts": [
+                        "10",
+                        "10"
+                      ],
+                      "offset": 0
+                    },
+                    "scale": 1,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 20.0,
+                    "timeUnixNano": "1700000060000000000",
+                    "zeroCount": "5",
+                    "zeroThreshold": 0.01
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "count": "36",
+                    "exemplars": [
+                      {
+                        "asDouble": 0.5,
+                        "filteredAttributes": [
+                          {
+                            "key": "sample",
+                            "value": {
+                              "stringValue": "yes"
+                            }
+                          }
+                        ],
+                        "spanId": "0123456789abcdef",
+                        "timeUnixNano": "1700000075000000000",
+                        "traceId": "0123456789abcdef0123456789abcdef"
+                      }
+                    ],
+                    "flags": 0,
+                    "max": 2.0,
+                    "min": -1.0,
+                    "negative": {
+                      "bucketCounts": [
+                        "6"
+                      ],
+                      "offset": -1
+                    },
+                    "positive": {
+                      "bucketCounts": [
+                        "12",
+                        "12"
+                      ],
+                      "offset": 0
+                    },
+                    "scale": 1,
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 24.0,
+                    "timeUnixNano": "1700000075000000000",
+                    "zeroCount": "6",
+                    "zeroThreshold": 0.01
+                  }
+                ]
+              },
+              "name": "size",
+              "unit": ""
+            },
+            {
+              "description": "Fixture rpc_duration",
+              "name": "rpc_duration",
+              "summary": {
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "count": "10",
+                    "flags": 0,
+                    "quantileValues": [
+                      {
+                        "quantile": 0.5,
+                        "value": 0.2
+                      },
+                      {
+                        "quantile": 0.99,
+                        "value": 0.9
+                      }
+                    ],
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 3.0,
+                    "timeUnixNano": "1700000000000000000"
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "count": "20",
+                    "flags": 0,
+                    "quantileValues": [
+                      {
+                        "quantile": 0.5,
+                        "value": 0.2
+                      },
+                      {
+                        "quantile": 0.99,
+                        "value": 0.9
+                      }
+                    ],
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 6.0,
+                    "timeUnixNano": "1700000015000000000"
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "count": "30",
+                    "flags": 0,
+                    "quantileValues": [
+                      {
+                        "quantile": 0.5,
+                        "value": 0.2
+                      },
+                      {
+                        "quantile": 0.99,
+                        "value": 0.9
+                      }
+                    ],
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 9.0,
+                    "timeUnixNano": "1700000030000000000"
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "count": "40",
+                    "flags": 0,
+                    "quantileValues": [
+                      {
+                        "quantile": 0.5,
+                        "value": 0.2
+                      },
+                      {
+                        "quantile": 0.99,
+                        "value": 0.9
+                      }
+                    ],
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 12.0,
+                    "timeUnixNano": "1700000045000000000"
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "count": "50",
+                    "flags": 0,
+                    "quantileValues": [
+                      {
+                        "quantile": 0.5,
+                        "value": 0.2
+                      },
+                      {
+                        "quantile": 0.99,
+                        "value": 0.9
+                      }
+                    ],
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 15.0,
+                    "timeUnixNano": "1700000060000000000"
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "route",
+                        "value": {
+                          "stringValue": "/api"
+                        }
+                      },
+                      {
+                        "key": "region",
+                        "value": {
+                          "stringValue": "west"
+                        }
+                      }
+                    ],
+                    "count": "60",
+                    "flags": 0,
+                    "quantileValues": [
+                      {
+                        "quantile": 0.5,
+                        "value": 0.2
+                      },
+                      {
+                        "quantile": 0.99,
+                        "value": 0.9
+                      }
+                    ],
+                    "startTimeUnixNano": "1700000000000000000",
+                    "sum": 18.0,
+                    "timeUnixNano": "1700000075000000000"
+                  }
+                ]
+              },
+              "unit": ""
+            },
+            {
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asDouble": 1,
+                    "timeUnixNano": "1700000000100000000"
+                  },
+                  {
+                    "asDouble": 2,
+                    "timeUnixNano": "1700000000900000000"
+                  }
+                ]
+              },
+              "name": "subsecond"
+            },
+            {
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asDouble": 0,
+                    "flags": 1,
+                    "timeUnixNano": "1700000000000000000"
+                  }
+                ]
+              },
+              "name": "missing"
+            }
+          ],
+          "scope": {
+            "name": "fixture-generator",
+            "version": "1"
+          }
+        }
+      ]
+    }
+  ]
+}

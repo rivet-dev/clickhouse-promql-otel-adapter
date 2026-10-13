@@ -1,0 +1,19 @@
+name: clickhouse-promql
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.9.18.11
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: local-test-only
+    ports:
+      - '127.0.0.1:18123:8123'
+      - '127.0.0.1:19000:9000'
+    healthcheck:
+      test: ['CMD', 'clickhouse-client', '--password', 'local-test-only', '--query', 'SELECT 1']
+      interval: 2s
+      timeout: 2s
+      retries: 40
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+volumes:
+  clickhouse-data:
