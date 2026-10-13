@@ -217,6 +217,14 @@ impl<'a> Engine<'a> {
             _ => bail!("unsupported expression"),
         }
     }
+    pub fn selector_time(
+        &self,
+        timestamp: i64,
+        at: &Option<AtModifier>,
+        offset: &Option<Offset>,
+    ) -> Result<i64> {
+        self.target(timestamp, at, offset)
+    }
     fn target(
         &self,
         timestamp: i64,

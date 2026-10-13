@@ -26,12 +26,12 @@ type query struct { promql.Query; owner *engine; data storage.Queryable; text st
 func (e *engine) NewInstantQuery(ctx context.Context,s storage.Queryable,o promql.QueryOpts,text string,t time.Time)(promql.Query,error){
  q,err:=e.base.NewInstantQuery(ctx,s,o,text,t)
  if err!=nil{return nil,err}
- return &query{q,e,s,text,t.UnixMilli(),t.UnixMilli(),0,o.LookbackDelta().Milliseconds()},nil
+ return &query{q,e,s,text,t.UnixMilli(),t.UnixMilli(),0,lookback(o)},nil
 }
 func (e *engine) NewRangeQuery(ctx context.Context,s storage.Queryable,o promql.QueryOpts,text string,start,end time.Time,step time.Duration)(promql.Query,error){
  q,err:=e.base.NewRangeQuery(ctx,s,o,text,start,end,step)
  if err!=nil{return nil,err}
- return &query{q,e,s,text,start.UnixMilli(),end.UnixMilli(),step.Milliseconds(),o.LookbackDelta().Milliseconds()},nil
+ return &query{q,e,s,text,start.UnixMilli(),end.UnixMilli(),step.Milliseconds(),lookback(o)},nil
 }
 func(q *query)Exec(ctx context.Context)*promql.Result {
  result:=q.Query.Exec(ctx)
@@ -79,3 +79,5 @@ func TestGenerate(t *testing.T){
  files,err:=filepath.Glob(filepath.Join(source,"promql/promqltest/testdata/*.test"));if err!=nil||len(files)==0{t.Fatal("missing upstream test fixtures",err)}
  for _,file:=range files{t.Run(filepath.Base(file),func(t *testing.T){e.fixture=filepath.Base(file);data,err:=os.ReadFile(file);if err!=nil{t.Fatal(err)};promqltest.RunTest(t,string(data),e)})}
 }
+
+func lookback(o promql.QueryOpts)int64{if o==nil||o.LookbackDelta()==0{return 300000};return o.LookbackDelta().Milliseconds()}
