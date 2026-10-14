@@ -1,0 +1,14 @@
+{
+  "prometheus": {
+    "version": "v3.15.0",
+    "commit": "5241a27fe3c6983549fccc32f6e65917408c63cd"
+  },
+  "collector": {
+    "version": "v0.162.0",
+    "commit": "ae8c507510f48f433ab47dd1c6b01a59d6c388b5"
+  },
+  "thanos": {
+    "version": "source snapshot",
+    "commit": "f1e0bbc906c54ca138466bd3095c3f61bf31368d"
+  }
+}

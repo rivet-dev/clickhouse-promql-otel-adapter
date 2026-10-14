@@ -1,0 +1,38 @@
+{
+  "date_utc": "2026-10-14",
+  "runtime": "Rust only",
+  "evaluator": {
+    "passed": 21442,
+    "failed": 0,
+    "datasets": 294,
+    "fixtures": 21
+  },
+  "http_reference_cases": 1016,
+  "parser_reference_cases": 356,
+  "regex_reference_cases": 1200,
+  "search_score_cases": 2400,
+  "otel_naming_cases": 2392,
+  "thanos_seeded_cases": 800,
+  "storage": {
+    "default": {
+      "passed": 8986,
+      "excluded": 12456,
+      "failed": 0
+    },
+    "precise": {
+      "passed": 9756,
+      "excluded": 11686,
+      "failed": 0
+    }
+  },
+  "checks": {
+    "cargo_test_locked": "passed",
+    "cargo_fmt_check": "passed",
+    "cargo_clippy_all_targets_deny_warnings": "passed",
+    "collector_default_snapshot_comparison": "passed",
+    "collector_precision_snapshot_comparison": "passed",
+    "vendor_parser": "130 passed; 1 upstream doctest intentionally ignored",
+    "manual_grafana": "passed; six screenshots committed",
+    "independent_review": "three reviewers; follow-up fixes verified"
+  }
+}

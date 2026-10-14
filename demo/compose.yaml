@@ -1,0 +1,25 @@
+services:
+  collector-demo:
+    image: otel/opentelemetry-collector-contrib:0.162.0
+    volumes:
+      - ./demo/collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+  grafana-demo:
+    image: grafana/grafana:12.2.0
+    ports:
+      - '13000:3000'
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: local-demo-only
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - ./demo/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./demo/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    extra_hosts:
+      - host.docker.internal:host-gateway

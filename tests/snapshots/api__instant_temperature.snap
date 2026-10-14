@@ -1,0 +1,28 @@
+---
+source: tests/api.rs
+assertion_line: 47
+expression: x
+---
+{
+  "data": {
+    "result": [
+      {
+        "metric": {
+          "__name__": "temperature",
+          "instance": "one",
+          "job": "tests/fixture",
+          "otel_scope_name": "fixture-generator",
+          "otel_scope_version": "1",
+          "region": "west",
+          "route": "/api"
+        },
+        "value": [
+          1700000075.0,
+          "25.5"
+        ]
+      }
+    ],
+    "resultType": "vector"
+  },
+  "status": "success"
+}

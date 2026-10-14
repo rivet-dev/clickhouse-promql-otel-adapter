@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust
+        run: rustup default 1.97.0
+      - name: Check version and test
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, re, tomllib
+          version = tomllib.load(open("Cargo.toml", "rb"))["package"]["version"]
+          assert re.fullmatch(r"\d+\.\d+\.\d+", version), version
+          assert os.environ["TAG"] == f"v{version}", "tag must match Cargo.toml"
+          PY
+          docker compose up -d --wait
+          cargo test --locked
+          python3 scripts/conformance.py
+      - name: Package binary
+        env:
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cargo build --locked --release
+          mkdir -p package
+          cp target/release/clickhouse-promql LICENSE NOTICE package/
+          strip package/clickhouse-promql
+          package/clickhouse-promql --version
+          tar -C package -czf "clickhouse-promql-otel-adapter-${TAG}-linux-${ARCH}.tar.gz" .
+          mkdir -p "dist/$ARCH"
+          cp package/clickhouse-promql "dist/$ARCH/"
+          docker build -t release-test .
+          docker run --rm release-test --version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-${{ matrix.arch }}
+          path: clickhouse-promql-otel-adapter-*.tar.gz
+          if-no-files-found: error
+      - name: Stop test database
+        if: always()
+        run: docker compose down -v
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Prepare image and checksums
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          for arch in amd64 arm64; do
+            mkdir -p "dist/$arch"
+            tar -xzf artifacts/*-linux-"$arch".tar.gz -C "dist/$arch"
+          done
+          (cd artifacts && sha256sum *.tar.gz > SHA256SUMS)
+          echo "name=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
+            ${{ steps.image.outputs.name }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.licenses=Apache-2.0
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" artifacts/* --verify-tag --title "$TAG" --generate-notes

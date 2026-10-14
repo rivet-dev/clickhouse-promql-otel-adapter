@@ -1,0 +1,747 @@
+use crate::{
+    engine::matches,
+    model::{Labels, Point, STALE_BITS, Series, float_string},
+    translation::{label_name, metric_name},
+};
+use anyhow::{Context, Result, bail};
+use promql_parser::parser::{Expr, VectorSelector};
+use serde_json::Value as Json;
+use std::{collections::BTreeMap, time::Duration};
+
+pub(crate) const TABLES: [&str; 5] = [
+    "gauge",
+    "sum",
+    "histogram",
+    "summary",
+    "exponential_histogram",
+];
+#[derive(Debug)]
+pub struct BackendError(String);
+impl std::fmt::Display for BackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for BackendError {}
+#[derive(Clone)]
+pub struct Store {
+    pub client: reqwest::Client,
+    pub url: String,
+    pub database: String,
+    pub username: String,
+    pub password: String,
+    pub max_rows: usize,
+    pub max_bytes: usize,
+}
+#[derive(Default)]
+pub struct Loaded {
+    pub series: Vec<Series>,
+    pub metadata: BTreeMap<String, Vec<Json>>,
+    pub warnings: Vec<String>,
+}
+impl Store {
+    pub fn new(url: String, database: String, username: String, password: String) -> Result<Self> {
+        validate_identifier(&database)?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()?;
+        Ok(Self {
+            client,
+            url,
+            database,
+            username,
+            password,
+            max_rows: 1_000_000,
+            max_bytes: 64 * 1024 * 1024,
+        })
+    }
+    pub async fn query(&self, sql: &str, params: &[(&str, String)]) -> Result<String> {
+        self.query_inner(sql, params)
+            .await
+            .map_err(|e| BackendError(format!("{e:#}")).into())
+    }
+    async fn query_inner(&self, sql: &str, params: &[(&str, String)]) -> Result<String> {
+        let mut response = self
+            .client
+            .post(&self.url)
+            .basic_auth(&self.username, Some(&self.password))
+            .query(params)
+            .query(&[
+                ("cancel_http_readonly_queries_on_client_close", "1"),
+                ("max_execution_time", "120"),
+            ])
+            .body(sql.to_owned())
+            .send()
+            .await
+            .context("ClickHouse request failed")?;
+        let status = response.status();
+        if response
+            .content_length()
+            .is_some_and(|n| n > self.max_bytes as u64)
+        {
+            bail!("ClickHouse response byte limit exceeded");
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if chunk.len() > self.max_bytes.saturating_sub(bytes.len()) {
+                bail!("ClickHouse response byte limit exceeded");
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let text = String::from_utf8(bytes).context("ClickHouse returned invalid UTF-8")?;
+        if !status.is_success() {
+            bail!(
+                "ClickHouse returned {status}: {}",
+                text.chars().take(500).collect::<String>()
+            )
+        }
+        Ok(text)
+    }
+    pub async fn ready(&self) -> Result<()> {
+        self.query("SELECT 1", &[]).await?;
+        Ok(())
+    }
+    // Resolve OTel name/unit normalization from a small distinct-name dictionary
+    // before fetching samples. Filtering raw names directly would drop SDK names
+    // such as http.request.duration (exported as http_request_duration_seconds).
+    pub(crate) async fn metric_filter(
+        &self,
+        kind: &str,
+        selectors: &[VectorSelector],
+    ) -> Result<Option<Vec<String>>> {
+        let name_selectors = selectors
+            .iter()
+            .map(|s| {
+                let mut s = s.clone();
+                s.matchers.matchers.retain(|m| m.name == "__name__");
+                s
+            })
+            .collect::<Vec<_>>();
+        let accepts = |name: &str| {
+            let labels = Labels::from([("__name__".into(), name.into())]);
+            name_selectors.iter().any(|s| matches(s, &labels))
+        };
+        if selectors.is_empty() || accepts("target_info") {
+            return Ok(None);
+        }
+        let monotonic = if kind == "sum" { ", IsMonotonic" } else { "" };
+        let sql = format!(
+            "SELECT DISTINCT MetricName, MetricUnit, ScopeName{monotonic} FROM {}.otel_metrics_{kind} LIMIT {} FORMAT JSONEachRow",
+            self.database,
+            self.max_rows.saturating_add(1)
+        );
+        let rows = self.query(&sql, &[]).await?;
+        let mut names = std::collections::BTreeSet::new();
+        for (i, line) in rows.lines().enumerate() {
+            if i >= self.max_rows {
+                bail!("ClickHouse metric dictionary limit exceeded");
+            }
+            let row: Json = serde_json::from_str(line)?;
+            let Ok(name) = row_metric_name(&row, kind) else {
+                continue;
+            };
+            if derived_names(&name, kind).iter().any(|n| accepts(n)) {
+                names.insert(string(&row, "MetricName").to_owned());
+            }
+        }
+        Ok(Some(names.into_iter().collect()))
+    }
+    pub async fn load(&self, start: i64, end: i64, selectors: &[VectorSelector]) -> Result<Loaded> {
+        self.load_inner(start, end, selectors, true).await
+    }
+    pub async fn discover(
+        &self,
+        start: i64,
+        end: i64,
+        selectors: &[VectorSelector],
+    ) -> Result<Loaded> {
+        self.load_inner(start, end, selectors, false).await
+    }
+    async fn load_inner(
+        &self,
+        start: i64,
+        end: i64,
+        selectors: &[VectorSelector],
+        samples: bool,
+    ) -> Result<Loaded> {
+        let mut groups: BTreeMap<Labels, Vec<Point>> = BTreeMap::new();
+        let mut loaded = Loaded::default();
+        let mut total = 0usize;
+        for kind in TABLES {
+            let filter = self.metric_filter(kind, selectors).await?;
+            if filter.as_ref().is_some_and(|v| v.is_empty()) {
+                continue;
+            }
+            let predicate = if filter.is_some() {
+                " AND MetricName IN {names:Array(String)}"
+            } else {
+                ""
+            };
+            let projection = if samples {
+                "*, toUnixTimestamp64Milli(toDateTime64(TimeUnix, 3)) AS _timestamp, toUnixTimestamp64Milli(toDateTime64(StartTimeUnix, 3)) AS _start_timestamp".to_owned()
+            } else {
+                let extra = match kind {
+                    "sum" => ", IsMonotonic",
+                    "histogram" => ", ExplicitBounds",
+                    "summary" => ", `ValueAtQuantiles.Quantile`",
+                    _ => "",
+                };
+                format!(
+                    "DISTINCT MetricName, MetricDescription, MetricUnit, ResourceAttributes, ScopeName, ScopeVersion, ScopeSchemaUrl, ScopeAttributes, Attributes{extra}"
+                )
+            };
+            let sql = format!(
+                "SELECT {projection} FROM {}.otel_metrics_{} WHERE TimeUnix >= fromUnixTimestamp64Milli({{start:Int64}}) AND TimeUnix <= fromUnixTimestamp64Milli({{end:Int64}}){predicate} LIMIT {} SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow",
+                self.database,
+                kind,
+                self.max_rows + 1
+            );
+            let text = self
+                .query(
+                    &sql,
+                    &[
+                        ("param_start", start.to_string()),
+                        ("param_end", end.to_string()),
+                        ("param_names", string_array(&filter.unwrap_or_default())),
+                    ],
+                )
+                .await?;
+            for line in text.lines() {
+                if total.is_multiple_of(1024) {
+                    tokio::task::yield_now().await;
+                }
+                total += 1;
+                if total > self.max_rows {
+                    bail!("ClickHouse sample scan limit exceeded")
+                }
+                let row: Json =
+                    serde_json::from_str(line).context("invalid ClickHouse metric row")?;
+                let name = match row_metric_name(&row, kind) {
+                    Ok(name) => name,
+                    Err(e) => {
+                        let warning = format!(
+                            "skipped invalid OTel metric name {:?}: {e}",
+                            string(&row, "MetricName")
+                        );
+                        if !loaded.warnings.contains(&warning) {
+                            loaded.warnings.push(warning);
+                        }
+                        continue;
+                    }
+                };
+                let mut labels = row_labels(&row)?;
+                labels.insert("__name__".into(), name.clone());
+                if let Some(info) = target_info(&row)?
+                    && (selectors.is_empty() || selectors.iter().any(|s| matches(s, &info)))
+                {
+                    let points = groups.entry(info).or_default();
+                    if samples && integer(&row["Flags"]).unwrap_or(0) & 1 == 0 {
+                        points.push(Point {
+                            timestamp: integer(&row["_timestamp"])?,
+                            value: 1.0,
+                            ..Default::default()
+                        });
+                    }
+                }
+                let candidates = derived_names(&name, kind);
+                let selected = selectors.is_empty()
+                    || candidates.iter().any(|n| {
+                        let mut l = labels.clone();
+                        l.insert("__name__".into(), n.clone());
+                        if kind == "histogram" {
+                            l.insert("le".into(), "+Inf".into());
+                        }
+                        selectors
+                            .iter()
+                            .any(|s| matches(s, &l) || potential_bucket_match(s, &l, kind))
+                    });
+                if !selected {
+                    continue;
+                }
+                let typ = match kind {
+                    "sum" if row["IsMonotonic"].as_bool() == Some(true) => "counter",
+                    "sum" | "gauge" => "gauge",
+                    "histogram" | "exponential_histogram" => "histogram",
+                    _ => "summary",
+                };
+                let metadata = serde_json::json!({"type":typ,"help":string(&row,"MetricDescription"),"unit":string(&row,"MetricUnit")});
+                let entries = loaded.metadata.entry(name.clone()).or_default();
+                if !entries.contains(&metadata) {
+                    entries.push(metadata)
+                }
+                if !samples {
+                    for n in &candidates {
+                        let mut ls = labels.clone();
+                        ls.insert("__name__".into(), n.clone());
+                        let extra: Vec<Option<(&str, String)>> =
+                            if n.ends_with("_bucket") && kind == "histogram" {
+                                let mut bounds = row["ExplicitBounds"]
+                                    .as_array()
+                                    .context("missing bounds")?
+                                    .iter()
+                                    .map(|v| number(v).map(|x| Some(("le", float_string(x)))))
+                                    .collect::<Result<Vec<_>>>()?;
+                                bounds.push(Some(("le", "+Inf".into())));
+                                bounds
+                            } else if n == &name && kind == "summary" {
+                                row["ValueAtQuantiles.Quantile"]
+                                    .as_array()
+                                    .context("missing quantiles")?
+                                    .iter()
+                                    .map(|v| number(v).map(|x| Some(("quantile", float_string(x)))))
+                                    .collect::<Result<Vec<_>>>()?
+                            } else {
+                                vec![None]
+                            };
+                        for e in extra {
+                            let mut ls = ls.clone();
+                            if let Some((k, v)) = e {
+                                ls.insert(k.into(), v);
+                            }
+                            if selectors.is_empty() || selectors.iter().any(|s| matches(s, &ls)) {
+                                groups.entry(ls).or_default();
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if matches!(kind, "sum" | "histogram" | "exponential_histogram")
+                    && integer(&row["AggregationTemporality"])? == 1
+                {
+                    bail!(
+                        "delta temporality for {name} requires cumulative conversion; configure the collector deltatocumulative processor"
+                    )
+                }
+                let timestamp = integer(&row["_timestamp"])?;
+                let stale = integer(&row["Flags"]).unwrap_or(0) & 1 != 0;
+                let start_timestamp = integer(&row["_start_timestamp"])?;
+                if kind == "exponential_histogram" {
+                    let mut h = crate::histogram::Histogram {
+                        schema: integer(&row["Scale"])? as i32,
+                        count: number(&row["Count"])?,
+                        sum: number(&row["Sum"])?,
+                        zero_count: number(&row["ZeroCount"])?,
+                        zero_threshold: row
+                            .get("ZeroThreshold")
+                            .map(number)
+                            .transpose()?
+                            .unwrap_or(0.0),
+                        ..Default::default()
+                    };
+                    if !(-4..=20).contains(&h.schema) {
+                        bail!(
+                            "OTLP exponential histogram scale {} cannot be represented as a Prometheus native histogram",
+                            h.schema
+                        );
+                    }
+                    for (prefix, buckets) in
+                        [("Positive", &mut h.positive), ("Negative", &mut h.negative)]
+                    {
+                        let offset = integer(&row[format!("{prefix}Offset")])? as i32;
+                        for (i, v) in row[format!("{prefix}BucketCounts")]
+                            .as_array()
+                            .context("missing native bucket counts")?
+                            .iter()
+                            .enumerate()
+                        {
+                            buckets.insert(offset + i as i32 + 1, number(v)?);
+                        }
+                    }
+                    if h.schema > 8 {
+                        h.reduce(8)?;
+                    }
+                    if row.get("ZeroThreshold").is_none() {
+                        let warning="Collector schema does not store exponential histogram ZeroThreshold; assuming zero".to_owned();
+                        if !loaded.warnings.contains(&warning) {
+                            loaded.warnings.push(warning)
+                        }
+                    }
+                    if stale {
+                        h.sum = f64::from_bits(STALE_BITS)
+                    }
+                    groups.entry(labels).or_default().push(Point {
+                        timestamp,
+                        start_timestamp,
+                        histogram: Some(h),
+                        ..Default::default()
+                    });
+                    continue;
+                }
+                let mut push = |suffix: &str, extra: Option<(&str, String)>, value: f64| {
+                    let mut ls = labels.clone();
+                    ls.insert("__name__".into(), format!("{name}{suffix}"));
+                    if let Some((k, v)) = extra {
+                        ls.insert(k.into(), v);
+                    }
+                    if selectors.is_empty() || selectors.iter().any(|s| matches(s, &ls)) {
+                        groups.entry(ls).or_default().push(Point {
+                            timestamp,
+                            start_timestamp,
+                            value: if stale {
+                                f64::from_bits(STALE_BITS)
+                            } else {
+                                value
+                            },
+                            ..Default::default()
+                        });
+                    }
+                };
+                match kind {
+                    "gauge" | "sum" => push("", None, number(&row["Value"])?),
+                    "histogram" => {
+                        let counts = row["BucketCounts"]
+                            .as_array()
+                            .context("missing BucketCounts")?;
+                        let bounds = row["ExplicitBounds"]
+                            .as_array()
+                            .context("missing ExplicitBounds")?;
+                        if (counts.is_empty() && !bounds.is_empty())
+                            || (!counts.is_empty() && counts.len() != bounds.len() + 1)
+                        {
+                            bail!("invalid histogram bucket count for {name}")
+                        }
+                        if counts.is_empty() {
+                            push(
+                                "_bucket",
+                                Some(("le", "+Inf".into())),
+                                number(&row["Count"])?,
+                            );
+                        }
+                        let mut cumulative = 0.0;
+                        for (i, count) in counts.iter().enumerate() {
+                            cumulative += number(count)?;
+                            let bound = if i < bounds.len() {
+                                number(&bounds[i])?
+                            } else {
+                                f64::INFINITY
+                            };
+                            push("_bucket", Some(("le", float_string(bound))), cumulative);
+                        }
+                        push("_sum", None, number(&row["Sum"])?);
+                        push("_count", None, number(&row["Count"])?);
+                    }
+                    "summary" => {
+                        let quantiles = row["ValueAtQuantiles.Quantile"]
+                            .as_array()
+                            .context("missing quantiles")?;
+                        let values = row["ValueAtQuantiles.Value"]
+                            .as_array()
+                            .context("missing quantile values")?;
+                        if quantiles.len() != values.len() {
+                            bail!("invalid summary quantiles for {name}")
+                        }
+                        for (q, v) in quantiles.iter().zip(values) {
+                            push("", Some(("quantile", float_string(number(q)?))), number(v)?)
+                        }
+                        push("_sum", None, number(&row["Sum"])?);
+                        push("_count", None, number(&row["Count"])?);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        for (labels, mut points) in groups {
+            points.sort_by_key(|p| p.timestamp);
+            for pair in points.windows(2) {
+                if pair[0].timestamp == pair[1].timestamp
+                    && (pair[0].value.to_bits() != pair[1].value.to_bits()
+                        || pair[0].histogram != pair[1].histogram
+                        || pair[0].start_timestamp != pair[1].start_timestamp)
+                {
+                    bail!(
+                        "conflicting samples at timestamp {} for {labels:?}; default DateTime columns lose subsecond precision",
+                        pair[0].timestamp
+                    )
+                }
+            }
+            points.dedup_by(|a, b| {
+                a.timestamp == b.timestamp
+                    && a.value.to_bits() == b.value.to_bits()
+                    && a.histogram == b.histogram
+                    && a.start_timestamp == b.start_timestamp
+            });
+            loaded.series.push(Series { labels, points });
+        }
+        Ok(loaded)
+    }
+}
+fn potential_bucket_match(selector: &VectorSelector, labels: &Labels, kind: &str) -> bool {
+    if kind != "histogram" && kind != "summary" {
+        return false;
+    }
+    let mut selector = selector.clone();
+    selector.matchers.matchers.retain(|m| {
+        m.name
+            != if kind == "histogram" {
+                "le"
+            } else {
+                "quantile"
+            }
+    });
+    matches(&selector, labels)
+}
+pub fn validate_identifier(s: &str) -> Result<()> {
+    if s.is_empty()
+        || !s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+        || s.as_bytes()[0].is_ascii_digit()
+    {
+        bail!("invalid ClickHouse database identifier")
+    };
+    Ok(())
+}
+fn string<'a>(row: &'a Json, key: &str) -> &'a str {
+    row[key].as_str().unwrap_or("")
+}
+pub(crate) fn number(v: &Json) -> Result<f64> {
+    if let Some(n) = v.as_f64() {
+        Ok(n)
+    } else if let Some(s) = v.as_str() {
+        s.parse().context("invalid numeric metric value")
+    } else {
+        bail!("missing or invalid numeric metric value {v}")
+    }
+}
+fn integer(v: &Json) -> Result<i64> {
+    if let Some(n) = v.as_i64() {
+        Ok(n)
+    } else if let Some(s) = v.as_str() {
+        s.parse().context("invalid integer metric value")
+    } else {
+        bail!("missing or invalid integer metric value")
+    }
+}
+pub(crate) fn row_metric_name(row: &Json, kind: &str) -> Result<String> {
+    if prometheus_scope(row) {
+        Ok(string(row, "MetricName").into())
+    } else {
+        metric_name(
+            string(row, "MetricName"),
+            string(row, "MetricUnit"),
+            kind,
+            row["IsMonotonic"].as_bool().unwrap_or(false),
+        )
+    }
+}
+fn target_info(row: &Json) -> Result<Option<Labels>> {
+    let resource = &row["ResourceAttributes"];
+    let service = resource["service.name"].as_str().unwrap_or("");
+    let instance = resource["service.instance.id"].as_str().unwrap_or("");
+    if service.is_empty() && instance.is_empty() {
+        return Ok(None);
+    }
+    let mut labels = Labels::new();
+    labels.insert("__name__".into(), "target_info".into());
+    if !service.is_empty() {
+        let ns = resource["service.namespace"].as_str().unwrap_or("");
+        labels.insert(
+            "job".into(),
+            if ns.is_empty() {
+                service.into()
+            } else {
+                format!("{ns}/{service}")
+            },
+        );
+    }
+    if !instance.is_empty() {
+        labels.insert("instance".into(), instance.into());
+    }
+    if let Some(attrs) = resource.as_object() {
+        for (key, value) in attrs {
+            if matches!(
+                key.as_str(),
+                "service.name" | "service.namespace" | "service.instance.id"
+            ) {
+                continue;
+            }
+            let key = if prometheus_scope(row) {
+                key.clone()
+            } else {
+                label_name(key)?
+            };
+            let value = value
+                .as_str()
+                .context("resource attribute is not a string")?;
+            if value.is_empty() {
+                continue;
+            }
+            if labels.insert(key.clone(), value.into()).is_some() {
+                bail!("resource attribute normalization collision at {key}");
+            }
+        }
+    }
+    Ok(Some(labels))
+}
+pub(crate) fn prometheus_scope(row: &Json) -> bool {
+    string(row, "ScopeName")
+        == "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver"
+}
+pub(crate) fn row_labels(row: &Json) -> Result<Labels> {
+    let mut labels = Labels::new();
+    if let Some(attrs) = row["Attributes"].as_object() {
+        for (k, v) in attrs {
+            let key = if prometheus_scope(row) {
+                k.clone()
+            } else {
+                label_name(k)?
+            };
+            let value = v.as_str().context("attribute is not a string")?;
+            if !value.is_empty() && labels.insert(key.clone(), value.into()).is_some() {
+                bail!("attribute normalization collision at {key}")
+            }
+        }
+    }
+    let resource = &row["ResourceAttributes"];
+    let service = resource["service.name"].as_str().unwrap_or("");
+    let namespace = resource["service.namespace"].as_str().unwrap_or("");
+    if !service.is_empty() {
+        labels.entry("job".into()).or_insert_with(|| {
+            if namespace.is_empty() {
+                service.into()
+            } else {
+                format!("{namespace}/{service}")
+            }
+        });
+    }
+    if let Some(instance) = resource["service.instance.id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+    {
+        labels.entry("instance".into()).or_insert(instance.into());
+    }
+    if !prometheus_scope(row) {
+        for (field, label) in [
+            ("ScopeName", "otel_scope_name"),
+            ("ScopeVersion", "otel_scope_version"),
+            ("ScopeSchemaUrl", "otel_scope_schema_url"),
+        ] {
+            let value = string(row, field);
+            if !value.is_empty() && labels.insert(label.into(), value.into()).is_some() {
+                bail!("scope attribute collision at {label}");
+            }
+        }
+        if let Some(attrs) = row["ScopeAttributes"].as_object() {
+            for (key, value) in attrs {
+                if matches!(key.as_str(), "name" | "version" | "schema_url") {
+                    continue;
+                }
+                let label = label_name(&format!("otel_scope_{key}"))?;
+                let value = value.as_str().context("scope attribute is not a string")?;
+                if !value.is_empty() && labels.insert(label.clone(), value.into()).is_some() {
+                    bail!("scope attribute collision at {label}");
+                }
+            }
+        }
+    }
+    Ok(labels)
+}
+fn derived_names(name: &str, kind: &str) -> Vec<String> {
+    match kind {
+        "histogram" => vec![
+            format!("{name}_bucket"),
+            format!("{name}_sum"),
+            format!("{name}_count"),
+        ],
+        "summary" => vec![name.into(), format!("{name}_sum"), format!("{name}_count")],
+        _ => vec![name.into()],
+    }
+}
+
+/// Gather selectors and safe, conservative input bounds, including nested
+/// subqueries/offset/@. This does not assume a fixed lookback for all queries.
+pub fn plan(
+    expr: &Expr,
+    start: i64,
+    end: i64,
+    lookback: i64,
+) -> Result<(i64, i64, Vec<VectorSelector>)> {
+    fn visit(
+        e: &Expr,
+        a: i64,
+        b: i64,
+        root_a: i64,
+        root_b: i64,
+        lookback: i64,
+        out: &mut Vec<(i64, i64, VectorSelector)>,
+    ) -> Result<()> {
+        let engine = crate::engine::Engine::new(&[], root_a, root_b);
+        match e {
+            Expr::VectorSelector(v) => {
+                let a = engine.selector_time(a, &v.at, &v.offset)?;
+                let b = engine.selector_time(b, &v.at, &v.offset)?;
+                out.push((
+                    a.saturating_sub(lookback),
+                    b.saturating_add(if v.smoothed { lookback } else { 0 }),
+                    v.clone(),
+                ));
+            }
+            Expr::MatrixSelector(m) => {
+                let a = engine.selector_time(a, &m.vs.at, &m.vs.offset)?;
+                let b = engine.selector_time(b, &m.vs.at, &m.vs.offset)?;
+                out.push((
+                    a.saturating_sub(m.range.as_millis().try_into()?)
+                        .saturating_sub(if m.anchored || m.smoothed {
+                            lookback
+                        } else {
+                            0
+                        }),
+                    b.saturating_add(if m.smoothed { lookback } else { 0 }),
+                    m.vs.clone(),
+                ));
+            }
+            Expr::Subquery(s) => {
+                let a = engine
+                    .selector_time(a, &s.at, &s.offset)?
+                    .saturating_sub(s.range.as_millis().try_into()?);
+                let b = engine.selector_time(b, &s.at, &s.offset)?;
+                visit(&s.expr, a, b, root_a, root_b, lookback, out)?
+            }
+            Expr::Paren(p) => visit(&p.expr, a, b, root_a, root_b, lookback, out)?,
+            Expr::Unary(u) => visit(&u.expr, a, b, root_a, root_b, lookback, out)?,
+            Expr::Binary(v) => {
+                visit(&v.lhs, a, b, root_a, root_b, lookback, out)?;
+                visit(&v.rhs, a, b, root_a, root_b, lookback, out)?
+            }
+            Expr::Aggregate(v) => {
+                visit(&v.expr, a, b, root_a, root_b, lookback, out)?;
+                if let Some(p) = &v.param {
+                    visit(p, a, b, root_a, root_b, lookback, out)?
+                }
+            }
+            Expr::Call(c) => {
+                if c.func.name == "info" {
+                    out.push((
+                        engine
+                            .info_time(&c.args.args[0], a)?
+                            .saturating_sub(lookback),
+                        engine.info_time(&c.args.args[0], b)?,
+                        crate::engine::info::info_selector(c),
+                    ));
+                }
+                for arg in &c.args.args {
+                    visit(arg, a, b, root_a, root_b, lookback, out)?
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    visit(expr, start, end, start, end, lookback, &mut out)?;
+    Ok((
+        out.iter().map(|x| x.0).min().unwrap_or(start),
+        out.iter().map(|x| x.1).max().unwrap_or(end),
+        out.into_iter().map(|x| x.2).collect(),
+    ))
+}
+
+/// ClickHouse query-parameter text encoding, never interpolated into SQL.
+pub(crate) fn string_array(values: &[String]) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|v| format!("'{}'", v.replace('\\', "\\\\").replace('\'', "\\'")))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}

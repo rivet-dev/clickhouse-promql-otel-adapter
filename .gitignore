@@ -1,0 +1,9 @@
+**/target/
+/.research/
+/.state/
+__pycache__/
+.env
+
+/vendor/promql-parser/Cargo.lock
+
+/dist/

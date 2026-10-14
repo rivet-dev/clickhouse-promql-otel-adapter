@@ -1,0 +1,22 @@
+ClickHouse PromQL adapter
+
+This product includes Rust code adapted from Prometheus query and histogram
+algorithms and reference results derived from the Prometheus test suite.
+Prometheus: Copyright The Prometheus Authors; Apache License, Version 2.0.
+The Prometheus systems and service monitoring server
+Copyright 2012-2015 The Prometheus Authors
+This product includes software developed at SoundCloud Ltd.
+(https://soundcloud.com/).
+
+The vendored promql-parser is Copyright 2023 Greptime Team and contributors,
+licensed under Apache License, Version 2.0. Local modifications are documented
+in vendor/README.md. Its original license is retained in the vendor directory.
+
+The Go reference evaluator under tools/oracle is test tooling only and is not
+part of the adapter executable. Its dependencies retain their own licenses.
+
+OTLP name conversion follows github.com/prometheus/otlptranslator v1.0.0
+Copyright The Prometheus Authors and The OpenTelemetry Authors, Apache-2.0.
+
+HA replica selection is adapted from Thanos pkg/dedup.
+Copyright The Thanos Authors, Apache License, Version 2.0.

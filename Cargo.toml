@@ -1,0 +1,35 @@
+[package]
+name = "clickhouse-promql"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+chrono = "0.4"
+clap = { version = "4", features = ["derive", "env"] }
+promql-parser = { version = "0.11", features = ["ser"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "compression-gzip", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+url = "2"
+percent-encoding = "2"
+
+[dev-dependencies]
+futures-util = "0.3"
+flate2 = "1.1.10"
+insta = { version = "1", features = ["json"] }
+tar = "0.4.46"
+tower = { version = "0.5", features = ["util"] }
+
+[patch.crates-io]
+promql-parser = { path = "vendor/promql-parser" }
