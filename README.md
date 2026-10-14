@@ -16,14 +16,211 @@ change the schema, add a second ingestion path or make a copy of the data.
 - **Every tool already speaks it.** Grafana dashboards, Explore, alerting and
   community dashboards all expect a Prometheus data source.
 - **Counters are hard in SQL.** `rate()`, `increase()` and
-  `histogram_quantile()` need counter-reset handling, extrapolation and lookback.
-  In SQL that means a page of window functions per panel, and each copy can get
-  it subtly wrong.
-- **Queries stay short.** `sum by (service) (rate(http_requests_total[5m]))` is
-  one line. The same query in SQL against the OTel schema joins maps, attributes
-  and temporality by hand.
-- **The queries are portable.** The same PromQL runs against Prometheus or Thanos
-  if you ever move.
+  `histogram_quantile()` need counter-reset handling, sliding windows,
+  extrapolation and lookback. In SQL, every panel repeats that logic, and each
+  copy can get it slightly wrong.
+- **The OTel schema is awkward to query by hand.** Labels live in `Map` columns,
+  each metric type has its own table, and series identity is spread across
+  resource attributes, scope and point attributes.
+- **Queries stay short.** One line of PromQL replaces a page of CTEs and window
+  functions.
+- **The queries are portable.** The same PromQL runs against Prometheus, Thanos or
+  Mimir if you ever move.
+
+**Before and after: requests per second, by service**
+
+```promql
+sum by (service_name) (rate(http_server_requests_total[5m]))
+```
+
+```sql
+WITH deltas AS (
+  SELECT
+    ServiceName,
+    TimeUnix,
+    Value,
+    Value - lagInFrame(Value, 1, Value) OVER w AS delta
+  FROM otel_metrics_sum
+  WHERE MetricName = 'http.server.requests'
+    AND TimeUnix >= now() - INTERVAL 1 HOUR
+  WINDOW w AS (
+    PARTITION BY cityHash64(ResourceAttributes, ScopeName, Attributes)
+    ORDER BY TimeUnix
+    ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+  )
+)
+SELECT
+  toStartOfMinute(TimeUnix) AS t,
+  ServiceName,
+  sum(if(delta < 0, Value, delta)) / 60 AS rps -- a negative delta means the counter reset
+FROM deltas
+GROUP BY t, ServiceName
+ORDER BY t
+```
+
+That SQL is already longer, and it's **still wrong** in ways the PromQL handles:
+it uses fixed one-minute buckets instead of a sliding five-minute window, it
+doesn't extrapolate to the window edges, and it breaks on delta-temporality
+counters. It also doesn't scale `rps` when samples arrive more often than once
+a minute.
+
+The examples below are simplified and still less correct than their PromQL.
+
+<details>
+<summary><b>p99 latency from a histogram</b></summary>
+
+```promql
+histogram_quantile(0.99,
+  sum by (service_name, le) (rate(http_server_request_duration_seconds_bucket[5m])))
+```
+
+```sql
+WITH deltas AS (
+  SELECT
+    ServiceName,
+    toStartOfMinute(TimeUnix) AS t,
+    ExplicitBounds,
+    BucketCounts,
+    lagInFrame(BucketCounts, 1, BucketCounts) OVER w AS prev
+  FROM otel_metrics_histogram
+  WHERE MetricName = 'http.server.request.duration'
+    AND AggregationTemporality = 2 -- cumulative only; delta needs another branch
+    AND TimeUnix >= now() - INTERVAL 1 HOUR
+  WINDOW w AS (
+    PARTITION BY cityHash64(ResourceAttributes, ScopeName, Attributes)
+    ORDER BY TimeUnix
+    ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+  )
+),
+per_step AS (
+  SELECT
+    t,
+    ServiceName,
+    any(ExplicitBounds) AS bounds, -- assumes every series uses the same buckets
+    sumForEach(arrayMap((c, p) -> if(c >= p, c - p, c), BucketCounts, prev)) AS counts
+  FROM deltas
+  GROUP BY t, ServiceName
+),
+ranked AS (
+  SELECT t, ServiceName, bounds, counts,
+         arrayCumSum(counts) AS cum,
+         arraySum(counts) * 0.99 AS rank
+  FROM per_step
+)
+SELECT
+  t,
+  ServiceName,
+  arrayFirstIndex(c -> c >= rank, cum) AS i,
+  if(i = 1, 0, bounds[i - 1]) AS lower,
+  if(i > length(bounds), bounds[length(bounds)], bounds[i]) AS upper,
+  if(i = 1, 0, cum[i - 1]) AS below,
+  lower + (upper - lower) * (rank - below) / counts[i] AS p99
+FROM ranked
+ORDER BY t
+```
+
+Still missing: mixed bucket layouts, the `+Inf` bucket rule, exponential
+histograms, sliding windows and whole-histogram reset detection.
+
+</details>
+
+<details>
+<summary><b>Multi-window SLO burn-rate alert</b></summary>
+
+```promql
+(
+  sum(rate(http_server_requests_total{http_response_status_code=~"5.."}[1h]))
+    / sum(rate(http_server_requests_total[1h])) > 14.4 * 0.001
+)
+and
+(
+  sum(rate(http_server_requests_total{http_response_status_code=~"5.."}[5m]))
+    / sum(rate(http_server_requests_total[5m])) > 14.4 * 0.001
+)
+```
+
+```sql
+WITH deltas AS (
+  SELECT
+    TimeUnix,
+    Value,
+    startsWith(Attributes['http.response.status_code'], '5') AS is_error,
+    Value - lagInFrame(Value, 1, Value) OVER w AS raw_delta
+  FROM otel_metrics_sum
+  WHERE MetricName = 'http.server.requests'
+    AND TimeUnix >= now() - INTERVAL 2 HOUR
+  WINDOW w AS (
+    PARTITION BY cityHash64(ResourceAttributes, ScopeName, Attributes)
+    ORDER BY TimeUnix
+    ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+  )
+),
+per_minute AS (
+  SELECT
+    toStartOfMinute(TimeUnix) AS t,
+    sumIf(if(raw_delta < 0, Value, raw_delta), is_error) AS errors,
+    sum(if(raw_delta < 0, Value, raw_delta)) AS total
+  FROM deltas
+  GROUP BY t
+),
+windows AS (
+  SELECT
+    t,
+    sum(errors) OVER (ORDER BY t RANGE BETWEEN 3540 PRECEDING AND CURRENT ROW) AS errors_1h,
+    sum(total)  OVER (ORDER BY t RANGE BETWEEN 3540 PRECEDING AND CURRENT ROW) AS total_1h,
+    sum(errors) OVER (ORDER BY t RANGE BETWEEN 240 PRECEDING AND CURRENT ROW) AS errors_5m,
+    sum(total)  OVER (ORDER BY t RANGE BETWEEN 240 PRECEDING AND CURRENT ROW) AS total_5m
+  FROM per_minute
+)
+SELECT t
+FROM windows
+WHERE t >= now() - INTERVAL 1 HOUR
+  AND errors_1h / total_1h > 14.4 * 0.001
+  AND errors_5m / total_5m > 14.4 * 0.001
+ORDER BY t
+```
+
+Still missing: extrapolation, delta temporality and the lookback rules. The
+second hour of data is scanned only to warm up the one-hour window.
+
+</details>
+
+<details>
+<summary><b>Top 5 memory growth compared with yesterday</b></summary>
+
+```promql
+topk(5, process_memory_usage_bytes - process_memory_usage_bytes offset 1d)
+```
+
+```sql
+WITH
+  now() AS ts,
+  latest AS ( -- newest sample per series inside the five-minute lookback window
+    SELECT ResourceAttributes, Attributes, argMax(Value, TimeUnix) AS v
+    FROM otel_metrics_gauge
+    WHERE MetricName = 'process.memory.usage'
+      AND TimeUnix BETWEEN ts - INTERVAL 5 MINUTE AND ts
+    GROUP BY ResourceAttributes, Attributes
+  ),
+  day_ago AS (
+    SELECT ResourceAttributes, Attributes, argMax(Value, TimeUnix) AS v
+    FROM otel_metrics_gauge
+    WHERE MetricName = 'process.memory.usage'
+      AND TimeUnix BETWEEN ts - INTERVAL 1 DAY - INTERVAL 5 MINUTE
+                       AND ts - INTERVAL 1 DAY
+    GROUP BY ResourceAttributes, Attributes
+  )
+SELECT l.ResourceAttributes, l.Attributes, l.v - d.v AS growth
+FROM latest AS l
+INNER JOIN day_ago AS d USING (ResourceAttributes, Attributes)
+ORDER BY growth DESC
+LIMIT 5
+```
+
+That returns a single point in time. To graph it, every CTE needs a time-step
+dimension. In PromQL, you switch the query to a range query.
+
+</details>
 
 ## Architecture
 
