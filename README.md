@@ -1,10 +1,18 @@
 # clickhouse-promql-otel-adapter
 
-**PromQL for OpenTelemetry metrics stored in ClickHouse.** Point Grafana's Prometheus data source at it. No second metrics store, no schema changes, no data copies.
+**PromQL for OpenTelemetry metrics in ClickHouse.** Point Grafana's Prometheus data source at it.
 
-- Reads the Collector's ClickHouse exporter tables as-is
-- Prometheus + Thanos query API, single stateless Rust binary
-- **21,442** upstream PromQL test executions + **1,016** HTTP reference cases pass ([compatibility](docs/compatibility.md))
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./.github/media/architecture-dark.svg">
+    <img src="./.github/media/architecture-light.svg" alt="Grafana queries the stateless Rust adapter over the Prometheus HTTP API. The adapter pushes series and time-range selection to ClickHouse as SQL against the five default otel_metrics tables, which the OpenTelemetry Collector's ClickHouse exporter writes." width="440">
+  </picture>
+</p>
+
+- **Reads the Collector's exporter tables as-is**: no second store, schema change or data copy
+- **Stateless Rust binary**: Prometheus + Thanos query API, scale replicas freely
+- **Tested**: 21,442 upstream PromQL executions + 1,016 HTTP reference cases ([compatibility](docs/compatibility.md))
+- **Caveat**: default schema drops subsecond timestamps and some histogram fields ([details](docs/schema-findings.md))
 
 ## Why PromQL over raw SQL
 
@@ -216,20 +224,6 @@ Single instant only. Graphing it needs a time-step dimension in every CTE.
 | **ClickHouse self-hosted** (1 node) | VM + disk | **~500** |
 
 ClickHouse assumes 8–30 B/sample on disk (~13 measured).
-
-## Architecture
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./.github/media/architecture-dark.svg">
-    <img src="./.github/media/architecture-light.svg" alt="Grafana queries the stateless Rust adapter over the Prometheus HTTP API. The adapter pushes series and time-range selection to ClickHouse as SQL against the five default otel_metrics tables, which the OpenTelemetry Collector's ClickHouse exporter writes." width="440">
-  </picture>
-</p>
-
-- **Collector** owns ingestion; adapter is read-only
-- **Adapter** pushes series + time-range filters to ClickHouse, evaluates PromQL in Rust
-- **Stateless**: no cache, no disk; scale replicas freely
-- **Caveat**: default schema drops subsecond timestamps and some histogram/metadata fields ([details](docs/schema-findings.md))
 
 ## Quickstart
 
