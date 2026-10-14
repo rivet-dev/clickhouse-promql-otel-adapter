@@ -25,6 +25,8 @@
 - **Cost**: ~$500/mo for 1M series vs $2k–66k on managed platforms (below)
 - **S3 tiered storage**: keep hot data on disk, age the rest to object storage
 - **Scale**: columnar compression, sharding and replication for trillion-row tables
+- **High cardinality**: no per-series memory index or per-series billing; cost tracks rows stored
+- **Complex analytics**: drop to SQL for what PromQL can't do (joins with logs/traces, any-attribute group-bys). PromQL itself is evaluated in the adapter, bounded by its [limits](docs/api-contract.md)
 - **One store for everything**: the Collector already exports logs, traces and metrics to ClickHouse
 - **Open source**: Apache 2.0
 
