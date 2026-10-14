@@ -14,6 +14,58 @@
 - **Tested**: 21,442 upstream PromQL executions + 1,016 HTTP reference cases ([compatibility](docs/compatibility.md))
 - **Caveat**: default schema drops subsecond timestamps and some histogram fields ([details](docs/schema-findings.md))
 
+## Goals
+
+- **Vanilla OTel → ClickHouse**: stock Collector exporter, no extra observability layer
+- **Full PromQL**: works with Grafana's built-in Prometheus data source
+
+## Why ClickHouse
+
+- **Cost**: ~$500/mo for 1M series vs $2k–66k on managed platforms (below)
+- **S3 tiered storage**: keep hot data on disk, age the rest to object storage
+- **Scale**: columnar compression, sharding and replication for trillion-row tables
+- **One store for everything**: the Collector already exports logs, traces and metrics to ClickHouse
+- **Open source**: Apache 2.0
+
+### Cost
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./.github/media/cost-dark.svg">
+    <img src="./.github/media/cost-light.svg" alt="Estimated monthly list cost for 1M active series at 15s: CloudWatch $66k, Datadog $50k, Grafana Cloud Pro $26k, New Relic $5-20k, Google Managed Prometheus $9k, Amazon Managed Prometheus $6.2k, Azure Managed Prometheus $1.9k, ClickHouse Cloud $0.5-1k, ClickHouse self-hosted $500." width="440">
+  </picture>
+</p>
+
+- 1M active series @ 15s (~173B samples/mo), 30-day retention, list prices (Oct 2026)
+- ClickHouse assumes 8–30 B/sample on disk (~13 measured)
+
+<details>
+<summary><b>Pricing details</b></summary>
+
+| Backend | Billed on | $/month |
+|---|---|---|
+| CloudWatch | Metric × dimension combo | ~66,000 |
+| Datadog | Metric × tag set | ~50,000 |
+| Grafana Cloud Pro | Active series × DPM | ~26,000 |
+| New Relic | GB ingested | ~5,000–20,000 |
+| Google Managed Prometheus | Samples | ~9,000 |
+| Amazon Managed Prometheus | Samples + storage + query | ~6,200 |
+| Azure Managed Prometheus | Samples | ~1,900 |
+| **ClickHouse Cloud** (2 replicas) | Compute + storage | **~500–1,000** |
+| **ClickHouse self-hosted** (1 node) | VM + disk | **~500** |
+
+</details>
+
+## Alternatives
+
+| Option | Tradeoff |
+|---|---|
+| **Managed platforms** (Datadog, Grafana Cloud, CloudWatch, …) | Best DX, but 2–100× the cost |
+| **Vanilla Prometheus** | Single node, single point of failure, limited scale and retention |
+| **Thanos / Mimir / Cortex** | Another distributed system to run alongside your log store |
+| **Other ClickHouse layers** (e.g. qryn, SigNoz) | Own ingestion and schema; we want native exporter tables |
+| **This adapter** | Stock exporter tables + PromQL, nothing else to run but one stateless binary |
+
 ## Why PromQL over raw SQL
 
 - **Every tool speaks it**: Grafana dashboards, Explore, alerting
@@ -220,35 +272,6 @@ topk(5, process_memory_usage_bytes - process_memory_usage_bytes offset 1d)
 ```
 
 Single instant only. Graphing it needs a time-step dimension in every CTE.
-
-</details>
-
-## Cost
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./.github/media/cost-dark.svg">
-    <img src="./.github/media/cost-light.svg" alt="Estimated monthly list cost for 1M active series at 15s: CloudWatch $66k, Datadog $50k, Grafana Cloud Pro $26k, New Relic $5-20k, Google Managed Prometheus $9k, Amazon Managed Prometheus $6.2k, Azure Managed Prometheus $1.9k, ClickHouse Cloud $0.5-1k, ClickHouse self-hosted $500." width="440">
-  </picture>
-</p>
-
-- 1M active series @ 15s (~173B samples/mo), 30-day retention, list prices (Oct 2026)
-- ClickHouse assumes 8–30 B/sample on disk (~13 measured)
-
-<details>
-<summary><b>Pricing details</b></summary>
-
-| Backend | Billed on | $/month |
-|---|---|---|
-| CloudWatch | Metric × dimension combo | ~66,000 |
-| Datadog | Metric × tag set | ~50,000 |
-| Grafana Cloud Pro | Active series × DPM | ~26,000 |
-| New Relic | GB ingested | ~5,000–20,000 |
-| Google Managed Prometheus | Samples | ~9,000 |
-| Amazon Managed Prometheus | Samples + storage + query | ~6,200 |
-| Azure Managed Prometheus | Samples | ~1,900 |
-| **ClickHouse Cloud** (2 replicas) | Compute + storage | **~500–1,000** |
-| **ClickHouse self-hosted** (1 node) | VM + disk | **~500** |
 
 </details>
 
