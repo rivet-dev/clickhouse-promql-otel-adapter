@@ -291,6 +291,8 @@ docker run --rm -p 9091:9091 \
   ghcr.io/rivet-dev/clickhouse-promql-otel-adapter:latest
 ```
 
+From a checkout: `just run` (source) or `just image-run` (container).
+
 Add a **Prometheus** data source in Grafana: `http://<host>:9091`. Full local stack: [demo](demo/README.md).
 
 ## Reference
@@ -312,8 +314,9 @@ Add a **Prometheus** data source in Grafana: `http://<host>:9091`. Full local st
 - **Not implemented** (404): rules/alerts, remote read/write, ingestion, TSDB admin, StoreAPI
 - **No auth or TLS**: run behind a proxy
 - **Limits & errors**: [API contract](docs/api-contract.md)
-- **Dev**: `docker compose up -d --wait && cargo test --locked && python3 scripts/conformance.py`
-- **Release**: push a `vX.Y.Z` tag → Linux amd64/arm64 binaries + GHCR image
+- **Dev** ([just](https://just.systems/) 1.41+, Docker Compose, Python 3.12+): `just setup`, `just test`, `just conformance`, `just ci`; run `just` to list all
+- **Parser changes**: [versioned patch](vendor/README.md), `just vendor-regenerate` / `just vendor-check`
+- **Release**: `just release vX.Y.Z` → Linux amd64/arm64 binaries (glibc 2.39+) + GHCR image
 
 ## Why is the name so awful?
 

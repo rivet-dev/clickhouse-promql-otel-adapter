@@ -49,8 +49,8 @@ upgrading them requires regenerating snapshots and rerunning conformance.
 
 ## Storage and ingestion
 
-- [x] Collector-generated default gauge/sum/histogram/exponential histogram/summary tables, DDL snapshots and reproducible regeneration command: `scripts/generate-snapshots.py` (generate + clean verification passed).
-- [x] Deterministic synthetic OTLP fixture generator; Collector-generated row snapshots: `scripts/datasets.py`, `tests/snapshots/`.
+- [x] Collector-generated default gauge/sum/histogram/exponential histogram/summary tables, DDL snapshots and reproducible regeneration command: `just snapshots --update` (generate + clean verification passed).
+- [x] Deterministic synthetic OTLP fixture generator; Collector-generated row snapshots: `just dataset`, `tests/snapshots/`.
 - [x] Real ClickHouse integration tests with unique databases, cleanup on success/failure, concurrent isolation.
 - [x] Gauge int/double values; monotonic and non-monotonic sums.
 - [x] Cumulative counters, reset boundaries, start timestamps, zero samples. See collector snapshots and `tests/clickhouse.rs`; format losses are documented.
@@ -120,12 +120,12 @@ upgrading them requires regenerating snapshots and rerunning conformance.
 - [x] Unit tests with regression cases for evaluator and translation boundaries.
 - [x] API result snapshots with controlled times and deterministic label ordering.
 - [x] Upstream fixture runner preserving load/clear/eval, missing/stale/native samples, expected failures, annotations and ordering.
-- [x] Execute every upstream fixture and publish captured execution coverage with no silent skips: `scripts/conformance.py`, `tests/conformance/`, `docs/evaluator-report.md`. Parser rejection/type coverage uses the separate 356-case corpus; the evaluator fixture run emitted no query-creation rejections.
+- [x] Execute every upstream fixture and publish captured execution coverage with no silent skips: `just conformance`, `tests/conformance/`, `docs/evaluator-report.md`. Parser rejection/type coverage uses the separate 356-case corpus; the evaluator fixture run emitted no query-creation rejections.
 - [x] Differential fixture datasets against Prometheus; seeded generated Thanos replica datasets (seed 3817) recorded for replay.
 - [x] Integration coverage of all five collector-created table types.
 - [x] Manual Grafana data source health, Explore instant/range, dashboard rate and histogram panels, labels/variables and empty/error cases.
 - [x] Save local-browser screenshots and manual report, including exact versions/configs.
-- [x] cargo fmt, clippy, unit/integration/conformance checks.
+- [x] `just check`, `just test`, and `just conformance`.
 - [x] Independent review round completed and findings resolved.
 - [x] Final JJ graph at active stack tip; major changes in separate non-empty revisions.
 
@@ -310,7 +310,7 @@ Generated from the pinned upstream source during initial research. Every registe
 
 | Checklist area | Reproducible evidence |
 |---|---|
-| PromQL values, functions, temporal semantics, annotations | `python3 scripts/conformance.py`; [per-fixture totals](evaluator-report.md) |
+| PromQL values, functions, temporal semantics, annotations | `just conformance`; [per-fixture totals](evaluator-report.md) |
 | Parser acceptance/types, format/parse APIs | `tests/parser_conformance.rs`, `tests/http_conformance.rs`, vendor parser suite |
 | OTel conversion, SQL safety, duplicates, metadata, exemplars | `tests/clickhouse.rs`, `tests/api.rs`, Collector snapshot comparison |
 | PromQL through real ClickHouse | `tests/storage_conformance.rs`; [storage totals and exclusions](storage-report.md) |

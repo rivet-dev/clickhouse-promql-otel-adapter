@@ -13,4 +13,4 @@ Remaining exclusions include Prometheus native custom buckets, fractional/negati
 
 Rows use the standard Prometheus receiver scope. The default receiver preserves original metric names (`trim_metric_suffixes: false`), so the adapter preserves those names and labels as well. SDK-originated OTLP metrics use naming conversion.
 
-Run `cargo test --test storage_conformance`. Each dataset database is dropped on success or panic.
+Run `just test-storage`. Each dataset database is dropped on success or panic.

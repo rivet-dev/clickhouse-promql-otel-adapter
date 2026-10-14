@@ -3,8 +3,8 @@ all 21 fixture files in the pinned Prometheus release. The manifest records its
 source revision, execution count, dataset count, and checksum. Inputs include
 stale samples, start timestamps, native/custom histograms and reset hints.
 
-Run `python3 scripts/conformance.py`. Regenerate explicitly with
-`python3 scripts/conformance.py --regenerate` (requires Go for the reference only).
+Run `just conformance`. Regenerate explicitly with
+`just conformance --regenerate` (requires Go for the reference only).
 The adapter and its evaluator remain entirely Rust. See `NOTICE` and `LICENSE`.
 
 These are captured query executions, including upstream-generated instant,
