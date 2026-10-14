@@ -21,11 +21,9 @@
 - **OTel schema is awkward**: labels in `Map` columns, one table per metric type
 - **Portable**: same queries run on Prometheus, Thanos, Mimir
 
-**Requests/sec by service**
+### Example: requests/sec by service
 
-```promql
-sum by (service_name) (rate(http_server_requests_total[5m]))
-```
+**Before: raw ClickHouse SQL**
 
 ```sql
 WITH deltas AS (
@@ -52,15 +50,18 @@ GROUP BY t, ServiceName
 ORDER BY t
 ```
 
-SQL is ~25 lines and **still wrong**: fixed 1m buckets, no extrapolation, no delta temporality.
+**After: PromQL with this adapter**
+
+```promql
+sum by (service_name) (rate(http_server_requests_total[5m]))
+```
+
+The SQL is ~25 lines and **still wrong**: fixed 1m buckets, no extrapolation, no delta temporality.
 
 <details>
 <summary><b>p99 latency from a histogram</b></summary>
 
-```promql
-histogram_quantile(0.99,
-  sum by (service_name, le) (rate(http_server_request_duration_seconds_bucket[5m])))
-```
+**Before: raw ClickHouse SQL**
 
 ```sql
 WITH deltas AS (
@@ -107,6 +108,13 @@ FROM ranked
 ORDER BY t
 ```
 
+**After: PromQL with this adapter**
+
+```promql
+histogram_quantile(0.99,
+  sum by (service_name, le) (rate(http_server_request_duration_seconds_bucket[5m])))
+```
+
 Still missing: mixed buckets, `+Inf` rule, exponential histograms, sliding windows.
 
 </details>
@@ -114,17 +122,7 @@ Still missing: mixed buckets, `+Inf` rule, exponential histograms, sliding windo
 <details>
 <summary><b>Multi-window SLO burn-rate alert</b></summary>
 
-```promql
-(
-  sum(rate(http_server_requests_total{http_response_status_code=~"5.."}[1h]))
-    / sum(rate(http_server_requests_total[1h])) > 14.4 * 0.001
-)
-and
-(
-  sum(rate(http_server_requests_total{http_response_status_code=~"5.."}[5m]))
-    / sum(rate(http_server_requests_total[5m])) > 14.4 * 0.001
-)
-```
+**Before: raw ClickHouse SQL**
 
 ```sql
 WITH deltas AS (
@@ -167,6 +165,20 @@ WHERE t >= now() - INTERVAL 1 HOUR
 ORDER BY t
 ```
 
+**After: PromQL with this adapter**
+
+```promql
+(
+  sum(rate(http_server_requests_total{http_response_status_code=~"5.."}[1h]))
+    / sum(rate(http_server_requests_total[1h])) > 14.4 * 0.001
+)
+and
+(
+  sum(rate(http_server_requests_total{http_response_status_code=~"5.."}[5m]))
+    / sum(rate(http_server_requests_total[5m])) > 14.4 * 0.001
+)
+```
+
 Still missing: extrapolation, delta temporality, lookback. Scans 2h to evaluate 1h.
 
 </details>
@@ -174,9 +186,7 @@ Still missing: extrapolation, delta temporality, lookback. Scans 2h to evaluate 
 <details>
 <summary><b>Top 5 memory growth vs. yesterday</b></summary>
 
-```promql
-topk(5, process_memory_usage_bytes - process_memory_usage_bytes offset 1d)
-```
+**Before: raw ClickHouse SQL**
 
 ```sql
 WITH
@@ -203,13 +213,30 @@ ORDER BY growth DESC
 LIMIT 5
 ```
 
+**After: PromQL with this adapter**
+
+```promql
+topk(5, process_memory_usage_bytes - process_memory_usage_bytes offset 1d)
+```
+
 Single instant only. Graphing it needs a time-step dimension in every CTE.
 
 </details>
 
 ## Cost
 
-1M active series @ 15s (~173B samples/mo), 30-day retention, list prices (Oct 2026):
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./.github/media/cost-dark.svg">
+    <img src="./.github/media/cost-light.svg" alt="Estimated monthly list cost for 1M active series at 15s: CloudWatch $66k, Datadog $50k, Grafana Cloud Pro $26k, New Relic $5-20k, Google Managed Prometheus $9k, Amazon Managed Prometheus $6.2k, Azure Managed Prometheus $1.9k, ClickHouse Cloud $0.5-1k, ClickHouse self-hosted $500." width="440">
+  </picture>
+</p>
+
+- 1M active series @ 15s (~173B samples/mo), 30-day retention, list prices (Oct 2026)
+- ClickHouse assumes 8–30 B/sample on disk (~13 measured)
+
+<details>
+<summary><b>Pricing details</b></summary>
 
 | Backend | Billed on | $/month |
 |---|---|---|
@@ -223,7 +250,7 @@ Single instant only. Graphing it needs a time-step dimension in every CTE.
 | **ClickHouse Cloud** (2 replicas) | Compute + storage | **~500–1,000** |
 | **ClickHouse self-hosted** (1 node) | VM + disk | **~500** |
 
-ClickHouse assumes 8–30 B/sample on disk (~13 measured).
+</details>
 
 ## Quickstart
 

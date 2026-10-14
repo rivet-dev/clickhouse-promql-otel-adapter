@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 308" width="440" height="308" role="img" aria-label="Estimated monthly list cost for 1 million active series at 15 second resolution: CloudWatch $66k, Datadog $50k, Grafana Cloud Pro $26k, New Relic $5–20k, Google Managed Prom. $9k, Amazon Managed Prom. $6.2k, Azure Managed Prom. $1.9k, ClickHouse Cloud $0.5–1k, ClickHouse self-hosted $500." style="font-family:system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <rect x="10" y="10" width="420" height="288" rx="10" fill="#161618" stroke="#d4d4d8" stroke-width="1.3" stroke-dasharray="6 5"/>
+  <text x="30" y="32" font-size="10" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" letter-spacing="0.14em" fill="#d4d4d8">MONTHLY LIST COST</text>
+  <text x="410" y="32" text-anchor="end" font-size="10" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" fill="#d4d4d8">1M series @ 15s</text>
+  <line x1="168" y1="48" x2="168" y2="286" stroke="#ffffff" stroke-width="1.1"/>
+  <text x="158" y="71" text-anchor="end" font-size="11" fill="#ffffff">CloudWatch</text>
+  <rect x="168" y="58" width="210.0" height="18" rx="3" fill="#26262a" stroke="#ffffff" stroke-width="1.1"/>
+  <text x="384.0" y="71" font-size="10" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" fill="#d4d4d8">$66k</text>
+  <text x="158" y="97" text-anchor="end" font-size="11" fill="#ffffff">Datadog</text>
+  <rect x="168" y="84" width="159.1" height="18" rx="3" fill="#26262a" stroke="#ffffff" stroke-width="1.1"/>
+  <text x="333.1" y="97" font-size="10" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" fill="#d4d4d8">$50k</text>
+  <text x="158" y="123" text-anchor="end" font-size="11" fill="#ffffff">Grafana Cloud Pro</text>
+  <rect x="168" y="110" width="82.7" height="18" rx="3" fill="#26262a" stroke="#ffffff" stroke-width="1.1"/>
+  <text x="256.7" y="123" font-size="10" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" fill="#d4d4d8">$26k</text>
+  <text x="158" y="149" text-anchor="end" font-size="11" fill="#ffffff">New Relic</text>
+  <rect x="168" y="136" width="32.8" height="18" rx="3" fill="#26262a" stroke="#ffffff" stroke-width="1.1"/>
+  <text x="206.8" y="149" font-size="10" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" fill="#d4d4d8">$5–20k</text>
+  <text x="158" y="175" text-anchor="end" font-size="11" fill="#ffffff">Google Managed Prom.</text>
+  <rect x="168" y="162" width="28.6" height="18" rx="3" fill="#26262a" stroke="#ffffff" stroke-width="1.1"/>
+  <text x="202.6" y="175" font-size="10" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" fill="#d4d4d8">$9k</text>
+  <text x="158" y="201" text-anchor="end" font-size="11" fill="#ffffff">Amazon Managed Prom.</text>
+  <rect x="168" y="188" width="19.7" height="18" rx="3" fill="#26262a" stroke="#ffffff" stroke-width="1.1"/>
+  <text x="193.7" y="201" font-size="10" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" fill="#d4d4d8">$6.2k</text>
+  <text x="158" y="227" text-anchor="end" font-size="11" fill="#ffffff">Azure Managed Prom.</text>
+  <rect x="168" y="214" width="6.0" height="18" rx="3" fill="#26262a" stroke="#ffffff" stroke-width="1.1"/>
+  <text x="180.0" y="227" font-size="10" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" fill="#d4d4d8">$1.9k</text>
+  <text x="158" y="253" text-anchor="end" font-size="11" font-weight="600" fill="#ffffff">ClickHouse Cloud</text>
+  <rect x="168" y="240" width="3.2" height="18" rx="3" fill="#d36945" stroke="#d36945" stroke-width="1.1"/>
+  <text x="177.2" y="253" font-size="10" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-weight="600" fill="#d36945">$0.5–1k</text>
+  <text x="158" y="279" text-anchor="end" font-size="11" font-weight="600" fill="#ffffff">ClickHouse self-hosted</text>
+  <rect x="168" y="266" width="3.0" height="18" rx="3" fill="#d36945" stroke="#d36945" stroke-width="1.1"/>
+  <text x="177.0" y="279" font-size="10" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-weight="600" fill="#d36945">$500</text>
+</svg>
