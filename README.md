@@ -5,7 +5,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="./.github/media/architecture-dark.svg">
-    <img src="./.github/media/architecture-light.svg" alt="Left to right: Grafana sends PromQL to the stateless clickhouse-promql adapter, which queries the otel_metrics tables in ClickHouse with SQL. Below ClickHouse, the OpenTelemetry Collector's ClickHouse exporter writes those tables." width="680">
+    <img src="./.github/media/architecture-light.svg" alt="Left to right: Grafana sends PromQL to the stateless clickhouse-promql adapter, which queries the otel_metrics tables in ClickHouse with SQL. Below ClickHouse, the OpenTelemetry Collector's ClickHouse exporter writes those tables." width="690">
   </picture>
 </p>
 
@@ -18,6 +18,7 @@
 
 - **Vanilla OTel → ClickHouse**: stock Collector exporter, no extra observability layer
 - **Full PromQL**: works with Grafana's built-in Prometheus data source
+- **Stateless**: translates PromQL into ClickHouse queries; no storage, cache or ingestion of its own
 
 ## Why ClickHouse
 

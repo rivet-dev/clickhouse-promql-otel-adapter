@@ -20,3 +20,6 @@ Copyright The Prometheus Authors and The OpenTelemetry Authors, Apache-2.0.
 
 HA replica selection is adapted from Thanos pkg/dedup.
 Copyright The Thanos Authors, Apache License, Version 2.0.
+
+Logos in .github/media come from Simple Icons (CC0 1.0). The Grafana,
+Prometheus, ClickHouse and OpenTelemetry marks belong to their respective owners.
