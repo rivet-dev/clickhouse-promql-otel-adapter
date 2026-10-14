@@ -67,6 +67,10 @@ def main():
         run("go", "test", "-run", "TestParserReference", "-count=1", "./...", cwd=ROOT / "tools/oracle", env=env)
         env |= {"OTEL_NAMES_OUTPUT": str(SNAPSHOTS / "otel-names.json")}
         run("go", "test", "-run", "TestOTelNames", "-count=1", "./...", cwd=ROOT / "tools/oracle", env=env)
+        env |= {"REGEX_OUTPUT": str(SNAPSHOTS / "regex.json"), "UNICODE_PROPERTIES_OUTPUT": str(ROOT / "vendor/promql-parser/src/label/unicode-properties.txt")}
+        run("go", "test", "-run", "TestRegexReference", "-count=1", "./...", cwd=ROOT / "tools/oracle", env=env)
+        env |= {"SEARCH_OUTPUT": str(SNAPSHOTS / "search-scores.json")}
+        run("go", "test", "-run", "TestSearchScores", "-count=1", "./...", cwd=ROOT / "tools/oracle", env=env)
         env |= {"API_OUTPUT": str(SNAPSHOTS / "http.json")}
         run("go", "test", "-run", "TestAPIReference", "-count=1", "./...", cwd=ROOT / "tools/oracle", env=env)
     manifest = json.loads((SNAPSHOTS / "manifest.json").read_text())

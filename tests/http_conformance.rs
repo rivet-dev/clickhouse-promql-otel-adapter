@@ -47,8 +47,9 @@ async fn pinned_prometheus_http_contract() {
             let mut request=Request::builder().method(case["method"].as_str().unwrap()).uri(case["uri"].as_str().unwrap());
             if let Some(content_type)=case["content_type"].as_str().filter(|s|!s.is_empty()) {request=request.header("content-type",content_type);}
             let response=app.clone().oneshot(request.body(Body::from(case["body"].as_str().unwrap().to_owned())).unwrap()).await.unwrap();
+            let ndjson=response.headers().get("content-type").is_some_and(|v|v.to_str().unwrap().contains("ndjson"));
             let status=response.status().as_u16();let bytes=to_bytes(response.into_body(),2_000_000).await.unwrap();
-            let mut actual=serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|_|json!(String::from_utf8_lossy(&bytes)));let mut expected=case["response"].clone();normalize(&mut actual);normalize(&mut expected);
+            let mut actual=if ndjson {json!(String::from_utf8_lossy(&bytes).lines().map(|l|serde_json::from_str::<Value>(l).unwrap()).collect::<Vec<_>>())} else {serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|_|json!(String::from_utf8_lossy(&bytes)))};let mut expected=case["response"].clone();normalize(&mut actual);normalize(&mut expected);
             if status as u64 != case["status"].as_u64().unwrap() || actual != expected {
                 failures.push(json!({"index":index,"request":case,"actual_status":status,"actual":actual}));
             }

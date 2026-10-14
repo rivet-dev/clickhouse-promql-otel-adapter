@@ -187,3 +187,68 @@ async fn fine_exponential_scales_are_downsampled_for_prometheus() {
         let expr=Engine::parse("fine").unwrap();let(a,b,s)=plan(&expr,START,START,300000).unwrap();let data=store.load(a,b,&s).await.unwrap();let h=data.series[0].points[0].histogram.as_ref().unwrap();assert_eq!(h.schema,8);assert_eq!(h.positive.len(),1);assert_eq!(h.positive[&1],3.0);
     }).await
 }
+
+#[tokio::test]
+async fn metric_filter_preserves_normalization_and_escapes() {
+    common::empty_database_test(false, |mut store| async move {
+        let weird="a'b\\c";
+        let scope="github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver";
+        let mut rows=(0..100).map(|i|serde_json::json!({"MetricName":"unrelated","TimeUnix":1700000000+i,"Value":i}).to_string()).collect::<Vec<_>>();
+        rows.push(serde_json::json!({"MetricName":"http.request.duration","MetricUnit":"s","TimeUnix":1700000000,"Value":3}).to_string());
+        rows.push(serde_json::json!({"MetricName":weird,"ScopeName":scope,"TimeUnix":1700000000,"Value":4}).to_string());
+        store.query(&format!("INSERT INTO {}.otel_metrics_gauge FORMAT JSONEachRow\n{}",store.database,rows.join("\n")),&[]).await.unwrap();
+        store.max_rows=10;
+        for (query,expected) in [("http_request_duration_seconds".to_owned(),3.0),(format!("{{{}}}",serde_json::to_string(weird).unwrap()),4.0)] {
+            let expr=Engine::parse(&query).unwrap(); let (a,b,selectors)=plan(&expr,START,START,300_000).unwrap();
+            let data=store.load(a,b,&selectors).await.unwrap();
+            assert_eq!(data.series.len(),1);assert_eq!(data.series[0].points[0].value,expected);
+        }
+    }).await;
+}
+
+#[tokio::test]
+async fn review_storage_regressions() {
+    common::empty_database_test(false, |mut store| async move {
+        let scope="github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver";
+        let rows=[
+            serde_json::json!({"MetricName":"foo","ScopeName":scope,"Attributes":{"job":"x","instance":"y"},"TimeUnix":950,"Value":10}),
+            serde_json::json!({"MetricName":"foo","ScopeName":scope,"Attributes":{"job":"x","instance":"y"},"TimeUnix":980,"Value":20}),
+            serde_json::json!({"MetricName":"target_info","ScopeName":scope,"Attributes":{"job":"x","instance":"y","region":"west"},"TimeUnix":800,"Value":1}),
+            serde_json::json!({"MetricName":"???","TimeUnix":1,"Value":1}),
+        ];
+        store.query(&format!("INSERT INTO {}.otel_metrics_gauge FORMAT JSONEachRow\n{}",store.database,rows.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n")),&[]).await.unwrap();
+        let q="info(rate(foo[1m] @ 1000))";let expr=Engine::parse_at(q,2_000_000,2_000_000,0).unwrap();let (a,b,selectors)=plan(&expr,2_000_000,2_000_000,300_000).unwrap();
+        assert!(a<=700_000);
+        let data=store.load(a,b,&selectors).await.unwrap();let v=Engine::new(&data.series,2_000_000,2_000_000).instant(q,2_000_000).unwrap().vector().unwrap();
+        assert_eq!(v[0].labels["region"],"west");
+        store.query(&format!("INSERT INTO {}.otel_metrics_gauge (MetricName,TimeUnix,Value) SELECT 'dense', 2000+number, number FROM numbers(100)",store.database),&[]).await.unwrap();
+        store.max_rows=10;
+        let data=store.discover(2_000_000,2_100_000,&[]).await.unwrap();assert_eq!(data.series.len(),1);
+        store.query(&format!("INSERT INTO {}.otel_metrics_gauge (MetricName,TimeUnix,StartTimeUnix,Value) VALUES ('same',2000,1800,5),('same',2000,1900,5)",store.database),&[]).await.unwrap();
+        let expr=Engine::parse("same").unwrap();let (a,b,selectors)=plan(&expr,2_000_000,2_000_000,300_000).unwrap();
+        assert!(store.load(a,b,&selectors).await.err().unwrap().to_string().contains("conflicting samples"));
+    }).await;
+}
+
+#[tokio::test]
+async fn collector_histograms_without_optional_buckets() {
+    common::database_test(|store| async move {
+        for (q, value) in [
+            ("hist_no_buckets_count", 5.0),
+            ("hist_no_buckets_sum", 10.0),
+            ("hist_no_buckets_bucket", 5.0),
+        ] {
+            let expr = Engine::parse(q).unwrap();
+            let (a, b, selectors) = plan(&expr, START, START, 300_000).unwrap();
+            let data = store.load(a, b, &selectors).await.unwrap();
+            let v = Engine::new(&data.series, START, START)
+                .instant(q, START)
+                .unwrap()
+                .vector()
+                .unwrap();
+            assert_eq!(v.len(), 1);
+            assert_eq!(v[0].value, value);
+        }
+    })
+    .await;
+}

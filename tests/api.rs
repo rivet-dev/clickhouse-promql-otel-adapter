@@ -106,6 +106,7 @@ async fn bad_parameters_do_not_query_storage() {
         "/api/v1/query?query=1&time=garbage",
         "/api/v1/query_range?query=1&start=0&end=1&step=0",
         "/api/v1/series",
+        "/api/v1/label/U__/values",
     ] {
         let (status, data) = request(store.clone(), "GET", path, "").await;
         assert_eq!(status, 400, "{path}: {data}");
@@ -181,4 +182,125 @@ async fn thanos_ha_options_and_shards_on_clickhouse() {
         bounded.max_bytes=8;
         assert!(bounded.query("SELECT repeat('x', 100)",&[]).await.unwrap_err().to_string().contains("byte limit"));
     }).await;
+}
+
+#[tokio::test]
+async fn metadata_limits_and_conflicts() {
+    common::database_test(|store| async move {
+        for limit in ["-1", "0", "1"] {
+            let (status,data)=request(store.clone(),"GET",&format!("/api/v1/metadata?limit={limit}"),"").await;
+            assert_eq!(status,200,"{data}");
+            let count=data["data"].as_object().unwrap().len();
+            if limit=="0" {assert_eq!(count,0);} else if limit=="1" {assert_eq!(count,1);} else {assert!(count>1);}
+        }
+        for name in ["limit","limit_per_metric"] {
+            let (status,data)=request(store.clone(),"GET",&format!("/api/v1/metadata?{name}=bad"),"").await;
+            assert_eq!(status,400); assert_eq!(data["error"],format!("{name} must be a number"));
+        }
+        store.query(&format!("INSERT INTO {}.otel_metrics_gauge (MetricName,MetricDescription,TimeUnix,Value) VALUES ('conflict','first',1700000000,1),('conflict','second',1700000015,2)",store.database),&[]).await.unwrap();
+        let (_,data)=request(store.clone(),"GET","/api/v1/metadata?metric=conflict","").await;
+        assert_eq!(data["data"]["conflict"].as_array().unwrap().len(),2);
+        let (_,data)=request(store,"GET","/api/v1/metadata?metric=conflict&limit_per_metric=1","").await;
+        assert_eq!(data["data"]["conflict"].as_array().unwrap().len(),1);
+    }).await;
+}
+
+#[tokio::test]
+async fn utf8_label_paths_and_malformed_route() {
+    common::empty_database_test(false,|store|async move {
+        store.query(&format!("INSERT INTO {}.otel_metrics_gauge FORMAT JSONEachRow\n{}",store.database,serde_json::json!({"MetricName":"m","TimeUnix":1700000000,"Value":1,"ScopeName":"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver","Attributes":{"foo.bar":"yes"}})),&[]).await.unwrap();
+        let (status,data)=request(store.clone(),"GET","/api/v1/label/U__foo_2e_bar/values","").await;assert_eq!(status,200);assert_eq!(data["data"],serde_json::json!(["yes"]));
+        let (status,_)=request(store,"GET","/api/v1/label/values","").await;assert_eq!(status,404);
+    }).await;
+}
+
+#[tokio::test]
+async fn request_deadline_bounds_body_and_waiting_for_capacity() {
+    use std::time::Duration;
+    let store = Store::new(
+        "http://127.0.0.1:1".into(),
+        "test".into(),
+        "default".into(),
+        "".into(),
+    )
+    .unwrap();
+    let mut app = App::new(store);
+    app.request_timeout = Duration::from_millis(30);
+    // A held capacity slot must not make a waiting request immortal.
+    app.concurrency = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+    let held = app.concurrency.clone().acquire_owned().await.unwrap();
+    let response = router(app.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/query?query=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 503);
+    drop(held);
+    // Incoming bytes are bounded by the same request deadline.
+    let stream = futures_util::stream::pending::<Result<axum::body::Bytes, std::io::Error>>();
+    let response = router(app.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/query")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from_stream(stream))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 503);
+    assert_eq!(app.concurrency.available_permits(), 1);
+    for preflight in [false, true] {
+        let mut request = Request::builder().method("OPTIONS").uri("/api/v1/query");
+        if preflight {
+            request = request
+                .header("origin", "https://promql-test.gameinc.io")
+                .header("access-control-request-method", "POST");
+        }
+        let response = router(app.clone())
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 204);
+    }
+}
+
+#[tokio::test]
+async fn backend_failure_and_thanos_step_defaults() {
+    let store = Store::new(
+        "http://127.0.0.1:1".into(),
+        "missing".into(),
+        "default".into(),
+        "".into(),
+    )
+    .unwrap();
+    let (status, data) = request(store.clone(), "GET", "/api/v1/query?query=some_metric", "").await;
+    assert_eq!(status, 500);
+    assert_eq!(data["errorType"], "internal");
+    let mut app = App::new(store);
+    app.thanos_default_step = Some(std::time::Duration::from_secs(60));
+    let response = router(app)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/query_range?query=1&start=0&end=120")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let data: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 10000).await.unwrap()).unwrap();
+    assert_eq!(
+        data["data"]["result"][0]["values"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
 }

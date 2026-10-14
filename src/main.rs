@@ -20,6 +20,9 @@ struct Config {
     /// Labels identifying HA replicas; may be repeated.
     #[arg(long = "replica-label")]
     replica_labels: Vec<String>,
+    /// Enable Thanos defaults for omitted range step (seconds, usually 60).
+    #[arg(long, value_parser=clap::value_parser!(u64).range(1..))]
+    thanos_default_step: Option<u64>,
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -33,6 +36,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(%address,"listening");
     let mut app = App::new(store);
     app.replica_labels = c.replica_labels;
+    app.thanos_default_step = c.thanos_default_step.map(std::time::Duration::from_secs);
     axum::serve(listener, router(app))
         .with_graceful_shutdown(async {
             tokio::signal::ctrl_c().await.ok();

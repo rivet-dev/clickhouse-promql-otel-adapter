@@ -1,3 +1,4 @@
+mod search;
 use crate::{
     engine::Engine,
     storage::{Store, plan},
@@ -16,7 +17,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower_http::{compression::CompressionLayer, cors::CorsLayer};
 
 #[derive(Clone)]
@@ -25,6 +26,8 @@ pub struct App {
     pub concurrency: Arc<Semaphore>,
     pub replica_labels: Vec<String>,
     pub store_labels: crate::model::Labels,
+    pub request_timeout: Duration,
+    pub thanos_default_step: Option<Duration>,
 }
 impl App {
     pub fn new(store: Store) -> Self {
@@ -33,13 +36,23 @@ impl App {
             concurrency: Arc::new(Semaphore::new(16)),
             replica_labels: Vec::new(),
             store_labels: Default::default(),
+            request_timeout: Duration::from_secs(120),
+            thanos_default_step: None,
         }
     }
 }
 pub fn router(app: App) -> Router {
     Router::new().route("/-/healthy",get(||async{"ClickHouse PromQL adapter is healthy\n"}))
         .route("/-/ready",get(ready)).route("/metrics",get(||async{"# HELP clickhouse_promql_build_info Build information.\n# TYPE clickhouse_promql_build_info gauge\nclickhouse_promql_build_info{version=\"0.1.0\"} 1\n"}))
-        .route("/api/v1/{*path}",any(handle)).with_state(app).layer(CompressionLayer::new()).layer(CorsLayer::permissive())
+        .route("/api/v1/{*path}",any(handle)).with_state(app).layer(CompressionLayer::new()).layer(CorsLayer::permissive()).layer(axum::middleware::from_fn(options_status))
+}
+async fn options_status(request: Request, next: axum::middleware::Next) -> Response {
+    let options = request.method() == Method::OPTIONS;
+    let mut response = next.run(request).await;
+    if options {
+        *response.status_mut() = StatusCode::NO_CONTENT;
+    }
+    response
 }
 async fn ready(State(app): State<App>) -> Response {
     match app.store.ready().await {
@@ -73,6 +86,20 @@ impl ApiError {
             message: message.to_string(),
         }
     }
+    fn storage(error: anyhow::Error) -> Self {
+        if error
+            .downcast_ref::<crate::storage::BackendError>()
+            .is_some()
+        {
+            Self {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                kind: "internal",
+                message: error.to_string(),
+            }
+        } else {
+            Self::exec(error)
+        }
+    }
     fn unavailable(message: impl ToString) -> Self {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
@@ -95,6 +122,12 @@ impl IntoResponse for ApiError {
             Json(json!({"status":"error","errorType":self.kind,"error":self.message})),
         )
             .into_response()
+    }
+}
+struct CancelOnDrop(Arc<std::sync::atomic::AtomicBool>);
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 type Result<T> = std::result::Result<T, ApiError>;
@@ -140,7 +173,7 @@ impl QueryOptions {
         };
         let dedup = boolean("dedup", true)?;
         boolean("partial_response", false)?;
-        boolean("analyze", false)?;
+
         match p.get("engine").unwrap_or("") {
             "" | "prometheus" | "thanos" => (),
             v => return Err(ApiError::bad(format!("'{v}' bad engine"))),
@@ -273,16 +306,45 @@ impl Params {
     }
 }
 async fn handle(State(app): State<App>, request: Request) -> Response {
+    if request.method() == Method::OPTIONS {
+        return StatusCode::NO_CONTENT.into_response();
+    }
     if request.method() != Method::GET && request.method() != Method::POST {
         return (StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed\n").into_response();
     }
-    match dispatch(app, request).await {
+    let search = request.uri().path().starts_with("/api/v1/search/");
+    let timeout = app.request_timeout;
+    let result = tokio::time::timeout(timeout, async {
+        let permit = app
+            .concurrency
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(ApiError::unavailable)?;
+        dispatch(app, request, permit).await
+    })
+    .await
+    .unwrap_or_else(|_| Err(ApiError::timeout()));
+    match result {
+        Ok(value) if search => {
+            let text = value
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| format!("{v}\n"))
+                .collect::<String>();
+            (
+                [("content-type", "application/x-ndjson; charset=utf-8")],
+                text,
+            )
+                .into_response()
+        }
         Ok(value) if value.get("data").is_none() => StatusCode::NO_CONTENT.into_response(),
         Ok(value) => Json(value).into_response(),
         Err(error) => error.into_response(),
     }
 }
-async fn dispatch(app: App, request: Request) -> Result<JsonValue> {
+async fn dispatch(app: App, request: Request, permit: OwnedSemaphorePermit) -> Result<JsonValue> {
     let method = request.method().clone();
     if method != Method::GET && method != Method::POST {
         return Err(ApiError {
@@ -326,7 +388,7 @@ async fn dispatch(app: App, request: Request) -> Result<JsonValue> {
         let expr = Engine::parse(query)
             .map_err(|e| ApiError::parameter("query", parse_error(query, &e.to_string())))?;
         return Ok(success(if path == "format_query" {
-            json!(expr.to_string())
+            json!(promql_parser::parser::Prettier::pretty(&expr, 0, 100))
         } else {
             api_ast(serde_json::to_value(expr).map_err(ApiError::exec)?)
         }));
@@ -343,19 +405,24 @@ async fn dispatch(app: App, request: Request) -> Result<JsonValue> {
     let duration = Duration::from_millis(timeout.min(120_000) as u64);
     let deadline = Instant::now() + duration;
     tokio::time::timeout(duration, async {
-        let _permit = app
-            .concurrency
-            .acquire()
-            .await
-            .map_err(ApiError::unavailable)?;
         match path.as_str() {
             "query" | "query_range" => {
-                query_api(&app, &params, path == "query_range", deadline).await
+                query_api(&app, &params, path == "query_range", deadline, permit).await
             }
-            "query_explain" | "query_range_explain" => Err(ApiError::bad("Query not explainable")),
+            "query_explain" | "query_range_explain" => {
+                QueryOptions::parse(&app, &params)?;
+                Err(ApiError::bad(if params.get("engine") == Some("thanos") {
+                    "Query not explainable"
+                } else {
+                    "engine type must be 'thanos'"
+                }))
+            }
+            "search/metric_names" | "search/label_names" | "search/label_values" => {
+                search::run(&app, &params, &path[7..], deadline, permit).await
+            }
             "query_exemplars" => exemplar_api(&app, &params).await,
             "labels" | "series" | "metadata" => discovery_api(&app, &params, &path).await,
-            _ if path.starts_with("label/") && path.ends_with("/values") => {
+            _ if path.starts_with("label/") && path.ends_with("/values") && path.len() > 13 => {
                 discovery_api(&app, &params, &path).await
             }
             _ => Err(ApiError {
@@ -368,10 +435,27 @@ async fn dispatch(app: App, request: Request) -> Result<JsonValue> {
     .await
     .map_err(|_| ApiError::timeout())?
 }
+fn cap_annotations(mut values: Vec<String>, kind: &str) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    values.retain(|v| seen.insert(v.clone()));
+    if values.len() > 10 {
+        let omitted = values.len() - 10;
+        values.truncate(10);
+        values.push(format!("{omitted} more {kind} annotations omitted"));
+    }
+    values
+}
 fn success(data: JsonValue) -> JsonValue {
     json!({"status":"success","data":data})
 }
-async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Result<JsonValue> {
+async fn query_api(
+    app: &App,
+    p: &Params,
+    range: bool,
+    deadline: Instant,
+    permit: OwnedSemaphorePermit,
+) -> Result<JsonValue> {
+    let preparation_time = Instant::now();
     let query = p.get("query").unwrap_or("");
     let limit = p.limit()?;
     let options = QueryOptions::parse(app, p)?;
@@ -382,8 +466,18 @@ async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Res
             .map_err(|e| ApiError::parameter("start", e.message))?;
         let end = parse_time(p.get("end").unwrap_or(""))
             .map_err(|e| ApiError::parameter("end", e.message))?;
-        let step_ns = parse_duration_ns(p.get("step").unwrap_or(""))
-            .map_err(|e| ApiError::parameter("step", e.message))?;
+        let step_ns = if let Some(default_step) = app
+            .thanos_default_step
+            .filter(|_| p.get("step").is_none_or(str::is_empty))
+        {
+            let seconds =
+                ((end as i128 - start as i128) / 1000 / 250).max(default_step.as_secs() as i128);
+            i64::try_from(seconds.saturating_mul(1_000_000_000))
+                .map_err(|_| ApiError::parameter("step", "duration out of range"))?
+        } else {
+            parse_duration_ns(p.get("step").unwrap_or(""))
+                .map_err(|e| ApiError::parameter("step", e.message))?
+        };
         if end < start {
             return Err(ApiError::bad("end timestamp must not be before start time"));
         }
@@ -447,7 +541,7 @@ async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Res
         app.store
             .load(a, b, &selectors)
             .await
-            .map_err(ApiError::exec)?
+            .map_err(ApiError::storage)?
     };
     if let Some(shard) = options.shard {
         loaded.series.retain(|s| shard.matches(&s.labels));
@@ -455,15 +549,26 @@ async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Res
     let replica_labels = options.replica_labels;
     let query_source = query.to_owned();
     let stats = p.get("stats").unwrap_or("").to_owned();
-    let preparation_time = Instant::now();
+    let prepared = Instant::now();
+    let analyze_warning = matches!(p.get("analyze"), Some("true" | "1")).then(|| {
+        if p.get("engine") == Some("thanos") {
+            "Query fallback to prometheus engine; not analyzable."
+        } else {
+            "Query not analyzable; change engine to 'thanos'."
+        }
+    });
 
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _cancel_on_drop = CancelOnDrop(cancelled.clone());
     tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         let eval_start=Instant::now();
         let mut engine = Engine::new(&loaded.series, start, end);
         engine.source = query_source;
         engine.replica_labels = replica_labels;
         engine.lookback = lookback;
         engine.deadline = deadline;
+        engine.cancelled = Some(cancelled);
         let value = if range {
             engine.range(&expr, step)
         } else {
@@ -479,10 +584,11 @@ async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Res
         let mut data = value.json(start);
         let elapsed=eval_start.elapsed().as_secs_f64();
         if !stats.is_empty() {
-            data["stats"]=json!({"timings":{"evalTotalTime":elapsed,"execQueueTime":0.0,"execTotalTime":preparation_time.elapsed().as_secs_f64(),"innerEvalTime":elapsed,"queryPreparationTime":0.0,"resultSortTime":0.0},"samples":{"totalQueryableSamples":engine.samples_read,"samplesRead":engine.samples_read,"peakSamples":engine.peak_samples}});
+            data["stats"]=json!({"timings":{"evalTotalTime":elapsed,"execQueueTime":eval_start.duration_since(prepared).as_secs_f64(),"execTotalTime":preparation_time.elapsed().as_secs_f64(),"innerEvalTime":elapsed,"queryPreparationTime":prepared.duration_since(preparation_time).as_secs_f64(),"resultSortTime":0.0},"samples":{"totalQueryableSamples":engine.samples_read,"samplesRead":engine.samples_read,"peakSamples":engine.peak_samples}});
         }
         let mut warnings = engine.warnings.into_iter().collect::<Vec<_>>();
         warnings.extend(loaded.warnings);
+        if let Some(warning) = analyze_warning {warnings.push(warning.into());}
         if !stats.is_empty() && stats!="all" && stats!="true" {warnings.push(format!("value {stats:?} for parameter \"stats\" is deprecated and will be rejected in the next major release, use \"true\" or \"all\""));}
         if limit > 0 && matches!(data["resultType"].as_str(), Some("vector" | "matrix")) {
             let values = data["result"].as_array_mut().unwrap();
@@ -493,10 +599,10 @@ async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Res
         }
         let mut response = success(data);
         if !warnings.is_empty() {
-            response["warnings"] = json!(warnings)
+            response["warnings"] = json!(cap_annotations(warnings, "warning"))
         }
         if !engine.infos.is_empty() {
-            response["infos"] = json!(engine.infos)
+            response["infos"] = json!(cap_annotations(engine.infos.into_iter().collect(), "info"))
         }
         Ok(response)
     })
@@ -522,23 +628,52 @@ async fn exemplar_api(app: &App, p: &Params) -> Result<JsonValue> {
         .store
         .exemplars(start, end, &selectors)
         .await
-        .map_err(ApiError::exec)?;
+        .map_err(ApiError::storage)?;
     Ok(success(json!(result)))
 }
 async fn discovery_api(app: &App, p: &Params, path: &str) -> Result<JsonValue> {
+    let label = if !path.starts_with("label/") {
+        None
+    } else {
+        let raw = &path[6..path.len() - 7];
+        Some(unescape_label(
+            &percent_encoding::percent_decode_str(raw)
+                .decode_utf8()
+                .map_err(ApiError::bad)?,
+        ))
+    };
+    if label.as_ref().is_some_and(|name| name.is_empty()) {
+        return Err(ApiError::bad("invalid label name: \"\""));
+    }
     let start = p.time("start", 0)?;
     let end = p.time("end", 4_294_967_295_000)?;
     if end < start {
         return Err(ApiError::bad("end timestamp must not be before start time"));
     }
     let selectors = p.selectors(path == "series")?;
-    let limit = p.limit()?;
+    let metadata_limit = |name: &str| -> Result<i64> {
+        p.get(name).filter(|v| !v.is_empty()).map_or(Ok(-1), |v| {
+            v.parse()
+                .map_err(|_| ApiError::bad(format!("{name} must be a number")))
+        })
+    };
+    let limit = if path == "metadata" { 0 } else { p.limit()? };
+    let metric_limit = if path == "metadata" {
+        metadata_limit("limit")?
+    } else {
+        -1
+    };
+    let per_metric = if path == "metadata" {
+        metadata_limit("limit_per_metric")?
+    } else {
+        -1
+    };
     let options = QueryOptions::parse(app, p)?;
     let mut loaded = if options.store_matches {
         app.store
             .discover(start, end, &selectors)
             .await
-            .map_err(ApiError::exec)?
+            .map_err(ApiError::storage)?
     } else {
         Default::default()
     };
@@ -561,25 +696,19 @@ async fn discovery_api(app: &App, p: &Params, path: &str) -> Result<JsonValue> {
         )
     } else if path == "metadata" {
         let mut metadata = loaded.metadata;
-        if let Some(name) = p.get("metric") {
+        if let Some(name) = p.get("metric").filter(|v| !v.is_empty()) {
             metadata.retain(|k, _| k == name)
         }
-        if limit > 0 {
-            metadata = metadata.into_iter().take(limit).collect();
+        if metric_limit >= 0 {
+            metadata = metadata.into_iter().take(metric_limit as usize).collect();
+        }
+        if per_metric > 0 {
+            for values in metadata.values_mut() {
+                values.truncate(per_metric as usize);
+            }
         }
         return Ok(success(json!(metadata)));
     } else {
-        let label = if path == "labels" {
-            None
-        } else {
-            let raw = &path[6..path.len() - 7];
-            Some(
-                percent_encoding::percent_decode_str(raw)
-                    .decode_utf8()
-                    .map_err(ApiError::bad)?
-                    .into_owned(),
-            )
-        };
         let values = loaded
             .series
             .iter()
@@ -790,4 +919,40 @@ fn parse_error(query: &str, message: &str) -> String {
         .rfind('\n')
         .map_or(position + 1, |p| position - p);
     format!("{line}:{column}: parse error: {message}")
+}
+
+fn unescape_label(name: &str) -> String {
+    let Some(encoded) = name.strip_prefix("U__") else {
+        return name.into();
+    };
+    let mut out = String::new();
+    let mut chars = encoded.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '_' {
+            out.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'_') {
+            chars.next();
+            out.push('_');
+            continue;
+        }
+        let mut code = String::new();
+        let mut closed = false;
+        for c in chars.by_ref() {
+            if c == '_' {
+                closed = true;
+                break;
+            }
+            code.push(c);
+        }
+        if !closed || code.is_empty() || code.len() > 5 {
+            return name.into();
+        }
+        let Some(c) = u32::from_str_radix(&code, 16).ok().and_then(char::from_u32) else {
+            return name.into();
+        };
+        out.push(c);
+    }
+    out
 }

@@ -25,7 +25,9 @@ pub struct Engine<'a> {
     pub default_step: i64,
     pub max_samples: usize,
     pub deadline: Instant,
-    samples: usize,
+    pub cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    resident_samples: usize,
+    cached_samples: usize,
     pub samples_read: usize,
     pub peak_samples: usize,
     depth: usize,
@@ -36,7 +38,7 @@ pub struct Engine<'a> {
     pub query_step: i64,
     invariant_cache: BTreeMap<String, Value>,
     overlaps: BTreeMap<String, usize>,
-    monotonic: BTreeMap<String, (i64, i64, f64, f64, f64, usize)>,
+    monotonic: BTreeMap<String, (i64, i64, f64, f64, f64, i64)>,
     histogram_stats: bool,
     histogram_stats_blocked: bool,
 }
@@ -52,7 +54,9 @@ impl<'a> Engine<'a> {
             default_step: 60_000,
             max_samples: 5_000_000,
             deadline: Instant::now() + Duration::from_secs(120),
-            samples: 0,
+            cancelled: None,
+            resident_samples: 0,
+            cached_samples: 0,
             samples_read: 0,
             peak_samples: 0,
             depth: 0,
@@ -98,8 +102,12 @@ impl<'a> Engine<'a> {
         }
         let mut result: BTreeMap<Labels, Vec<Point>> = BTreeMap::new();
         let mut timestamp = self.start;
+        let mut retained = 0usize;
         loop {
-            match self.eval(expr, timestamp)? {
+            self.resident_samples = retained;
+            let value = self.eval(expr, timestamp)?;
+            retained = retained.saturating_add(value_samples(&value));
+            match value {
                 Value::Scalar(value) => result.entry(Labels::new()).or_default().push(Point {
                     timestamp,
                     value,
@@ -120,6 +128,7 @@ impl<'a> Engine<'a> {
                     "invalid expression type for range query, must be Scalar or instant Vector"
                 ),
             }
+            self.account(retained)?;
             match timestamp.checked_add(step) {
                 Some(next) if next <= self.end => timestamp = next,
                 _ => break,
@@ -250,31 +259,41 @@ impl<'a> Engine<'a> {
             e.2 = e.2.min(min);
             e.3 = e.3.max(max);
             e.4 = e.4.max(diff);
-            e.5 = if e.5 == 0 { 1 } else { 2 * (e.5 + 1) }; // Upstream rangeEval merges the accumulated annotation twice per subsequent step.
+            e.5 = if e.5 == 0 {
+                1
+            } else {
+                e.5.wrapping_add(1).wrapping_mul(2)
+            }; // Upstream rangeEval merges the accumulated annotation twice per subsequent step.
             *e
         };
-        let date = |t: i64| {
-            chrono::DateTime::from_timestamp(t / 1000, 0)
-                .unwrap()
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-        };
+        let date = |t: i64| timestamp_date(t);
         self.infos.retain(|v| !v.starts_with(&base));
         self.infos.insert(format!("{base}, from buckets {} to {}, with a max diff of {}, over {count} samples from {} to {} ({})",crate::model::float_string(min),crate::model::float_string(max),crate::model::float_string(diff),date(start),date(end),self.position(expr)));
     }
     fn charge(&mut self, count: usize) -> Result<()> {
-        self.samples = self.samples.saturating_add(count);
         self.samples_read = self.samples_read.saturating_add(count);
-        self.peak_samples = self.peak_samples.max(count);
-        if self.samples > self.max_samples {
-            bail!("query processing would load too many samples into memory in query execution")
-        }
-        if Instant::now() > self.deadline {
+        if Instant::now() > self.deadline
+            || self
+                .cancelled
+                .as_ref()
+                .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        {
             bail!("query timed out in expression evaluation")
         }
         Ok(())
     }
+    fn account(&mut self, samples: usize) -> Result<()> {
+        self.resident_samples = samples;
+        let total = samples.saturating_add(self.cached_samples);
+        self.peak_samples = self.peak_samples.max(total);
+        if total > self.max_samples {
+            bail!("query processing would load too many samples into memory in query execution");
+        }
+        self.charge(0)
+    }
     fn eval(&mut self, expr: &Expr, timestamp: i64) -> Result<Value> {
         self.charge(0)?;
+        let resident_before = self.resident_samples;
         if self.depth >= 128 {
             bail!("expression nesting exceeds limit")
         }
@@ -323,6 +342,7 @@ impl<'a> Engine<'a> {
         } else {
             let result = self.eval_inner(expr, timestamp);
             if let (Some(key), Ok(value)) = (cache_key, &result) {
+                self.cached_samples = self.cached_samples.saturating_add(value_samples(value));
                 self.invariant_cache.insert(key, value.clone());
             }
             result
@@ -356,6 +376,11 @@ impl<'a> Engine<'a> {
                     bail!("vector cannot contain metrics with the same labelset")
                 }
             }
+        }
+        if let Ok(value) = &result {
+            self.account(resident_before.saturating_add(value_samples(value)))?;
+        } else {
+            self.resident_samples = resident_before;
         }
         result
     }
@@ -520,7 +545,7 @@ impl<'a> Engine<'a> {
                             start_timestamp: 0,
                             drop_name: s.drop_name,
                         });
-                        self.charge(1)?;
+                        self.charge(0)?;
                     }
                     t = match t.checked_add(step) {
                         Some(t) => t,
@@ -644,5 +669,65 @@ pub(super) fn invariant(expr: &Expr) -> bool {
                 && c.args.args.iter().all(|a| invariant(a))
         }
         _ => false,
+    }
+}
+
+// Proleptic Gregorian UTC rendering across Prometheus's full int64-ms domain.
+fn timestamp_date(ms: i64) -> String {
+    let seconds = ms / 1000;
+    let day = seconds.div_euclid(86400);
+    let time = seconds.rem_euclid(86400);
+    let z = day + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    year += i64::from(m <= 2);
+    let year = if year < 0 {
+        format!("-{:04}", -year)
+    } else {
+        format!("{year:04}")
+    };
+    format!(
+        "{year}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        time / 3600,
+        time % 3600 / 60,
+        time % 60
+    )
+}
+
+fn sample_size(histogram: Option<&crate::histogram::Histogram>) -> usize {
+    // Account for histogram bucket storage as well as the sample itself.
+    histogram.map_or(1, |h| {
+        1 + h.positive.len() + h.negative.len() + h.custom.len()
+    })
+}
+fn value_samples(value: &Value) -> usize {
+    match value {
+        Value::Scalar(_) => 1,
+        Value::String(_) => 0,
+        Value::Vector(v) => v.iter().map(|s| sample_size(s.histogram.as_ref())).sum(),
+        Value::Matrix(v) => v
+            .iter()
+            .flat_map(|s| s.points.iter())
+            .map(|p| sample_size(p.histogram.as_ref()))
+            .sum(),
+    }
+}
+
+#[cfg(test)]
+mod annotation_dates {
+    #[test]
+    fn negative_fraction_and_year() {
+        assert_eq!(super::timestamp_date(-1), "1970-01-01T00:00:00Z");
+        assert_eq!(
+            super::timestamp_date(-62_198_755_200_000),
+            "-0001-01-01T00:00:00Z"
+        );
+        assert!(super::timestamp_date(i64::MIN).ends_with('Z'));
     }
 }

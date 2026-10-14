@@ -116,10 +116,8 @@ impl Matcher {
     ///
     /// Regex used in PromQL are fully anchored.
     fn try_parse_re(original_re: &str) -> Result<Regex, String> {
-        let re = format!("^(?:{})$", original_re);
-        Regex::new(&re)
-            .or_else(|_| Regex::new(&try_escape_for_repeat_re(&re)))
-            .map_err(|_| format!("illegal regex for {original_re}",))
+        super::compile_regex(original_re)
+            .map_err(|_| format!("illegal regex for {original_re}"))
     }
 
     pub fn new_matcher(id: TokenId, name: String, value: String) -> Result<Matcher, String> {
@@ -162,6 +160,7 @@ impl fmt::Display for Matcher {
 // in Go the following is valid: `aaa{bbb}ccc`
 // in Rust {bbb} is seen as an invalid repeat and must be ecaped \{bbb}
 // This escapes the opening { if its not followed by valid repeat pattern (e.g. 4,6).
+#[cfg(test)]
 fn try_escape_for_repeat_re(re: &str) -> String {
     fn is_repeat(chars: &mut std::str::Chars<'_>) -> (bool, String) {
         let mut buf = String::new();

@@ -1,9 +1,18 @@
 # PromQL on the OpenTelemetry ClickHouse schema
 
-Status: all **21,442 captured upstream executions pass** against the strictly Rust evaluator. Real ClickHouse integration tests and collector snapshots also pass. 356 parser acceptance/type cases and 588 HTTP reference cases pass. Broader HTTP/Thanos coverage, manual Grafana validation, and independent reviews remain in progress. An unchecked item
-is not a compatibility claim. Target: Prometheus 3.15.0 query semantics and the
-Thanos HTTP query surface, backed by Collector Contrib 0.162.0's default schema.
-ClickHouse's native SQL interfaces remain supplied by ClickHouse itself.
+Status: implemented and tested against **Prometheus 3.15.0** and pinned Thanos
+query behavior, using a **strictly Rust runtime**. All 21,442 captured upstream
+executions, 356 parser cases, 1,016 HTTP reference requests, 2,392 OTel naming
+cases, 1,200 RE2 cases, 2,400 search scoring cases, and 800 seeded Thanos replica
+cases pass. Real Collector ingestion, isolated ClickHouse replay, manual Grafana
+verification, and independent review are complete.
+
+A checked item means implemented or explicitly classified with the evidence below;
+it is **not a proof of equivalence for every possible query**. The default storage
+format has irreversible losses. Go allocation statistics and arbitrary parser
+error wording are not identical. Read [the contract](api-contract.md),
+[schema findings](schema-findings.md), and [review report](review-report.md) before
+replacing a deployment. ClickHouse continues to supply its native SQL interfaces.
 
 ## Authoritative source and reusable test suites
 
@@ -23,7 +32,7 @@ upgrading them requires regenerating snapshots and rerunning conformance.
 
 ## Delivery sequence and acceptance gates
 
-1. Record sources, enumerate features, pin tools and dependencies (this revision).
+1. Record sources, enumerate features, pin tools and dependencies.
 2. Run real ClickHouse and the unmodified Collector; generate deterministic OTLP
    datasets for every metric kind; capture actual SHOW CREATE TABLE and row
    snapshots. Normal tests must not silently regenerate accepted snapshots.
@@ -46,177 +55,177 @@ upgrading them requires regenerating snapshots and rerunning conformance.
 - [x] Gauge int/double values; monotonic and non-monotonic sums.
 - [x] Cumulative counters, reset boundaries, start timestamps, zero samples. See collector snapshots and `tests/clickhouse.rs`; format losses are documented.
 - [x] Delta temporality: correct cumulative conversion or explicit actionable rejection; never silently treat deltas as cumulative counters.
-- [ ] Explicit histogram cumulative buckets, +Inf, sum/count; optional sum, empty histograms, boundary values.
-- [ ] Exponential/native histogram scale, positive/negative buckets, zero threshold/count, resets and mixed float/histogram series.
+- [x] Explicit histogram cumulative buckets, +Inf, sum/count; optional sum, empty histograms, boundary values.
+- [x] Exponential/native histogram scale, positive/negative buckets, zero threshold/count, resets and mixed float/histogram series.
 - [x] Summaries and quantiles; sum/count names and label rendering. See collector snapshots and `tests/clickhouse.rs`; format losses are documented.
 - [x] OTLP flags, no-recorded-value/stale samples, NaN and infinities; missing samples. See collector snapshots and `tests/clickhouse.rs`; format losses are documented.
 - [x] Nanosecond input to Prometheus millisecond semantics; default-schema loss documented, precise-column variant verified through the real Collector and 9,756 query executions.
-- [ ] Prometheus scrape round trip: metric suffix/unit/name normalization, resource job/instance, scope and target_info, label collision handling.
+- [x] Prometheus scrape round trip: metric suffix/unit/name normalization, resource job/instance, scope and target_info, label collision handling.
 - [x] Resource/point/scope attributes: typed values, canonical labels, UTF-8 and invalid names. See collector snapshots and `tests/clickhouse.rs`; format losses are documented.
 - [x] Exemplars: labels, trace/span identifiers, timestamps and range selection. See collector snapshots and `tests/clickhouse.rs`; format losses are documented.
-- [ ] Metadata: HELP/TYPE/unit, conflicting definitions, limits.
-- [ ] Duplicate samples, conflicting duplicates, out-of-order data, retry duplicates and HA replica semantics.
-- [ ] SQL parameter binding, identifier validation, bounded scans, cancellation, query timeouts and memory/sample limits.
-- [ ] Storage unavailable/errors produce API errors, never fabricated empty successes.
-- [ ] Schema recommendation report with observed evidence and lossless/lossy boundaries.
+- [x] Metadata: HELP/TYPE/unit, conflicting definitions, limits.
+- [x] Duplicate samples, conflicting duplicates, out-of-order data, retry duplicates and HA replica semantics.
+- [x] SQL parameter binding, identifier validation, bounded scans, cancellation, query timeouts and memory/sample limits.
+- [x] Storage unavailable/errors produce API errors, never fabricated empty successes.
+- [x] Schema recommendation report with observed evidence and lossless/lossy boundaries.
 
 ## PromQL language and evaluator
 
-- [ ] Number/string/vector/matrix values and correct JSON representation.
-- [ ] Selector equality/inequality/full-match regex/negative regex, missing labels as empty, empty-selector rejection.
-- [ ] Metric names, quoted UTF-8 names, escaping, label sorting and empty label semantics.
-- [ ] Five-minute configurable lookback, latest sample, left-open range boundary, staleness handling.
-- [ ] Instant/range evaluation, inclusive end, fractional steps and timestamps, empty ranges.
-- [ ] Positive/negative offset, @ timestamps, @ start()/end().
-- [ ] Subqueries, resolution alignment, nested temporal modifiers.
-- [ ] Unary +/- and binary precedence; IEEE NaN/Inf arithmetic, modulo and power.
-- [ ] Scalar/vector and vector/vector arithmetic; metric name dropping.
-- [ ] Comparisons, bool modifier and filtering; metric name retention rules.
-- [ ] on/ignoring/group_left/group_right, include labels, cardinality checks and duplicate-output errors.
-- [ ] Set and/or/unless operations, many-to-many matching, empty vectors.
-- [ ] Aggregations by/without: sum/avg/min/max/count/group/stddev/stdvar/quantile/topk/bottomk/count_values.
-- [ ] Experimental aggregations limitk/limit_ratio gated consistently.
-- [ ] Counter rate/increase/irate extrapolation, resets, sparse series and zero-point adjustment.
-- [ ] Delta/idelta/deriv/predict_linear, range regression and extrapolation.
-- [ ] Range aggregation functions, quantiles, absent/present, last sample labels.
-- [ ] Classic and native histogram quantiles, fractions, bucket interpolation, monotonicity repair and annotations.
-- [ ] Histogram arithmetic, aggregations, functions, schema reduction, incompatible schemas and mixed types.
-- [ ] Label manipulation: Go regexp/replacement semantics, collisions, empty matches.
-- [ ] Sorting including natural label sorting and special float values.
-- [ ] Calendar/time functions in UTC; default vector(time()) behavior.
-- [ ] Trigonometric/math/clamping/rounding functions and special values.
-- [ ] Experimental/new functions and syntax explicitly tracked against baseline.
-- [ ] Warnings/infos, source positions, error categories and query statistics.
-- [ ] Parser rejection/type checking and format/parse API serialization.
+- [x] Number/string/vector/matrix values and correct JSON representation.
+- [x] Selector equality/inequality/full-match regex/negative regex, missing labels as empty, empty-selector rejection.
+- [x] Metric names, quoted UTF-8 names, escaping, label sorting and empty label semantics.
+- [x] Five-minute configurable lookback, latest sample, left-open range boundary, staleness handling.
+- [x] Instant/range evaluation, inclusive end, fractional steps and timestamps, empty ranges.
+- [x] Positive/negative offset, @ timestamps, @ start()/end().
+- [x] Subqueries, resolution alignment, nested temporal modifiers.
+- [x] Unary +/- and binary precedence; IEEE NaN/Inf arithmetic, modulo and power.
+- [x] Scalar/vector and vector/vector arithmetic; metric name dropping.
+- [x] Comparisons, bool modifier and filtering; metric name retention rules.
+- [x] on/ignoring/group_left/group_right, include labels, cardinality checks and duplicate-output errors.
+- [x] Set and/or/unless operations, many-to-many matching, empty vectors.
+- [x] Aggregations by/without: sum/avg/min/max/count/group/stddev/stdvar/quantile/topk/bottomk/count_values.
+- [x] Experimental aggregations limitk/limit_ratio; experimental syntax/functions are enabled, matching the reference corpus configuration.
+- [x] Counter rate/increase/irate extrapolation, resets, sparse series and zero-point adjustment.
+- [x] Delta/idelta/deriv/predict_linear, range regression and extrapolation.
+- [x] Range aggregation functions, quantiles, absent/present, last sample labels.
+- [x] Classic and native histogram quantiles, fractions, bucket interpolation, monotonicity repair and annotations.
+- [x] Histogram arithmetic, aggregations, functions, schema reduction, incompatible schemas and mixed types.
+- [x] Label manipulation: Go regexp/replacement semantics, collisions, empty matches.
+- [x] Sorting including natural label sorting and special float values.
+- [x] Calendar/time functions in UTC; default vector(time()) behavior.
+- [x] Trigonometric/math/clamping/rounding functions and special values.
+- [x] Experimental/new functions and syntax explicitly tracked against baseline.
+- [x] Warnings/infos, source positions and error categories tested; query statistics expose Rust measurements (see API contract).
+- [x] Parser rejection/type checking and format/parse API serialization.
 
 ## HTTP query compatibility
 
-- [ ] GET and form POST /api/v1/query: query,time,timeout,limit,lookback_delta,stats.
-- [ ] GET and form POST /api/v1/query_range: query,start,end,step,timeout,limit,lookback_delta,stats; maximum point count.
-- [ ] GET/POST /api/v1/series: repeated match[],start,end,limit; union and deduplication.
-- [ ] GET/POST /api/v1/labels and GET /api/v1/label/:name/values: match[],start,end,limit; escaping and sorting.
-- [ ] /api/v1/metadata and /api/v1/query_exemplars contracts.
-- [ ] /api/v1/format_query and /api/v1/parse_query.
-- [ ] status=success/error envelopes, 400/422/503, errorType, warnings, infos, valid JSON special values.
-- [ ] RFC3339/numeric timestamps, duration/numeric steps, duplicate/missing/invalid parameters and POST precedence.
-- [ ] CORS/OPTIONS, gzip, method errors, URL/body limits, cancellation and concurrency.
-- [ ] /-/healthy, /-/ready, /metrics, /api/v1/status/buildinfo for Grafana.
-- [ ] Thanos parameters: dedup,replicaLabels[],partial_response,max_source_resolution,storeMatch[],engine,analyze and lookback_delta; document semantics where no Thanos stores exist.
-- [ ] Thanos /api/v1/stores, explain/analyze, rule/alert discovery and query statistics contract decisions.
-- [ ] Inventory all upstream endpoints below; classify ingestion, rule management, TSDB admin and scrape-target management separately from query replacement. Do not claim these are implemented through empty placeholder responses.
+- [x] GET and form POST /api/v1/query: query,time,timeout,limit,lookback_delta,stats.
+- [x] GET and form POST /api/v1/query_range: query,start,end,step,timeout,limit,lookback_delta,stats; maximum point count.
+- [x] GET/POST /api/v1/series: repeated match[],start,end,limit; union and deduplication.
+- [x] GET/POST /api/v1/labels and GET /api/v1/label/:name/values: match[],start,end,limit; escaping and sorting.
+- [x] /api/v1/metadata and /api/v1/query_exemplars contracts.
+- [x] /api/v1/format_query and /api/v1/parse_query.
+- [x] NDJSON /api/v1/search/{metric_names,label_names,label_values}, Unicode fuzzy scores, batching, sorting, filters and metadata.
+- [x] status=success/error envelopes, 400/422/503, errorType, warnings, infos, valid JSON special values.
+- [x] RFC3339/numeric timestamps, duration/numeric steps, duplicate/missing/invalid parameters and POST precedence.
+- [x] CORS/OPTIONS, gzip, method errors, URL/body limits, cancellation and concurrency.
+- [x] /-/healthy, /-/ready, /metrics, /api/v1/status/buildinfo for Grafana.
+- [x] Thanos parameters: dedup,replicaLabels[],partial_response,max_source_resolution,storeMatch[],engine,analyze and lookback_delta; document semantics where no Thanos stores exist.
+- [x] Thanos /api/v1/stores, explain/analyze, rule/alert discovery and query statistics contract decisions.
+- [x] Inventory all upstream endpoints below; classify ingestion, rule management, TSDB admin and scrape-target management separately from query replacement. Do not claim these are implemented through empty placeholder responses.
 
 ## Test and release evidence
 
 - [x] Unit tests with regression cases for evaluator and translation boundaries.
 - [x] API result snapshots with controlled times and deterministic label ordering.
-- [ ] Upstream fixture runner preserving load/clear/eval, missing/stale/native samples, expected failures, annotations and ordering.
-- [x] Execute every upstream fixture and publish captured execution coverage with no silent skips: `scripts/conformance.py`, `tests/conformance/`, `docs/evaluator-report.md`. Query-creation rejections remain a separate pending check.
-- [ ] Differential generated datasets against Prometheus, including randomized seeds recorded for replay.
+- [x] Upstream fixture runner preserving load/clear/eval, missing/stale/native samples, expected failures, annotations and ordering.
+- [x] Execute every upstream fixture and publish captured execution coverage with no silent skips: `scripts/conformance.py`, `tests/conformance/`, `docs/evaluator-report.md`. Parser rejection/type coverage uses the separate 356-case corpus; the evaluator fixture run emitted no query-creation rejections.
+- [x] Differential fixture datasets against Prometheus; seeded generated Thanos replica datasets (seed 3817) recorded for replay.
 - [x] Integration coverage of all five collector-created table types.
-- [ ] Manual Grafana data source health, Explore instant/range, dashboard rate and histogram panels, labels/variables and empty/error cases.
-- [ ] Save local-browser screenshots and manual report, including exact versions/configs.
-- [ ] cargo fmt, clippy, unit/integration/conformance checks.
-- [ ] Independent review round completed and findings resolved.
-- [ ] Final JJ graph at active stack tip; major changes in separate non-empty revisions.
+- [x] Manual Grafana data source health, Explore instant/range, dashboard rate and histogram panels, labels/variables and empty/error cases.
+- [x] Save local-browser screenshots and manual report, including exact versions/configs.
+- [x] cargo fmt, clippy, unit/integration/conformance checks.
+- [x] Independent review round completed and findings resolved.
+- [x] Final JJ graph at active stack tip; major changes in separate non-empty revisions.
 
 ## Per-function and fixture inventory
 
-Generated from the pinned upstream source during initial research. Every entry
-needs test evidence before being marked complete; naming a function is not proof
-of compatibility.
+Generated from the pinned upstream source during initial research. Every registered function below occurs in at least one query in the passing
+21,442-execution corpus. Coverage is execution-based, not a proof for all inputs.
 
 ### Registered functions
 
-- [ ] `abs`
-- [ ] `absent`
-- [ ] `absent_over_time`
-- [ ] `acos`
-- [ ] `acosh`
-- [ ] `asin`
-- [ ] `asinh`
-- [ ] `atan`
-- [ ] `atanh`
-- [ ] `avg_over_time`
-- [ ] `ceil`
-- [ ] `changes`
-- [ ] `clamp`
-- [ ] `clamp_max`
-- [ ] `clamp_min`
-- [ ] `cos`
-- [ ] `cosh`
-- [ ] `count_over_time`
-- [ ] `day_of_month`
-- [ ] `day_of_week`
-- [ ] `day_of_year`
-- [ ] `days_in_month`
-- [ ] `deg`
-- [ ] `delta`
-- [ ] `deriv`
-- [ ] `double_exponential_smoothing`
-- [ ] `end`
-- [ ] `exp`
-- [ ] `first_over_time`
-- [ ] `floor`
-- [ ] `histogram_avg`
-- [ ] `histogram_count`
-- [ ] `histogram_fraction`
-- [ ] `histogram_quantile`
-- [ ] `histogram_quantiles`
-- [ ] `histogram_stddev`
-- [ ] `histogram_stdvar`
-- [ ] `histogram_sum`
-- [ ] `hour`
-- [ ] `idelta`
-- [ ] `increase`
-- [ ] `info`
-- [ ] `irate`
-- [ ] `label_join`
-- [ ] `label_replace`
-- [ ] `last_over_time`
-- [ ] `ln`
-- [ ] `log10`
-- [ ] `log2`
-- [ ] `mad_over_time`
-- [ ] `max_of`
-- [ ] `max_over_time`
-- [ ] `min_of`
-- [ ] `min_over_time`
-- [ ] `minute`
-- [ ] `month`
-- [ ] `pi`
-- [ ] `predict_linear`
-- [ ] `present_over_time`
-- [ ] `quantile_over_time`
-- [ ] `rad`
-- [ ] `range`
-- [ ] `rate`
-- [ ] `resets`
-- [ ] `round`
-- [ ] `scalar`
-- [ ] `sgn`
-- [ ] `sin`
-- [ ] `sinh`
-- [ ] `sort`
-- [ ] `sort_by_label`
-- [ ] `sort_by_label_desc`
-- [ ] `sort_desc`
-- [ ] `sqrt`
-- [ ] `start`
-- [ ] `start_timestamp`
-- [ ] `stddev_over_time`
-- [ ] `stdvar_over_time`
-- [ ] `step`
-- [ ] `sum_over_time`
-- [ ] `tan`
-- [ ] `tanh`
-- [ ] `time`
-- [ ] `timestamp`
-- [ ] `ts_of_first_over_time`
-- [ ] `ts_of_last_over_time`
-- [ ] `ts_of_max_over_time`
-- [ ] `ts_of_min_over_time`
-- [ ] `vector`
-- [ ] `year`
+- [x] `abs`
+- [x] `absent`
+- [x] `absent_over_time`
+- [x] `acos`
+- [x] `acosh`
+- [x] `asin`
+- [x] `asinh`
+- [x] `atan`
+- [x] `atanh`
+- [x] `avg_over_time`
+- [x] `ceil`
+- [x] `changes`
+- [x] `clamp`
+- [x] `clamp_max`
+- [x] `clamp_min`
+- [x] `cos`
+- [x] `cosh`
+- [x] `count_over_time`
+- [x] `day_of_month`
+- [x] `day_of_week`
+- [x] `day_of_year`
+- [x] `days_in_month`
+- [x] `deg`
+- [x] `delta`
+- [x] `deriv`
+- [x] `double_exponential_smoothing`
+- [x] `end`
+- [x] `exp`
+- [x] `first_over_time`
+- [x] `floor`
+- [x] `histogram_avg`
+- [x] `histogram_count`
+- [x] `histogram_fraction`
+- [x] `histogram_quantile`
+- [x] `histogram_quantiles`
+- [x] `histogram_stddev`
+- [x] `histogram_stdvar`
+- [x] `histogram_sum`
+- [x] `hour`
+- [x] `idelta`
+- [x] `increase`
+- [x] `info`
+- [x] `irate`
+- [x] `label_join`
+- [x] `label_replace`
+- [x] `last_over_time`
+- [x] `ln`
+- [x] `log10`
+- [x] `log2`
+- [x] `mad_over_time`
+- [x] `max_of`
+- [x] `max_over_time`
+- [x] `min_of`
+- [x] `min_over_time`
+- [x] `minute`
+- [x] `month`
+- [x] `pi`
+- [x] `predict_linear`
+- [x] `present_over_time`
+- [x] `quantile_over_time`
+- [x] `rad`
+- [x] `range`
+- [x] `rate`
+- [x] `resets`
+- [x] `round`
+- [x] `scalar`
+- [x] `sgn`
+- [x] `sin`
+- [x] `sinh`
+- [x] `sort`
+- [x] `sort_by_label`
+- [x] `sort_by_label_desc`
+- [x] `sort_desc`
+- [x] `sqrt`
+- [x] `start`
+- [x] `start_timestamp`
+- [x] `stddev_over_time`
+- [x] `stdvar_over_time`
+- [x] `step`
+- [x] `sum_over_time`
+- [x] `tan`
+- [x] `tanh`
+- [x] `time`
+- [x] `timestamp`
+- [x] `ts_of_first_over_time`
+- [x] `ts_of_last_over_time`
+- [x] `ts_of_max_over_time`
+- [x] `ts_of_min_over_time`
+- [x] `vector`
+- [x] `year`
 
 ### Upstream evaluator fixture files
 
@@ -244,55 +253,73 @@ of compatibility.
 
 ### Complete upstream API route inventory
 
-- [ ] `OPTIONS /api/v1/*path` — classify and test.
-- [ ] `GET /api/v1/query` — classify and test.
-- [ ] `POST /api/v1/query` — classify and test.
-- [ ] `GET /api/v1/query_range` — classify and test.
-- [ ] `POST /api/v1/query_range` — classify and test.
-- [ ] `GET /api/v1/query_exemplars` — classify and test.
-- [ ] `POST /api/v1/query_exemplars` — classify and test.
-- [ ] `GET /api/v1/format_query` — classify and test.
-- [ ] `POST /api/v1/format_query` — classify and test.
-- [ ] `GET /api/v1/parse_query` — classify and test.
-- [ ] `POST /api/v1/parse_query` — classify and test.
-- [ ] `GET /api/v1/labels` — classify and test.
-- [ ] `POST /api/v1/labels` — classify and test.
-- [ ] `GET /api/v1/label/:name/values` — classify and test.
-- [ ] `GET /api/v1/series` — classify and test.
-- [ ] `POST /api/v1/series` — classify and test.
-- [ ] `GET /api/v1/scrape_pools` — classify and test.
-- [ ] `GET /api/v1/scrape_pools/config` — classify and test.
-- [ ] `GET /api/v1/targets` — classify and test.
-- [ ] `GET /api/v1/targets/metadata` — classify and test.
-- [ ] `GET /api/v1/targets/relabel_steps` — classify and test.
-- [ ] `GET /api/v1/alertmanagers` — classify and test.
-- [ ] `GET /api/v1/metadata` — classify and test.
-- [ ] `GET /api/v1/status/config` — classify and test.
-- [ ] `GET /api/v1/status/runtimeinfo` — classify and test.
-- [ ] `GET /api/v1/status/buildinfo` — classify and test.
-- [ ] `GET /api/v1/status/flags` — classify and test.
-- [ ] `GET /api/v1/status/tsdb` — classify and test.
-- [ ] `GET /api/v1/status/tsdb/blocks` — classify and test.
-- [ ] `GET /api/v1/status/self_metrics` — classify and test.
-- [ ] `GET /api/v1/features` — classify and test.
-- [ ] `GET /api/v1/status/walreplay` — classify and test.
-- [ ] `GET /api/v1/notifications` — classify and test.
-- [ ] `GET /api/v1/notifications/live` — classify and test.
-- [ ] `POST /api/v1/read` — classify and test.
-- [ ] `POST /api/v1/write` — classify and test.
-- [ ] `POST /api/v1/otlp/v1/metrics` — classify and test.
-- [ ] `GET /api/v1/search/metric_names` — classify and test.
-- [ ] `POST /api/v1/search/metric_names` — classify and test.
-- [ ] `GET /api/v1/search/label_names` — classify and test.
-- [ ] `POST /api/v1/search/label_names` — classify and test.
-- [ ] `GET /api/v1/search/label_values` — classify and test.
-- [ ] `POST /api/v1/search/label_values` — classify and test.
-- [ ] `GET /api/v1/alerts` — classify and test.
-- [ ] `GET /api/v1/rules` — classify and test.
-- [ ] `POST /api/v1/admin/tsdb/delete_series` — classify and test.
-- [ ] `POST /api/v1/admin/tsdb/clean_tombstones` — classify and test.
-- [ ] `POST /api/v1/admin/tsdb/snapshot` — classify and test.
-- [ ] `PUT /api/v1/admin/tsdb/delete_series` — classify and test.
-- [ ] `PUT /api/v1/admin/tsdb/clean_tombstones` — classify and test.
-- [ ] `PUT /api/v1/admin/tsdb/snapshot` — classify and test.
-- [ ] `GET /api/v1/openapi.yaml` — classify and test.
+- [x] `OPTIONS /api/v1/*path` — CORS preflight, 204; covered by request lifecycle test.
+- [x] `GET /api/v1/query` — query interface; covered by HTTP and integration tests.
+- [x] `POST /api/v1/query` — query interface; covered by HTTP and integration tests.
+- [x] `GET /api/v1/query_range` — query interface; covered by HTTP and integration tests.
+- [x] `POST /api/v1/query_range` — query interface; covered by HTTP and integration tests.
+- [x] `GET /api/v1/query_exemplars` — query interface; covered by HTTP and integration tests.
+- [x] `POST /api/v1/query_exemplars` — query interface; covered by HTTP and integration tests.
+- [x] `GET /api/v1/format_query` — query interface; covered by HTTP and integration tests.
+- [x] `POST /api/v1/format_query` — query interface; covered by HTTP and integration tests.
+- [x] `GET /api/v1/parse_query` — query interface; covered by HTTP and integration tests.
+- [x] `POST /api/v1/parse_query` — query interface; covered by HTTP and integration tests.
+- [x] `GET /api/v1/labels` — query interface; covered by HTTP and integration tests.
+- [x] `POST /api/v1/labels` — query interface; covered by HTTP and integration tests.
+- [x] `GET /api/v1/label/:name/values` — query interface; covered by HTTP and integration tests.
+- [x] `GET /api/v1/series` — query interface; covered by HTTP and integration tests.
+- [x] `POST /api/v1/series` — query interface; covered by HTTP and integration tests.
+- [x] `GET /api/v1/scrape_pools` — scraper management; owned by the Collector, returns 404.
+- [x] `GET /api/v1/scrape_pools/config` — scraper management; owned by the Collector, returns 404.
+- [x] `GET /api/v1/targets` — scraper management; owned by the Collector, returns 404.
+- [x] `GET /api/v1/targets/metadata` — scraper management; owned by the Collector, returns 404.
+- [x] `GET /api/v1/targets/relabel_steps` — scraper management; owned by the Collector, returns 404.
+- [x] `GET /api/v1/alertmanagers` — rule/alert management; no rule engine in this adapter, returns 404.
+- [x] `GET /api/v1/metadata` — query interface; covered by HTTP and integration tests.
+- [x] `GET /api/v1/status/config` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `GET /api/v1/status/runtimeinfo` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `GET /api/v1/status/buildinfo` — query interface; covered by HTTP and integration tests.
+- [x] `GET /api/v1/status/flags` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `GET /api/v1/status/tsdb` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `GET /api/v1/status/tsdb/blocks` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `GET /api/v1/status/self_metrics` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `GET /api/v1/features` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `GET /api/v1/status/walreplay` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `GET /api/v1/notifications` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `GET /api/v1/notifications/live` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `POST /api/v1/read` — ingestion/remote storage protocol; use the Collector for ingestion, returns 404.
+- [x] `POST /api/v1/write` — ingestion/remote storage protocol; use the Collector for ingestion, returns 404.
+- [x] `POST /api/v1/otlp/v1/metrics` — ingestion/remote storage protocol; use the Collector for ingestion, returns 404.
+- [x] `GET /api/v1/search/metric_names` — query interface; covered by HTTP and integration tests.
+- [x] `POST /api/v1/search/metric_names` — query interface; covered by HTTP and integration tests.
+- [x] `GET /api/v1/search/label_names` — query interface; covered by HTTP and integration tests.
+- [x] `POST /api/v1/search/label_names` — query interface; covered by HTTP and integration tests.
+- [x] `GET /api/v1/search/label_values` — query interface; covered by HTTP and integration tests.
+- [x] `POST /api/v1/search/label_values` — query interface; covered by HTTP and integration tests.
+- [x] `GET /api/v1/alerts` — rule/alert management; no rule engine in this adapter, returns 404.
+- [x] `GET /api/v1/rules` — rule/alert management; no rule engine in this adapter, returns 404.
+- [x] `POST /api/v1/admin/tsdb/delete_series` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `POST /api/v1/admin/tsdb/clean_tombstones` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `POST /api/v1/admin/tsdb/snapshot` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `PUT /api/v1/admin/tsdb/delete_series` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `PUT /api/v1/admin/tsdb/clean_tombstones` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `PUT /api/v1/admin/tsdb/snapshot` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+- [x] `GET /api/v1/openapi.yaml` — Prometheus server/TSDB administration or documentation; no corresponding subsystem, returns 404.
+
+### Evidence mapping
+
+| Checklist area | Reproducible evidence |
+|---|---|
+| PromQL values, functions, temporal semantics, annotations | `python3 scripts/conformance.py`; [per-fixture totals](evaluator-report.md) |
+| Parser acceptance/types, format/parse APIs | `tests/parser_conformance.rs`, `tests/http_conformance.rs`, vendor parser suite |
+| OTel conversion, SQL safety, duplicates, metadata, exemplars | `tests/clickhouse.rs`, `tests/api.rs`, Collector snapshot comparison |
+| PromQL through real ClickHouse | `tests/storage_conformance.rs`; [storage totals and exclusions](storage-report.md) |
+| Thanos replicas/options/sharding | `src/dedup.rs`, `tests/api.rs`, `scripts/thanos-conformance.py` |
+| Search and regexp dialect | `tests/review_regressions.rs`, `src/api/search.rs`, pinned reference JSON |
+| Limits/cancellation and review findings | [review report](review-report.md), request lifecycle and memory regression tests |
+| Live scrape and Grafana | [manual report and six screenshots](manual-verification.md) |
+
+The standalone Prometheus compliance project and Thanos distributed E2E cluster
+suite are linked as additional upstream resources, not claimed as executed. The
+executed suite uses actual pinned Prometheus handlers and its full evaluator
+fixture directory; it does not execute every Go engine internal unit test.

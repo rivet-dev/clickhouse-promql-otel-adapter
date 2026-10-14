@@ -64,6 +64,17 @@ impl Engine<'_> {
         }
         Ok(found)
     }
+    pub(crate) fn info_time(&self, expr: &Expr, t: i64) -> Result<i64> {
+        let mut references = Vec::new();
+        self.info_references(expr, t, false, &mut references)?;
+        Ok(references
+            .first()
+            .copied()
+            .flatten()
+            .filter(|r| references.iter().all(|v| *v == Some(*r)))
+            .map(|r| r.1)
+            .unwrap_or(t))
+    }
     pub(super) fn info(&mut self, c: &Call, t: i64) -> Result<Value> {
         let base = self.eval(&c.args.args[0], t)?.vector()?;
         let mut selector = info_selector(c);
@@ -82,15 +93,7 @@ impl Engine<'_> {
             .filter(|m| m.name == "__name__")
             .cloned()
             .collect::<Vec<_>>();
-        let mut references = Vec::new();
-        self.info_references(&c.args.args[0], t, false, &mut references)?;
-        let at = references
-            .first()
-            .copied()
-            .flatten()
-            .filter(|r| references.iter().all(|v| *v == Some(*r)))
-            .map(|r| r.1)
-            .unwrap_or(t);
+        let at = self.info_time(&c.args.args[0], t)?;
         selector.at = None;
         selector.offset = None;
         let infos = self.eval(&Expr::VectorSelector(selector), at)?.vector()?;

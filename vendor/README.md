@@ -11,3 +11,10 @@ of empty selectors for info() metadata matchers, byte-accurate Go string escapes
 and a parser token limit before AST construction. Tests were updated where new
 semantics differ from the original crate. Run the retained suite with
 `cargo test --manifest-path vendor/promql-parser/Cargo.toml --all-features`.
+
+RE2 compatibility is implemented in `src/label/regex.rs`: ASCII Perl classes,
+Go flag/property validation, repeat limits, literal class-set operators,
+duplicate/numbered capture names, and Go replacement expansion. Unicode property
+names are generated alongside the regex reference corpus. Fractional duration
+formatting and unary plus pretty printing are also patched for the pinned
+Prometheus API. All runtime code remains Rust.

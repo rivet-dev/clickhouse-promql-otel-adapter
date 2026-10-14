@@ -1,38 +1,79 @@
 # ClickHouse PromQL adapter
 
-A Rust Prometheus/Thanos query API over the OpenTelemetry Collector's ClickHouse
-metrics tables. **Under development; full compatibility is not yet implemented.**
-See [the compatibility checklist](docs/compatibility.md) for the acceptance gates
-and authoritative upstream sources.
+A **strictly Rust** PromQL evaluator and Prometheus/Thanos query HTTP adapter over
+the unmodified OpenTelemetry Collector ClickHouse metrics tables. Point Grafana's
+standard Prometheus data source at this server. Ingestion remains with the
+Collector; no Go code runs in the adapter.
 
-## Reproduce collector schema and data snapshots
+The pinned Prometheus corpus passes **21,442 executions**, with **1,016 HTTP
+reference cases** and real ClickHouse integration tests. The
+[compatibility checklist](docs/compatibility.md) links upstream sources and test
+suites. Read [the API contract](docs/api-contract.md) and
+[schema findings](docs/schema-findings.md): the default schema loses subsecond
+precision and some histogram/metadata fields, so this is not a claim of lossless
+replacement for every Thanos deployment.
 
-Requires Docker Compose and Python 3 (standard library only).
+## Run
+
+Requires Rust and an existing ClickHouse database created by the Collector's
+ClickHouse exporter (all five metric tables). Use the same database/user as the
+exporter:
+
+```sh
+cargo build --locked --release
+export CLICKHOUSE_URL=http://127.0.0.1:8123
+export CLICKHOUSE_DATABASE=otel
+export CLICKHOUSE_USER=default
+# Set CLICKHOUSE_PASSWORD through your environment/secret manager.
+./target/release/clickhouse-promql --host 0.0.0.0 --port 9091
+```
+
+For Thanos HA replicas add `--replica-label replica` (repeat for multiple labels).
+Add `--thanos-default-step 60` to allow omitted range steps using Thanos defaults.
+Without that option, range queries require `step`, as in Prometheus.
+
+[Run the complete local demo](demo/README.md): an OpenMetrics generator, real
+Collector, ClickHouse, Rust adapter and Grafana. The
+[manual verification report](docs/manual-verification.md) includes six actual
+browser screenshots of data source health, Explore, dashboards and error cases.
+
+## Test and regenerate snapshots
+
+Requires Docker Compose and Python 3. Start the dedicated test ClickHouse:
 
 ```sh
 docker compose up -d --wait
-python3 scripts/generate-snapshots.py          # compare with committed snapshots
-python3 scripts/generate-snapshots.py --update # explicitly replace snapshots
-python3 scripts/datasets.py > /tmp/metrics.json
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo test --locked
+python3 scripts/conformance.py
+cargo test --manifest-path vendor/promql-parser/Cargo.toml --all-features
+python3 scripts/generate-snapshots.py
+python3 scripts/generate-snapshots.py --precision-schema
 ```
 
-The snapshot script starts the real Collector Contrib 0.162.0, lets its ClickHouse
-exporter create all five default metric tables, and sends deterministic OTLP/HTTP
-metrics. Each run creates and cleans up its own database and collector container.
-Snapshots include actual ClickHouse DDL, ingested rows, and the input payload.
-ClickHouse 26.9.18.11 listens on loopback ports 18123/19000 using local test
-credentials. The compose volume persists until `docker compose down -v`.
+Every ClickHouse integration test creates a unique database and cleans it on
+success or panic. The tests require a real server; they do not silently skip it.
+Compose exposes loopback ports 18123/19000 with local test credentials. Its volume
+persists until `docker compose down -v`.
 
-[Schema findings](docs/schema-findings.md) explain fidelity issues in the default
-format. No schema changes are required to run the baseline snapshot test.
+The snapshot script runs Collector Contrib 0.162.0, lets the actual exporter
+create all five default tables, sends deterministic OTLP/HTTP data, and snapshots
+SHOW CREATE TABLE plus ingested rows. It cleans its database and Collector
+container. The precision variant precreates `DateTime64(9)` columns before using
+the same unmodified exporter. Normal checks compare; updates are explicit:
 
-Run the Rust and real ClickHouse tests with `cargo test`. Replay the committed
-Prometheus evaluator, parser, and HTTP reference corpora with
-`python3 scripts/conformance.py`; `--regenerate` explicitly replaces them using
-the pinned upstream Go test tools. Go is never used by the adapter.
+```sh
+python3 scripts/datasets.py > /tmp/metrics.json
+python3 scripts/generate-snapshots.py --update
+python3 scripts/generate-snapshots.py --precision-schema --update
+python3 scripts/conformance.py --regenerate
+python3 scripts/thanos-conformance.py --regenerate
+```
 
-`python3 scripts/generate-snapshots.py --precision-schema` checks a separately
-snapshotted `DateTime64(9)` schema using the unmodified Collector. This confirms
-that precreated precise columns preserve subsecond input. See the
-[ClickHouse differential report](docs/storage-report.md) for representable
-upstream datasets and explicit format exclusions.
+Reference regeneration additionally requires Go and downloads pinned upstream
+sources. Prometheus's actual evaluator assertions and HTTP handlers produce the
+accepted corpus. Thanos reference generation uses seeded replica data and real
+XOR iterators. Go is test tooling only. See [evaluator results](docs/evaluator-report.md),
+[storage results and exclusions](docs/storage-report.md), and
+[independent review corrections](docs/review-report.md).

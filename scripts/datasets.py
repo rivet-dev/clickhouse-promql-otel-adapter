@@ -52,6 +52,7 @@ def dataset():
     metrics.append({"name": "missing", "gauge": {"dataPoints": [
         {"timeUnixNano": str(BASE_NS), "asDouble": 0, "flags": 1}]}})
     metrics.extend([
+        {"name": "hist_no_buckets", "histogram": {"aggregationTemporality": 2, "dataPoints": [{"timeUnixNano": str(BASE_NS), "count": "5", "sum": 10}]}},
         {"name": "hist_absent", "histogram": {"aggregationTemporality": 2, "dataPoints": [{"timeUnixNano": str(BASE_NS), "count": "0", "bucketCounts": ["0"], "explicitBounds": []}]}},
         {"name": "hist_zero", "histogram": {"aggregationTemporality": 2, "dataPoints": [{"timeUnixNano": str(BASE_NS), "count": "0", "sum": 0, "min": 0, "max": 0, "bucketCounts": ["0"], "explicitBounds": []}]}},
         {"name": "large_integer", "gauge": {"dataPoints": [{"timeUnixNano": str(BASE_NS), "asInt": "9007199254740993"}]}},

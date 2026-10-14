@@ -101,7 +101,7 @@ pub fn parse_duration(ds: &str) -> Result<Duration, String> {
 
 /// display Duration in Prometheus format
 pub fn display_duration(duration: &Duration) -> String {
-    if duration.is_zero() {
+    if duration.as_millis() == 0 {
         return "0s".into();
     }
     let mut ms = duration.as_millis();

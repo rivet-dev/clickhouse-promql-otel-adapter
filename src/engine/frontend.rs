@@ -14,6 +14,24 @@ fn parse_internal(query: &str, context: Option<(i64, i64, i64)>) -> Result<Expr>
     if query.len() > 65536 {
         bail!("query exceeds 65536 byte limit");
     }
+    // Remove comments before looking for duration brackets or offset atoms.
+    // Keep byte positions and newlines so diagnostics still refer to the input.
+    let mut clean = query.as_bytes().to_vec();
+    let mut at = 0;
+    while at < clean.len() {
+        match clean[at] {
+            b'"' | b'\'' | b'`' => at = quoted_end(&clean, at)?,
+            b'#' => {
+                while at < clean.len() && clean[at] != b'\n' {
+                    clean[at] = b' ';
+                    at += 1;
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    let clean = String::from_utf8(clean).expect("comments replaced with ASCII");
+    let query = clean.as_str();
     let bytes = query.as_bytes();
     let mut out = String::new();
     let mut i = 0;
@@ -21,6 +39,11 @@ fn parse_internal(query: &str, context: Option<(i64, i64, i64)>) -> Result<Expr>
     let mut expressions = BTreeMap::new();
     while i < bytes.len() {
         match bytes[i] {
+            b'#' => {
+                let end = query[i..].find('\n').map_or(bytes.len(), |n| i + n);
+                out.push_str(&query[i..end]);
+                i = end;
+            }
             b'"' | b'\'' | b'`' => {
                 let next = quoted_end(bytes, i)?;
                 out.push_str(&query[i..next]);
@@ -252,18 +275,31 @@ fn replace_duration(
             bail!("duration must be greater than 0");
         }
     }
-    if literal {
+    if matches!(&expr, Expr::NumberLiteral(n) if n.duration) {
+        return Ok(text.trim().to_owned());
+    }
+    if literal && (value.abs() * 1000.0).fract() == 0.0 {
         if value == 0.0 {
             return Ok("0".into());
         }
         return Ok(format!(
             "{}{}ms",
             if value < 0.0 { "-" } else { "" },
-            (value.abs() * 1000.0).round() as u64
+            (value.abs() * 1000.0) as u64
         ));
     }
     let marker = MARKER + expressions.len() as u64;
-    expressions.insert(marker, (expr, if context.is_some() { value } else { 0.0 }));
+    expressions.insert(
+        marker,
+        (
+            expr,
+            if context.is_some() || literal {
+                value
+            } else {
+                0.0
+            },
+        ),
+    );
     Ok(format!("{marker}ms"))
 }
 fn restore(expr: &mut Expr, expressions: &BTreeMap<u64, (Expr, f64)>) -> Result<()> {
@@ -273,8 +309,12 @@ fn restore(expr: &mut Expr, expressions: &BTreeMap<u64, (Expr, f64)>) -> Result<
         map: &BTreeMap<u64, (Expr, f64)>,
     ) {
         if let Some((expr, seconds)) = map.get(&(value.as_millis() as u64)) {
-            *expression = Some(Box::new(expr.clone()));
-            *value = Duration::from_millis((seconds * 1000.0).round().max(0.0) as u64);
+            *expression = if matches!(expr, Expr::NumberLiteral(_)) {
+                None
+            } else {
+                Some(Box::new(expr.clone()))
+            };
+            *value = Duration::from_nanos((seconds.max(0.0) * 1e9) as u64);
         }
     }
     fn offset(
@@ -285,8 +325,12 @@ fn restore(expr: &mut Expr, expressions: &BTreeMap<u64, (Expr, f64)>) -> Result<
         if let Some(Offset::Pos(duration)) = value
             && let Some((expr, seconds)) = map.get(&(duration.as_millis() as u64))
         {
-            *expression = Some(Box::new(expr.clone()));
-            let d = Duration::from_millis((seconds.abs() * 1000.0).round() as u64);
+            *expression = if matches!(expr, Expr::NumberLiteral(_)) {
+                None
+            } else {
+                Some(Box::new(expr.clone()))
+            };
+            let d = Duration::from_nanos((seconds.abs() * 1e9) as u64);
             *value = Some(if *seconds < 0.0 {
                 Offset::Neg(d)
             } else {
@@ -295,8 +339,18 @@ fn restore(expr: &mut Expr, expressions: &BTreeMap<u64, (Expr, f64)>) -> Result<
         }
     }
     match expr {
-        Expr::VectorSelector(v) => offset(&mut v.offset, &mut v.offset_expr, expressions),
+        Expr::VectorSelector(v) => {
+            if !v.matchers.or_matchers.is_empty() {
+                bail!("unexpected identifier \"or\" in label matching, expected \",\" or \"}}\"");
+            }
+            offset(&mut v.offset, &mut v.offset_expr, expressions)
+        }
         Expr::MatrixSelector(m) => {
+            if !m.vs.matchers.or_matchers.is_empty() {
+                bail!(
+                    "unexpected identifier \"or\" in label matching, expected comma or closing brace"
+                );
+            }
             range(&mut m.range, &mut m.range_expr, expressions);
             offset(&mut m.vs.offset, &mut m.vs.offset_expr, expressions);
         }

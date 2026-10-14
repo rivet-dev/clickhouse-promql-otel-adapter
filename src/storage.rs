@@ -15,6 +15,14 @@ pub(crate) const TABLES: [&str; 5] = [
     "summary",
     "exponential_histogram",
 ];
+#[derive(Debug)]
+pub struct BackendError(String);
+impl std::fmt::Display for BackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for BackendError {}
 #[derive(Clone)]
 pub struct Store {
     pub client: reqwest::Client,
@@ -48,6 +56,11 @@ impl Store {
         })
     }
     pub async fn query(&self, sql: &str, params: &[(&str, String)]) -> Result<String> {
+        self.query_inner(sql, params)
+            .await
+            .map_err(|e| BackendError(format!("{e:#}")).into())
+    }
+    async fn query_inner(&self, sql: &str, params: &[(&str, String)]) -> Result<String> {
         let mut response = self
             .client
             .post(&self.url)
@@ -88,6 +101,51 @@ impl Store {
         self.query("SELECT 1", &[]).await?;
         Ok(())
     }
+    // Resolve OTel name/unit normalization from a small distinct-name dictionary
+    // before fetching samples. Filtering raw names directly would drop SDK names
+    // such as http.request.duration (exported as http_request_duration_seconds).
+    pub(crate) async fn metric_filter(
+        &self,
+        kind: &str,
+        selectors: &[VectorSelector],
+    ) -> Result<Option<Vec<String>>> {
+        let name_selectors = selectors
+            .iter()
+            .map(|s| {
+                let mut s = s.clone();
+                s.matchers.matchers.retain(|m| m.name == "__name__");
+                s
+            })
+            .collect::<Vec<_>>();
+        let accepts = |name: &str| {
+            let labels = Labels::from([("__name__".into(), name.into())]);
+            name_selectors.iter().any(|s| matches(s, &labels))
+        };
+        if selectors.is_empty() || accepts("target_info") {
+            return Ok(None);
+        }
+        let monotonic = if kind == "sum" { ", IsMonotonic" } else { "" };
+        let sql = format!(
+            "SELECT DISTINCT MetricName, MetricUnit, ScopeName{monotonic} FROM {}.otel_metrics_{kind} LIMIT {} FORMAT JSONEachRow",
+            self.database,
+            self.max_rows.saturating_add(1)
+        );
+        let rows = self.query(&sql, &[]).await?;
+        let mut names = std::collections::BTreeSet::new();
+        for (i, line) in rows.lines().enumerate() {
+            if i >= self.max_rows {
+                bail!("ClickHouse metric dictionary limit exceeded");
+            }
+            let row: Json = serde_json::from_str(line)?;
+            let Ok(name) = row_metric_name(&row, kind) else {
+                continue;
+            };
+            if derived_names(&name, kind).iter().any(|n| accepts(n)) {
+                names.insert(string(&row, "MetricName").to_owned());
+            }
+        }
+        Ok(Some(names.into_iter().collect()))
+    }
     pub async fn load(&self, start: i64, end: i64, selectors: &[VectorSelector]) -> Result<Loaded> {
         self.load_inner(start, end, selectors, true).await
     }
@@ -110,8 +168,30 @@ impl Store {
         let mut loaded = Loaded::default();
         let mut total = 0usize;
         for kind in TABLES {
+            let filter = self.metric_filter(kind, selectors).await?;
+            if filter.as_ref().is_some_and(|v| v.is_empty()) {
+                continue;
+            }
+            let predicate = if filter.is_some() {
+                " AND MetricName IN {names:Array(String)}"
+            } else {
+                ""
+            };
+            let projection = if samples {
+                "*, toUnixTimestamp64Milli(toDateTime64(TimeUnix, 3)) AS _timestamp, toUnixTimestamp64Milli(toDateTime64(StartTimeUnix, 3)) AS _start_timestamp".to_owned()
+            } else {
+                let extra = match kind {
+                    "sum" => ", IsMonotonic",
+                    "histogram" => ", ExplicitBounds",
+                    "summary" => ", `ValueAtQuantiles.Quantile`",
+                    _ => "",
+                };
+                format!(
+                    "DISTINCT MetricName, MetricDescription, MetricUnit, ResourceAttributes, ScopeName, ScopeVersion, ScopeSchemaUrl, ScopeAttributes, Attributes{extra}"
+                )
+            };
             let sql = format!(
-                "SELECT *, toUnixTimestamp64Milli(toDateTime64(TimeUnix, 3)) AS _timestamp, toUnixTimestamp64Milli(toDateTime64(StartTimeUnix, 3)) AS _start_timestamp FROM {}.otel_metrics_{} WHERE TimeUnix >= fromUnixTimestamp64Milli({{start:Int64}}) AND TimeUnix <= fromUnixTimestamp64Milli({{end:Int64}}) LIMIT {} SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow",
+                "SELECT {projection} FROM {}.otel_metrics_{} WHERE TimeUnix >= fromUnixTimestamp64Milli({{start:Int64}}) AND TimeUnix <= fromUnixTimestamp64Milli({{end:Int64}}){predicate} LIMIT {} SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow",
                 self.database,
                 kind,
                 self.max_rows + 1
@@ -122,17 +202,33 @@ impl Store {
                     &[
                         ("param_start", start.to_string()),
                         ("param_end", end.to_string()),
+                        ("param_names", string_array(&filter.unwrap_or_default())),
                     ],
                 )
                 .await?;
             for line in text.lines() {
+                if total.is_multiple_of(1024) {
+                    tokio::task::yield_now().await;
+                }
                 total += 1;
                 if total > self.max_rows {
                     bail!("ClickHouse sample scan limit exceeded")
                 }
                 let row: Json =
                     serde_json::from_str(line).context("invalid ClickHouse metric row")?;
-                let name = row_metric_name(&row, kind)?;
+                let name = match row_metric_name(&row, kind) {
+                    Ok(name) => name,
+                    Err(e) => {
+                        let warning = format!(
+                            "skipped invalid OTel metric name {:?}: {e}",
+                            string(&row, "MetricName")
+                        );
+                        if !loaded.warnings.contains(&warning) {
+                            loaded.warnings.push(warning);
+                        }
+                        continue;
+                    }
+                };
                 let mut labels = row_labels(&row)?;
                 labels.insert("__name__".into(), name.clone());
                 if let Some(info) = target_info(&row)?
@@ -299,8 +395,17 @@ impl Store {
                         let bounds = row["ExplicitBounds"]
                             .as_array()
                             .context("missing ExplicitBounds")?;
-                        if counts.len() != bounds.len() + 1 {
+                        if (counts.is_empty() && !bounds.is_empty())
+                            || (!counts.is_empty() && counts.len() != bounds.len() + 1)
+                        {
                             bail!("invalid histogram bucket count for {name}")
+                        }
+                        if counts.is_empty() {
+                            push(
+                                "_bucket",
+                                Some(("le", "+Inf".into())),
+                                number(&row["Count"])?,
+                            );
                         }
                         let mut cumulative = 0.0;
                         for (i, count) in counts.iter().enumerate() {
@@ -340,7 +445,8 @@ impl Store {
             for pair in points.windows(2) {
                 if pair[0].timestamp == pair[1].timestamp
                     && (pair[0].value.to_bits() != pair[1].value.to_bits()
-                        || pair[0].histogram != pair[1].histogram)
+                        || pair[0].histogram != pair[1].histogram
+                        || pair[0].start_timestamp != pair[1].start_timestamp)
                 {
                     bail!(
                         "conflicting samples at timestamp {} for {labels:?}; default DateTime columns lose subsecond precision",
@@ -352,6 +458,7 @@ impl Store {
                 a.timestamp == b.timestamp
                     && a.value.to_bits() == b.value.to_bits()
                     && a.histogram == b.histogram
+                    && a.start_timestamp == b.start_timestamp
             });
             loaded.series.push(Series { labels, points });
         }
@@ -603,8 +710,10 @@ pub fn plan(
             Expr::Call(c) => {
                 if c.func.name == "info" {
                     out.push((
-                        a.saturating_sub(lookback),
-                        b,
+                        engine
+                            .info_time(&c.args.args[0], a)?
+                            .saturating_sub(lookback),
+                        engine.info_time(&c.args.args[0], b)?,
                         crate::engine::info::info_selector(c),
                     ));
                 }
@@ -623,4 +732,16 @@ pub fn plan(
         out.iter().map(|x| x.1).max().unwrap_or(end),
         out.into_iter().map(|x| x.2).collect(),
     ))
+}
+
+/// ClickHouse query-parameter text encoding, never interpolated into SQL.
+pub(crate) fn string_array(values: &[String]) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|v| format!("'{}'", v.replace('\\', "\\\\").replace('\'', "\\'")))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
 }

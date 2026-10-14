@@ -114,11 +114,11 @@ impl Histogram {
         let mut inputs = Vec::with_capacity(values.len());
         for h in values {
             let mut h = (*h).clone();
+            h.reconcile_zero(result.zero_threshold);
             h.reduce(result.schema)?;
             if result.schema == -53 {
                 h.coarsen_custom(&result.custom);
             }
-            h.reconcile_zero(result.zero_threshold);
             inputs.push(h);
         }
         let sum = |v: Vec<f64>| {
@@ -199,11 +199,20 @@ impl Histogram {
         }
 
         let schema = self.schema.min(other.schema);
-        self.reduce(schema)?;
-        other.reduce(schema)?;
-        let threshold = self.zero_threshold.max(other.zero_threshold);
+        let mut threshold = self.zero_threshold.max(other.zero_threshold);
+        loop {
+            let next = self
+                .expanded_zero_threshold(threshold)
+                .max(other.expanded_zero_threshold(threshold));
+            if next == threshold {
+                break;
+            }
+            threshold = next;
+        }
         self.reconcile_zero(threshold);
         other.reconcile_zero(threshold);
+        self.reduce(schema)?;
+        other.reduce(schema)?;
         self.count += sign * other.count;
         self.sum += sign * other.sum;
         self.zero_count += sign * other.zero_count;
@@ -219,6 +228,33 @@ impl Histogram {
             self.reset_hint = 0
         }
         Ok(())
+    }
+    fn expanded_zero_threshold(&self, mut threshold: f64) -> f64 {
+        if self.schema == -53 || threshold <= self.zero_threshold {
+            return threshold;
+        }
+        let bound = |i: i32| {
+            let exponent = i as f64 * 2.0f64.powi(-self.schema);
+            if exponent == 1024.0 {
+                f64::MAX
+            } else {
+                2.0f64.powf(exponent)
+            }
+        };
+        loop {
+            let previous = threshold;
+            for (&index, &count) in self.positive.iter().chain(&self.negative) {
+                if count != 0.0
+                    && bound(index.saturating_sub(1)) < threshold
+                    && bound(index) > threshold
+                {
+                    threshold = bound(index);
+                }
+            }
+            if previous == threshold {
+                return threshold;
+            }
+        }
     }
     fn reconcile_zero(&mut self, threshold: f64) {
         if threshold <= self.zero_threshold || self.schema == -53 {

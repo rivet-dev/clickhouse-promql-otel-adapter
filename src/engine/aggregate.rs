@@ -78,6 +78,12 @@ impl Engine<'_> {
                 }
             );
         }
+        if matches!(op.as_str(), "topk" | "bottomk" | "limitk") {
+            let k = parameter.as_ref().unwrap().scalar()?;
+            if k >= i64::MAX as f64 {
+                bail!("Scalar value {} overflows int64", float_string(k));
+            }
+        }
         if op == "quantile" {
             let q = parameter.as_ref().unwrap().scalar()?;
             if q.is_nan() || !(0.0..=1.0).contains(&q) {
@@ -91,20 +97,23 @@ impl Engine<'_> {
                 );
             }
         }
+        if op == "count_values" {
+            let name = parameter.as_ref().unwrap().string()?;
+            if !valid_label(name) || a.param.as_ref().is_some_and(|p| invalid_utf8_literal(p)) {
+                let quoted = if let Some(promql_parser::parser::Expr::StringLiteral(s)) =
+                    a.param.as_deref()
+                {
+                    s.quoted()
+                } else {
+                    format!("{name:?}")
+                };
+                bail!("invalid label name {quoted}")
+            }
+        }
         let mut groups: BTreeMap<Labels, Vec<Sample>> = BTreeMap::new();
         for mut s in vector {
             if op == "count_values" {
                 let name = parameter.as_ref().unwrap().string()?;
-                if !valid_label(name) {
-                    let quoted = if let Some(promql_parser::parser::Expr::StringLiteral(s)) =
-                        a.param.as_deref()
-                    {
-                        s.quoted()
-                    } else {
-                        format!("{name:?}")
-                    };
-                    bail!("invalid label name {quoted}")
-                }
                 s.labels.insert(
                     name.into(),
                     s.histogram
@@ -276,11 +285,15 @@ impl Engine<'_> {
     }
 }
 pub(super) fn valid_label(s: &str) -> bool {
-    let mut chars = s.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    !s.is_empty()
 }
 
 pub(super) use crate::numeric::sum as compensated_sum;
+
+pub(super) fn invalid_utf8_literal(expr: &promql_parser::parser::Expr) -> bool {
+    match expr {
+        promql_parser::parser::Expr::StringLiteral(s) => std::str::from_utf8(&s.raw).is_err(),
+        promql_parser::parser::Expr::Paren(p) => invalid_utf8_literal(&p.expr),
+        _ => false,
+    }
+}

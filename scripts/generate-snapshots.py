@@ -70,17 +70,17 @@ service:
       receivers: [otlp]
       exporters: [clickhouse]
 """
-    if args.precision_schema:
-        query(f"CREATE DATABASE {database}")
-        ddl = (ROOT / "tests/snapshots/collector-schema.sql").read_text().replace("{{database}}", database).replace("DateTime", "DateTime64(9)")
-        for statement in ddl.split(";"):
-            if statement.strip():
-                query(statement)
     with tempfile.TemporaryDirectory(prefix="ch-promql-") as temp:
         path = Path(temp) / "collector.yaml"
         path.write_text(config)
         os.chmod(temp, 0o755)
         try:
+            if args.precision_schema:
+                query(f"CREATE DATABASE {database}")
+                ddl = (ROOT / "tests/snapshots/collector-schema.sql").read_text().replace("{{database}}", database).replace("DateTime", "DateTime64(9)")
+                for statement in ddl.split(";"):
+                    if statement.strip():
+                        query(statement)
             subprocess.run(["docker", "run", "-d", "--name", container, "--network", "clickhouse-promql_default",
                             "-p", "127.0.0.1::4318", "-v", f"{path}:/etc/otelcol-contrib/config.yaml:ro",
                             "otel/opentelemetry-collector-contrib:0.162.0"], check=True, capture_output=True)

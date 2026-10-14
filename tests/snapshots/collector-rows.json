@@ -1225,6 +1225,39 @@
       "StartTimeUnix": "1970-01-01 00:00:00",
       "Sum": 0,
       "TimeUnix": "2023-11-14 22:13:20"
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {},
+      "BucketCounts": [],
+      "Count": 5,
+      "Exemplars.FilteredAttributes": [],
+      "Exemplars.SpanId": [],
+      "Exemplars.TimeUnix": [],
+      "Exemplars.TraceId": [],
+      "Exemplars.Value": [],
+      "ExplicitBounds": [],
+      "Flags": 0,
+      "Max": 0,
+      "MetricDescription": "",
+      "MetricName": "hist_no_buckets",
+      "MetricUnit": "",
+      "Min": 0,
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "1970-01-01 00:00:00",
+      "Sum": 10,
+      "TimeUnix": "2023-11-14 22:13:20"
     }
   ],
   "otel_metrics_sum": [

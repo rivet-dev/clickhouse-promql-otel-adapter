@@ -89,3 +89,6 @@ version = "0.14.2"
 
 [build-dependencies.lrpar]
 version = "0.14.2"
+
+[dependencies.regex-syntax]
+version = "0.8"

@@ -611,8 +611,9 @@ impl fmt::Display for UnaryExpr {
 impl Prettier for UnaryExpr {
     fn pretty(&self, level: usize, max: usize) -> String {
         format!(
-            "{}-{}",
+            "{}{}{}",
             indent(level),
+            if self.positive { "+" } else { "-" },
             self.expr.pretty(level, max).trim_start()
         )
     }

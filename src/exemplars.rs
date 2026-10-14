@@ -19,8 +19,17 @@ impl Store {
         let mut groups: BTreeMap<Labels, Vec<Value>> = BTreeMap::new();
         let mut total = 0;
         for kind in TABLES.into_iter().filter(|k| *k != "summary") {
+            let filter = self.metric_filter(kind, selectors).await?;
+            if filter.as_ref().is_some_and(|v| v.is_empty()) {
+                continue;
+            }
+            let predicate = if filter.is_some() {
+                " AND MetricName IN {names:Array(String)}"
+            } else {
+                ""
+            };
             let sql = format!(
-                "SELECT *, arrayMap(t -> toUnixTimestamp64Milli(toDateTime64(t,3)), `Exemplars.TimeUnix`) AS _times FROM {}.otel_metrics_{kind} WHERE arrayExists(t -> t >= {{start:Int64}} AND t <= {{end:Int64}}, _times) LIMIT {} SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow",
+                "SELECT *, arrayMap(t -> toUnixTimestamp64Milli(toDateTime64(t,3)), `Exemplars.TimeUnix`) AS _times FROM {}.otel_metrics_{kind} WHERE arrayExists(t -> t >= {{start:Int64}} AND t <= {{end:Int64}}, _times){predicate} LIMIT {} SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow",
                 self.database,
                 self.max_rows + 1
             );
@@ -30,10 +39,17 @@ impl Store {
                     &[
                         ("param_start", start.to_string()),
                         ("param_end", end.to_string()),
+                        (
+                            "param_names",
+                            crate::storage::string_array(&filter.unwrap_or_default()),
+                        ),
                     ],
                 )
                 .await?;
             for line in text.lines() {
+                if total % 1024 == 0 {
+                    tokio::task::yield_now().await;
+                }
                 total += 1;
                 if total > self.max_rows {
                     bail!("ClickHouse exemplar scan limit exceeded");

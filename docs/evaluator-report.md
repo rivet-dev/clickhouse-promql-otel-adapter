@@ -1,7 +1,7 @@
 # Evaluator conformance evidence
 
 Target: Prometheus v3.15.0 (`5241a27fe3c6983549fccc32f6e65917408c63cd`).
-Run: `python3 scripts/conformance.py`, October 13, 2026.
+Run: `python3 scripts/conformance.py`, October 14, 2026.
 
 All 21,442 captured query executions pass. Values, exact labels, explicit sort ordering, expected evaluation errors, warnings and infos are compared. Each fixture includes generated instant/range/@ variants, so this is not a count of independent source assertions.
 
@@ -31,9 +31,13 @@ All 21,442 captured query executions pass. Values, exact labels, explicit sort o
 
 The compressed, checksummed corpus is committed in `tests/conformance/`. Regeneration runs the actual upstream test assertions against its pinned reference evaluator before recording results. Go is used only for reference generation.
 
-Additional pinned corpora now pass: **356 parser acceptance/type cases** from upstream `parse_test.go`, and **588 HTTP requests** covering GET/form POST, discovery, parameter failures, query results, formatting, AST serialization and exemplars. HTTP execution uses a unique real ClickHouse database. Invalid UTF-8 parser inputs retain their original bytes in hexadecimal. Timing measurements are normalized; numerical sample statistics remain checked.
+Additional pinned corpora now pass: **356 parser acceptance/type cases** from upstream `parse_test.go`, and **1,016 HTTP requests** covering GET/form POST, discovery, parameter failures, query results, formatting, AST serialization and exemplars. HTTP execution uses a unique real ClickHouse database. Invalid UTF-8 parser inputs retain their original bytes in hexadecimal. Timing measurements are normalized; numerical sample statistics are checked for the simple corpus queries. This does not establish identical Go allocation statistics for complex queries.
 
-Parser error wording/positions outside the HTTP corpus and operational statistics for complex queries still need broader checks. Remaining acceptance gates: complete HTTP/Thanos contracts, ClickHouse-backed differential execution, manual live Collector/Grafana verification, and independent review. This report does not claim complete replacement readiness.
+Parser error wording/positions outside the HTTP corpus are not guaranteed identical.
+Operational statistics report Rust work and retained sample slots, not Go allocator
+behavior. All delivery gates, including ClickHouse replay, live Grafana and reviews,
+are recorded in the [checklist](compatibility.md). See [the API contract](api-contract.md)
+for deliberate operational differences and excluded server-management endpoints.
 
 The vendored parser also runs its own unit, serialization, custom-function and documentation tests. The adapter enforces 65,536 input bytes, 2,048 parser tokens and 128 evaluator nesting levels; these limits are explicit resource protections.
 
@@ -52,3 +56,9 @@ Only raw-resolution data is stored, so any valid maximum source resolution can
 be served without downsampling. Partial responses cannot recover from failure
 of the sole ClickHouse backend. Both engine names use this Rust evaluator;
 Thanos's distributed optimizer and explain/analyze trees are not provided.
+
+The review additions compare 1,200 RE2 patterns/value cases with Go and 2,400
+Unicode fuzzy-search scores with upstream Prometheus. They include rejection,
+ASCII character classes, duplicate captures, Go replacement expansion, literal
+braces, and class-set syntax. Regeneration also derives the Unicode property
+allowlist from the pinned Go toolchain.

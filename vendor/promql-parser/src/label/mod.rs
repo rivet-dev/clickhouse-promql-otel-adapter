@@ -21,6 +21,8 @@ use crate::parser::lex::is_label;
 use crate::util::escape_string;
 
 mod matcher;
+mod regex;
+pub use regex::{compile_regex, expand_regex};
 pub use matcher::{MatchOp, Matcher, Matchers};
 
 /// "__name__"

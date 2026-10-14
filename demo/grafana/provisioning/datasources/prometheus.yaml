@@ -12,3 +12,5 @@ datasources:
       timeInterval: 5s
       prometheusType: Prometheus
       prometheusVersion: 3.15.0
+      manageAlerts: false
+      allowAsRecordingRulesTarget: false

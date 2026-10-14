@@ -29,3 +29,7 @@ whole seconds; this demo deliberately uses five-second scrapes.
 Current workspace URL: <http://100.94.102.49:13000/d/otel-clickhouse-live>.
 Screenshots remain available after the processes stop. They verify Grafana
 interoperability for these workflows, not exhaustive PromQL compatibility.
+
+The dashboard was refreshed and captured again after rebuilding the reviewed
+Rust adapter at 01:01 UTC. Live API rates remained 12/s and approximately 0.291/s;
+all four panels rendered without errors.

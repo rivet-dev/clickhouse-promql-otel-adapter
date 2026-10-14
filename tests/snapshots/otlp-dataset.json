@@ -1797,6 +1797,19 @@
                 "aggregationTemporality": 2,
                 "dataPoints": [
                   {
+                    "count": "5",
+                    "sum": 10,
+                    "timeUnixNano": "1700000000000000000"
+                  }
+                ]
+              },
+              "name": "hist_no_buckets"
+            },
+            {
+              "histogram": {
+                "aggregationTemporality": 2,
+                "dataPoints": [
+                  {
                     "bucketCounts": [
                       "0"
                     ],

@@ -13,6 +13,20 @@ use promql_parser::{
 impl Engine<'_> {
     pub(super) fn call(&mut self, c: &Call, t: i64) -> Result<Value> {
         let name = c.func.name;
+        if matches!(name, "label_replace" | "label_join") {
+            if super::aggregate::invalid_utf8_literal(&c.args.args[1]) {
+                let text = self.eval(&c.args.args[1], t)?.string()?.to_owned();
+                bail!("invalid destination label name in {name}(): {text}");
+            }
+            if name == "label_join" {
+                for arg in c.args.args.iter().skip(3) {
+                    if super::aggregate::invalid_utf8_literal(arg) {
+                        let text = self.eval(arg, t)?.string()?.to_owned();
+                        bail!("invalid source label name in label_join(): {text}");
+                    }
+                }
+            }
+        }
         if name == "start_timestamp" && !matches!(&*c.args.args[0], Expr::VectorSelector(_)) {
             return Ok(Value::Vector(vec![]));
         }
@@ -913,7 +927,7 @@ fn label_function(name: &str, mut args: Vec<Value>, t: i64) -> Result<Value> {
         let replacement = args[1].string()?;
         let source = args[2].string()?;
         let pattern = args[3].string()?;
-        let re = regex::Regex::new(&format!("(?s)^(?:{pattern})$")).map_err(|_| {
+        let re = promql_parser::label::compile_regex(pattern).map_err(|_| {
             anyhow::anyhow!("invalid regular expression in label_replace(): {pattern}")
         })?;
         for s in &mut v {
@@ -922,7 +936,7 @@ fn label_function(name: &str, mut args: Vec<Value>, t: i64) -> Result<Value> {
                 if dest == "__name__" {
                     s.drop_name = false;
                 }
-                let value = re.replace(input, replacement).to_string();
+                let value = promql_parser::label::expand_regex(&re, input, replacement).unwrap();
                 if value.is_empty() {
                     s.labels.remove(dest);
                 } else {

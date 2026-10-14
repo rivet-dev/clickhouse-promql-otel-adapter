@@ -49,7 +49,7 @@ func TestAPIReference(t *testing.T) {
 	}
 	registry := prometheus.NewRegistry()
 	api := v1.NewAPI(promqltest.NewTestEngine(t, false, 5*time.Minute, 1000000), db, nil, nil, db,
-		nil, nil, nil, func() config.Config { return config.Config{} }, map[string]string{}, v1.GlobalURLOptions{}, func(h http.HandlerFunc) http.HandlerFunc { return h }, nil, "", false, false, 1000, slog.Default(), nil,
+		nil, nil, nil, func() config.Config { return config.Config{} }, map[string]string{}, v1.GlobalURLOptions{}, func(h http.HandlerFunc) http.HandlerFunc { return h }, nil, "", false, true, 1000, slog.Default(), nil,
 		1000000, 10, 1048576, false, nil, nil, &v1.PrometheusVersion{Version: "3.15.0"}, nil, nil, registry, registry, nil, false, nil, false, false, false, false, 5*time.Minute, false, false, nil, nil, v1.OpenAPIOptions{}, parser.NewParser(parser.Options{EnableExperimentalFunctions: true, ExperimentalDurationExpr: true, EnableExtendedRangeSelectors: true, EnableBinopFillModifiers: true}))
 	router := route.New()
 	api.Register(router.WithPrefix("/api/v1"))
@@ -64,7 +64,19 @@ func TestAPIReference(t *testing.T) {
 		router.ServeHTTP(recorder, req)
 		var value any
 		if err := json.Unmarshal(recorder.Body.Bytes(), &value); err != nil {
-			value = recorder.Body.String()
+			if strings.Contains(recorder.Header().Get("Content-Type"), "ndjson") {
+				lines := []any{}
+				for _, line := range strings.Split(strings.TrimSpace(recorder.Body.String()), "\n") {
+					var v any
+					if err := json.Unmarshal([]byte(line), &v); err != nil {
+						t.Fatal(err)
+					}
+					lines = append(lines, v)
+				}
+				value = lines
+			} else {
+				value = recorder.Body.String()
+			}
 		}
 		// Durations are measurements, not stable protocol fixtures.
 		if root, ok := value.(map[string]any); ok {
@@ -79,6 +91,20 @@ func TestAPIReference(t *testing.T) {
 			}
 		}
 		cases = append(cases, map[string]any{"method": method, "uri": uri, "body": body, "content_type": contentType, "status": recorder.Code, "response": value})
+	}
+	for _, q := range []string{
+		`topk(Inf,vector(1))`, `bottomk(Inf,vector(1))`, `limitk(Inf,vector(1))`,
+		`count_values("a.b",vector(1))`, `label_join(vector(1),"世","-","a.b")`,
+		`label_replace(vector(1),"a.b","yes","missing",".*")`,
+		`label_replace(label_replace(vector(1),"src","b","",".*"),"dst","$x","src","(?P<x>a)|(?P<x>b)")`,
+		`label_replace(label_replace(vector(1),"src","ab","",".*"),"dst","$x-$2-$$-${01}","src","(?P<x>a)(?P<x>b)")`,
+		`foo # [ignored comment`, `foo # offset invalid`,
+	} {
+		add("query", url.Values{"query": {q}, "time": {"1700000075"}}, "GET", "", "")
+	}
+	for _, q := range []string{`m[0.0016]`, `m offset 0.0016`, `m[0.0001]`, `sum(rate(long_metric_name{label="` + strings.Repeat("a", 120) + `"}[5m]))`, `+(` + strings.Repeat("m + ", 30) + `m)`} {
+		add("format_query", url.Values{"query": {q}}, "GET", "", "")
+		add("parse_query", url.Values{"query": {q}}, "GET", "", "")
 	}
 	base := url.Values{"query": {"test_gauge"}, "time": {"1700000075"}}
 	queries := []string{"1+2", "test_gauge", `test_gauge{instance="a"}`, "sum(test_gauge)", "test_gauge[1m]", "\"hello\"", "1/0", "0/0", "", "(", "unknown(test_gauge)", "rate(test_gauge)", "sum(1)", "{}", "1 == 1"}
@@ -148,6 +174,30 @@ func TestAPIReference(t *testing.T) {
 		if _, ok := c["error"]; !ok {
 			for _, path := range []string{"format_query", "parse_query"} {
 				add(path, url.Values{"query": {c["input"].(string)}}, "GET", "", "")
+			}
+		}
+	}
+	for _, endpoint := range []string{"metric_names", "label_names", "label_values"} {
+		for _, method := range []string{"GET", "POST"} {
+			for _, term := range []string{"", "test", "tg", "TEST", "nce", "zz", "api", "a"} {
+				for _, algorithm := range []string{"subsequence", "jarowinkler"} {
+					for _, threshold := range []string{"0", "50", "100"} {
+						p := url.Values{"start": {"1700000000"}, "end": {"1700000075"}, "label": {"instance"}, "search[]": {term}, "fuzz_alg": {algorithm}, "fuzz_threshold": {threshold}, "include_score": {"true"}, "case_sensitive": {"false"}, "batch_size": {"1"}, "sort_by": {"score"}}
+						body := ""
+						if method == "POST" {
+							body = p.Encode()
+							p = url.Values{}
+						}
+						add("search/"+endpoint, p, method, body, "application/x-www-form-urlencoded")
+					}
+				}
+			}
+		}
+		for _, param := range []string{"limit", "batch_size", "fuzz_threshold", "sort_by", "sort_dir", "case_sensitive", "include_score", "fuzz_alg"} {
+			for _, v := range []string{"-1", "0", "1", "1001", "wrong"} {
+				p := url.Values{"start": {"1700000000"}, "end": {"1700000075"}, "label": {"instance"}}
+				p.Set(param, v)
+				add("search/"+endpoint, p, "GET", "", "")
 			}
 		}
 	}

@@ -62,11 +62,55 @@ ClickHouse rejected an in-place `MODIFY COLUMN TimeUnix DateTime64(9)` because `
 
 The ClickHouse differential report is in [storage-report.md](storage-report.md). The precision variant there additionally supplies ZeroThreshold directly; the unmodified exporter still needs a code change to populate that field.
 
-## Additional validation still required
+## Prometheus metadata loses original type and unit
 
-- Cumulative/delta conversion and reset/start-time boundaries.
-- Prometheus name/unit and job/instance round-trip behavior.
-- Deduplication, stale markers and no-recorded-value flags.
-- Predicate performance on resource labels versus default ORDER BY.
+The receiver records the original Prometheus metric type in OTLP metric metadata
+(`receiver/prometheusreceiver/internal/metricfamily.go`), but the ClickHouse
+exporter omits `Metric.Metadata`. Untyped samples therefore become indistinguishable
+from gauges. The receiver also translates unit names into UCUM (for example,
+`seconds` becomes `s`); the adapter exposes the stored unit. HELP and conflicting
+stored definitions are preserved and tested, but the original TYPE/unit cannot
+always be reconstructed.
 
-These are limitations to measure, not permission to silently reinterpret data.
+Recommendation: preserve the original metric metadata map, including original
+Prometheus type, name and unit when available. This also makes suffix trimming
+and translator upgrades auditable. The default receiver scope is recognized;
+SDK metrics use the tested OTel naming translator. The live Grafana test verifies
+the default Prometheus receiver with suffix trimming disabled.
+
+## Temporality, duplicates and query cost
+
+Cumulative sums/histograms, reset/start boundaries, stale flags, resource/scope
+labels and exact retry duplicates are covered by the Collector snapshots and
+real ClickHouse tests. Conflicting duplicate values or start timestamps return
+an error. Configured HA replica labels use a tested Thanos penalty iterator.
+Delta data is rejected with an actionable conversion message; deploy the
+Collector's delta-to-cumulative processing before this exporter when needed.
+A stateless query adapter cannot reliably reconstruct cumulative history from
+arbitrarily truncated delta data.
+
+Queries filter metric names and timestamps in ClickHouse, then apply complete
+Prometheus label matching in Rust. Discovery uses distinct label projections,
+not all historical samples. **This is a bounded correctness implementation,
+not a large-cardinality performance certification.** The default ORDER BY and
+map-valued labels are unlikely to suffice for every production workload.
+Benchmark actual cardinality, range lengths and concurrent dashboards before
+migration; consider materialized normalized series IDs, a label index, and
+separate sample/series tables while retaining the raw OTLP tables. No production
+scale benchmark or distributed query planner is claimed.
+
+## Recommended priorities
+
+1. Precreate replacement tables with `DateTime64(9)` before ingesting data that
+   needs subsecond accuracy. Existing lost fractions cannot be restored.
+2. Extend exporter and schema together for `ZeroThreshold` and optional-field
+   presence. DDL changes alone cannot repair fields the exporter never writes.
+3. Preserve original metric metadata/type/unit. Keep typed OTLP attributes and
+   integer values separately only if their non-Prometheus fidelity is required.
+4. Add series/label indexing based on measured workloads. Keep the adapter's
+   default-schema path as a compatibility test while evaluating optimized layouts.
+
+Prometheus native custom buckets, fractional/negative histogram counts, and
+explicit native counter-reset hints are not all representable in OTLP. These
+require an explicit richer input/storage format, rather than guessing lost data.
+See [storage-report.md](storage-report.md) for exclusions counted separately.
