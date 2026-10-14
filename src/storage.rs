@@ -23,6 +23,7 @@ pub struct Store {
     pub username: String,
     pub password: String,
     pub max_rows: usize,
+    pub max_bytes: usize,
 }
 #[derive(Default)]
 pub struct Loaded {
@@ -43,20 +44,38 @@ impl Store {
             username,
             password,
             max_rows: 1_000_000,
+            max_bytes: 64 * 1024 * 1024,
         })
     }
     pub async fn query(&self, sql: &str, params: &[(&str, String)]) -> Result<String> {
-        let response = self
+        let mut response = self
             .client
             .post(&self.url)
             .basic_auth(&self.username, Some(&self.password))
             .query(params)
+            .query(&[
+                ("cancel_http_readonly_queries_on_client_close", "1"),
+                ("max_execution_time", "120"),
+            ])
             .body(sql.to_owned())
             .send()
             .await
             .context("ClickHouse request failed")?;
         let status = response.status();
-        let text = response.text().await?;
+        if response
+            .content_length()
+            .is_some_and(|n| n > self.max_bytes as u64)
+        {
+            bail!("ClickHouse response byte limit exceeded");
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if chunk.len() > self.max_bytes.saturating_sub(bytes.len()) {
+                bail!("ClickHouse response byte limit exceeded");
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let text = String::from_utf8(bytes).context("ClickHouse returned invalid UTF-8")?;
         if !status.is_success() {
             bail!(
                 "ClickHouse returned {status}: {}",

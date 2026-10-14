@@ -1,4 +1,5 @@
 pub mod api;
+mod dedup;
 pub mod engine;
 mod exemplars;
 pub mod histogram;

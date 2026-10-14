@@ -17,6 +17,9 @@ struct Config {
     username: String,
     #[arg(long, env = "CLICKHOUSE_PASSWORD", default_value = "")]
     password: String,
+    /// Labels identifying HA replicas; may be repeated.
+    #[arg(long = "replica-label")]
+    replica_labels: Vec<String>,
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -28,7 +31,9 @@ async fn main() -> anyhow::Result<()> {
     let address = format!("{}:{}", c.host, c.port);
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(%address,"listening");
-    axum::serve(listener, router(App::new(store)))
+    let mut app = App::new(store);
+    app.replica_labels = c.replica_labels;
+    axum::serve(listener, router(app))
         .with_graceful_shutdown(async {
             tokio::signal::ctrl_c().await.ok();
         })

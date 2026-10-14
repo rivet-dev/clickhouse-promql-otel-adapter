@@ -23,12 +23,16 @@ use tower_http::{compression::CompressionLayer, cors::CorsLayer};
 pub struct App {
     pub store: Store,
     pub concurrency: Arc<Semaphore>,
+    pub replica_labels: Vec<String>,
+    pub store_labels: crate::model::Labels,
 }
 impl App {
     pub fn new(store: Store) -> Self {
         Self {
             store,
             concurrency: Arc::new(Semaphore::new(16)),
+            replica_labels: Vec::new(),
+            store_labels: Default::default(),
         }
     }
 }
@@ -94,6 +98,102 @@ impl IntoResponse for ApiError {
     }
 }
 type Result<T> = std::result::Result<T, ApiError>;
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct Shard {
+    shard_index: i64,
+    total_shards: i64,
+    by: bool,
+    labels: Vec<String>,
+}
+impl Shard {
+    fn matches(&self, labels: &crate::model::Labels) -> bool {
+        if self.total_shards < 1 {
+            return true;
+        }
+        let mut bytes = Vec::new();
+        for (name, value) in labels {
+            if self.labels.contains(name) == self.by {
+                bytes.extend_from_slice(name.as_bytes());
+                bytes.push(255);
+                bytes.extend_from_slice(value.as_bytes());
+                bytes.push(255);
+            }
+        }
+        xxhash_rust::xxh64::xxh64(&bytes, 0) % self.total_shards as u64 == self.shard_index as u64
+    }
+}
+struct QueryOptions {
+    replica_labels: Vec<String>,
+    store_matches: bool,
+    shard: Option<Shard>,
+}
+impl QueryOptions {
+    fn parse(app: &App, p: &Params) -> Result<Self> {
+        let boolean = |name, default| match p.get(name).unwrap_or("") {
+            "" => Ok(default),
+            "1" | "t" | "T" | "TRUE" | "true" | "True" => Ok(true),
+            "0" | "f" | "F" | "FALSE" | "false" | "False" => Ok(false),
+            v => Err(ApiError::bad(format!(
+                "'{name}' parameter: strconv.ParseBool: parsing {v:?}: invalid syntax"
+            ))),
+        };
+        let dedup = boolean("dedup", true)?;
+        boolean("partial_response", false)?;
+        boolean("analyze", false)?;
+        match p.get("engine").unwrap_or("") {
+            "" | "prometheus" | "thanos" => (),
+            v => return Err(ApiError::bad(format!("'{v}' bad engine"))),
+        }
+        if let Some(v) = p
+            .get("max_source_resolution")
+            .filter(|v| !v.is_empty() && *v != "auto")
+        {
+            let d = parse_duration_ns(v).map_err(|e| {
+                ApiError::bad(format!("'max_source_resolution' parameter: {}", e.message))
+            })?;
+            if d < 0 {
+                return Err(ApiError::bad(
+                    "negative 'max_source_resolution' is not accepted. Try a positive integer",
+                ));
+            }
+        }
+        let mut replica_labels = app.replica_labels.clone();
+        let labels = p.all("replicaLabels[]");
+        if !labels.is_empty() {
+            replica_labels = labels.into_iter().map(str::to_owned).collect();
+        }
+        if !dedup {
+            replica_labels.clear();
+        }
+        let stores = p.all("storeMatch[]");
+        let mut store_matches = stores.is_empty();
+        for selector in stores {
+            // Store selectors may deliberately match empty external label sets.
+            let selector = promql_parser::parser::parse(&format!("__store__{selector}"))
+                .or_else(|_| Engine::parse(selector))
+                .map_err(ApiError::bad)?;
+            let promql_parser::parser::Expr::VectorSelector(mut selector) = selector else {
+                return Err(ApiError::bad("storeMatch[] must be a metric selector"));
+            };
+            if selector.name.as_deref() == Some("__store__") {
+                selector.name = None;
+            }
+            store_matches |= crate::engine::matches(&selector, &app.store_labels);
+        }
+        let shard = p
+            .get("shard_info")
+            .filter(|v| !v.is_empty())
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(ApiError::bad)?;
+        Ok(Self {
+            replica_labels,
+            store_matches,
+            shard,
+        })
+    }
+}
 #[derive(Default)]
 struct Params(Vec<(String, String)>);
 impl Params {
@@ -252,6 +352,7 @@ async fn dispatch(app: App, request: Request) -> Result<JsonValue> {
             "query" | "query_range" => {
                 query_api(&app, &params, path == "query_range", deadline).await
             }
+            "query_explain" | "query_range_explain" => Err(ApiError::bad("Query not explainable")),
             "query_exemplars" => exemplar_api(&app, &params).await,
             "labels" | "series" | "metadata" => discovery_api(&app, &params, &path).await,
             _ if path.starts_with("label/") && path.ends_with("/values") => {
@@ -273,6 +374,7 @@ fn success(data: JsonValue) -> JsonValue {
 async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Result<JsonValue> {
     let query = p.get("query").unwrap_or("");
     let limit = p.limit()?;
+    let options = QueryOptions::parse(app, p)?;
 
     let now = chrono::Utc::now().timestamp_millis();
     let (start, end, step) = if range {
@@ -339,7 +441,7 @@ async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Res
         lookback = 300_000;
     }
     let (a, b, selectors) = plan(&expr, start, end, lookback).map_err(ApiError::bad)?;
-    let loaded = if selectors.is_empty() {
+    let mut loaded = if selectors.is_empty() || !options.store_matches {
         Default::default()
     } else {
         app.store
@@ -347,6 +449,10 @@ async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Res
             .await
             .map_err(ApiError::exec)?
     };
+    if let Some(shard) = options.shard {
+        loaded.series.retain(|s| shard.matches(&s.labels));
+    }
+    let replica_labels = options.replica_labels;
     let query_source = query.to_owned();
     let stats = p.get("stats").unwrap_or("").to_owned();
     let preparation_time = Instant::now();
@@ -355,6 +461,7 @@ async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Res
         let eval_start=Instant::now();
         let mut engine = Engine::new(&loaded.series, start, end);
         engine.source = query_source;
+        engine.replica_labels = replica_labels;
         engine.lookback = lookback;
         engine.deadline = deadline;
         let value = if range {
@@ -426,11 +533,24 @@ async fn discovery_api(app: &App, p: &Params, path: &str) -> Result<JsonValue> {
     }
     let selectors = p.selectors(path == "series")?;
     let limit = p.limit()?;
-    let loaded = app
-        .store
-        .discover(start, end, &selectors)
-        .await
-        .map_err(ApiError::exec)?;
+    let options = QueryOptions::parse(app, p)?;
+    let mut loaded = if options.store_matches {
+        app.store
+            .discover(start, end, &selectors)
+            .await
+            .map_err(ApiError::exec)?
+    } else {
+        Default::default()
+    };
+    if !options.replica_labels.is_empty() {
+        let mut seen = BTreeSet::new();
+        for s in &mut loaded.series {
+            for label in &options.replica_labels {
+                s.labels.remove(label);
+            }
+        }
+        loaded.series.retain(|s| seen.insert(s.labels.clone()));
+    }
     let data = if path == "series" {
         json!(
             loaded

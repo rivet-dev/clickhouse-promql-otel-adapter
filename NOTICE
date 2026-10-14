@@ -17,3 +17,6 @@ part of the adapter executable. Its dependencies retain their own licenses.
 
 OTLP name conversion follows github.com/prometheus/otlptranslator v1.0.0
 Copyright The Prometheus Authors and The OpenTelemetry Authors, Apache-2.0.
+
+HA replica selection is adapted from Thanos pkg/dedup.
+Copyright The Thanos Authors, Apache License, Version 2.0.

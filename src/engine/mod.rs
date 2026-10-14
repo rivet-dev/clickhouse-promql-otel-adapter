@@ -16,6 +16,8 @@ use std::{
 };
 
 pub struct Engine<'a> {
+    pub replica_labels: Vec<String>,
+    counter_hint: bool,
     pub series: &'a [Series],
     pub start: i64,
     pub end: i64,
@@ -42,6 +44,8 @@ impl<'a> Engine<'a> {
     pub fn new(series: &'a [Series], start: i64, end: i64) -> Self {
         Self {
             series,
+            replica_labels: Vec::new(),
+            counter_hint: false,
             start,
             end,
             lookback: 300_000,
@@ -276,6 +280,13 @@ impl<'a> Engine<'a> {
         }
         self.depth += 1;
         let old_stats = (self.histogram_stats, self.histogram_stats_blocked);
+        let old_counter = self.counter_hint;
+        if let Expr::Call(c) = expr {
+            self.counter_hint = matches!(c.func.name, "rate" | "irate" | "increase" | "resets");
+        }
+        if matches!(expr, Expr::Aggregate(_) | Expr::Binary(_)) {
+            self.counter_hint = false;
+        }
         if matches!(expr, Expr::Subquery(_))
             || matches!(expr, Expr::Binary(b) if matches!(b.op.to_string().as_str(),"</"|">/"))
             || matches!(expr, Expr::Call(c) if matches!(c.func.name,"histogram_quantile"|"histogram_quantiles"|"histogram_fraction"|"histogram_stddev"|"histogram_stdvar"))
@@ -290,8 +301,8 @@ impl<'a> Engine<'a> {
         }
         let cache_key = if self.is_range && invariant(expr) {
             Some(format!(
-                "{}:{}:{expr}",
-                self.histogram_stats, self.histogram_stats_blocked
+                "{}:{}:{}:{expr}",
+                self.histogram_stats, self.histogram_stats_blocked, self.counter_hint
             ))
         } else {
             None
@@ -317,6 +328,7 @@ impl<'a> Engine<'a> {
             result
         };
         (self.histogram_stats, self.histogram_stats_blocked) = old_stats;
+        self.counter_hint = old_counter;
         self.depth -= 1;
         if self.depth == 0 {
             match &mut result {
@@ -347,6 +359,24 @@ impl<'a> Engine<'a> {
         }
         result
     }
+    fn selected(&self, v: &VectorSelector) -> Vec<std::borrow::Cow<'a, Series>> {
+        let selected = self
+            .series
+            .iter()
+            .filter(|s| matches(v, &s.labels))
+            .collect::<Vec<_>>();
+        if self.replica_labels.is_empty() {
+            selected
+                .into_iter()
+                .map(std::borrow::Cow::Borrowed)
+                .collect()
+        } else {
+            crate::dedup::merge(&selected, &self.replica_labels, self.counter_hint)
+                .into_iter()
+                .map(std::borrow::Cow::Owned)
+                .collect()
+        }
+    }
     fn eval_inner(&mut self, expr: &Expr, timestamp: i64) -> Result<Value> {
         match expr {
             Expr::NumberLiteral(n) => Ok(Value::Scalar(n.val)),
@@ -372,13 +402,9 @@ impl<'a> Engine<'a> {
                 let target = self.target(timestamp, &v.at, &v.offset)?;
                 let mut samples = Vec::new();
                 if v.smoothed {
-                    let selected = self
-                        .series
-                        .iter()
-                        .filter(|s| matches(v, &s.labels))
-                        .collect::<Vec<_>>();
+                    let selected = self.selected(v);
                     for s in selected {
-                        match extended::smooth(s, target, self.lookback) {
+                        match extended::smooth(&s, target, self.lookback) {
                             Ok(Some(p)) => samples.push(Sample {
                                 labels: s.labels.clone(),
                                 value: p.value,
@@ -405,7 +431,7 @@ impl<'a> Engine<'a> {
                     self.charge(samples.len())?;
                     return Ok(Value::Vector(samples));
                 }
-                for s in self.series.iter().filter(|s| matches(v, &s.labels)) {
+                for s in self.selected(v) {
                     let index = s.points.partition_point(|p| p.timestamp <= target);
                     if index > 0 {
                         let p = &s.points[index - 1];
@@ -414,7 +440,7 @@ impl<'a> Engine<'a> {
                                 labels: s.labels.clone(),
                                 timestamp: p.timestamp,
                                 value: p.value,
-                                histogram: resolved_histogram(s, index - 1, self.histogram_stats),
+                                histogram: resolved_histogram(&s, index - 1, self.histogram_stats),
                                 start_timestamp: p.start_timestamp,
                                 ..Default::default()
                             })
@@ -428,7 +454,7 @@ impl<'a> Engine<'a> {
                 let target = self.target(timestamp, &m.vs.at, &m.vs.offset)?;
                 let begin = target.saturating_sub(m.range.as_millis().try_into()?);
                 let mut result = Vec::new();
-                for s in self.series.iter().filter(|s| matches(&m.vs, &s.labels)) {
+                for s in self.selected(&m.vs) {
                     let mut a = s.points.partition_point(|p| p.timestamp <= begin);
                     let mut b = s.points.partition_point(|p| p.timestamp <= target);
                     if (m.anchored || m.smoothed)
@@ -447,7 +473,7 @@ impl<'a> Engine<'a> {
                         .filter(|&i| !s.points[i].stale())
                         .map(|i| {
                             let mut p = s.points[i].clone();
-                            p.histogram = resolved_histogram(s, i, self.histogram_stats);
+                            p.histogram = resolved_histogram(&s, i, self.histogram_stats);
                             p
                         })
                         .collect::<Vec<_>>();
