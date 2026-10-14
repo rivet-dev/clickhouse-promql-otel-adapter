@@ -67,8 +67,11 @@ def main():
         run("go", "test", "-run", "TestParserReference", "-count=1", "./...", cwd=ROOT / "tools/oracle", env=env)
         env |= {"OTEL_NAMES_OUTPUT": str(SNAPSHOTS / "otel-names.json")}
         run("go", "test", "-run", "TestOTelNames", "-count=1", "./...", cwd=ROOT / "tools/oracle", env=env)
-        env |= {"REGEX_OUTPUT": str(SNAPSHOTS / "regex.json"), "UNICODE_PROPERTIES_OUTPUT": str(ROOT / "vendor/promql-parser/src/label/unicode-properties.txt")}
+        properties = generated / "unicode-properties.txt"
+        env |= {"REGEX_OUTPUT": str(SNAPSHOTS / "regex.json"), "UNICODE_PROPERTIES_OUTPUT": str(properties)}
         run("go", "test", "-run", "TestRegexReference", "-count=1", "./...", cwd=ROOT / "tools/oracle", env=env)
+        if properties.read_bytes() != (ROOT / "vendor/promql-parser/out/src/label/unicode-properties.txt").read_bytes():
+            raise SystemExit(f"Unicode properties changed: review {properties}, update the parser patch, then run just vendor-regenerate.")
         env |= {"SEARCH_OUTPUT": str(SNAPSHOTS / "search-scores.json")}
         run("go", "test", "-run", "TestSearchScores", "-count=1", "./...", cwd=ROOT / "tools/oracle", env=env)
         env |= {"API_OUTPUT": str(SNAPSHOTS / "http.json")}

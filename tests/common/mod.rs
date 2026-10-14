@@ -32,7 +32,7 @@ where
     store
         .query(&format!("CREATE DATABASE {database}"), &[])
         .await
-        .expect("real ClickHouse required: docker compose up -d --wait");
+        .expect("real ClickHouse required: just clickhouse-up");
     let task_store = store.clone();
     let task = tokio::spawn(async move {
         for ddl in include_str!("../snapshots/collector-schema.sql")

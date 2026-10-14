@@ -25,44 +25,29 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      - uses: extractions/setup-just@v4
+        with:
+          just-version: '1.41.0'
       - name: Install Rust
-        run: rustup default 1.97.0
+        run: just setup
       - name: Check version and test
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          python3 - <<'PY'
-          import os, re, tomllib
-          version = tomllib.load(open("Cargo.toml", "rb"))["package"]["version"]
-          assert re.fullmatch(r"\d+\.\d+\.\d+", version), version
-          assert os.environ["TAG"] == f"v{version}", "tag must match Cargo.toml"
-          PY
-          docker compose up -d --wait
-          cargo test --locked
-          python3 scripts/conformance.py
+          just release-check "$TAG"
+          just ci
       - name: Package binary
         env:
           ARCH: ${{ matrix.arch }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          cargo build --locked --release
-          mkdir -p package
-          cp target/release/clickhouse-promql LICENSE NOTICE package/
-          strip package/clickhouse-promql
-          package/clickhouse-promql --version
-          tar -C package -czf "clickhouse-promql-otel-adapter-${TAG}-linux-${ARCH}.tar.gz" .
-          mkdir -p "dist/$ARCH"
-          cp package/clickhouse-promql "dist/$ARCH/"
-          docker build -t release-test .
-          docker run --rm release-test --version
+        run: just image-smoke "$ARCH"
       - uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.arch }}
-          path: clickhouse-promql-otel-adapter-*.tar.gz
+          path: dist/clickhouse-promql-otel-adapter-*.tar.gz
           if-no-files-found: error
       - name: Stop test database
         if: always()
-        run: docker compose down -v
+        run: just clickhouse-down -v
 
   publish:
     needs: build
@@ -73,6 +58,9 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v7
+      - uses: extractions/setup-just@v4
+        with:
+          just-version: '1.41.0'
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
@@ -80,16 +68,8 @@ jobs:
       - name: Prepare image and checksums
         id: image
         env:
-          REPOSITORY: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
-        run: |
-          for arch in amd64 arm64; do
-            mkdir -p "dist/$arch"
-            tar -xzf artifacts/*-linux-"$arch".tar.gz -C "dist/$arch"
-          done
-          (cd artifacts && sha256sum *.tar.gz > SHA256SUMS)
-          echo "name=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+        run: just release-prepare "$TAG"
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
@@ -113,5 +93,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: |
-          gh release create "$TAG" artifacts/* --verify-tag --title "$TAG" --generate-notes
+        run: just release-publish "$TAG"
