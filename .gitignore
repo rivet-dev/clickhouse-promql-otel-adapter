@@ -5,3 +5,5 @@ __pycache__/
 .env
 
 /vendor/promql-parser/Cargo.lock
+
+/dist/

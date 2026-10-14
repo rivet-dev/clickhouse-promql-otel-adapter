@@ -43,7 +43,7 @@ impl App {
 }
 pub fn router(app: App) -> Router {
     Router::new().route("/-/healthy",get(||async{"ClickHouse PromQL adapter is healthy\n"}))
-        .route("/-/ready",get(ready)).route("/metrics",get(||async{"# HELP clickhouse_promql_build_info Build information.\n# TYPE clickhouse_promql_build_info gauge\nclickhouse_promql_build_info{version=\"0.1.0\"} 1\n"}))
+        .route("/-/ready",get(ready)).route("/metrics",get(||async{concat!("# HELP clickhouse_promql_build_info Build information.\n# TYPE clickhouse_promql_build_info gauge\nclickhouse_promql_build_info{version=\"",env!("CARGO_PKG_VERSION"),"\"} 1\n")}))
         .route("/api/v1/{*path}",any(handle)).with_state(app).layer(CompressionLayer::new()).layer(CorsLayer::permissive()).layer(axum::middleware::from_fn(options_status))
 }
 async fn options_status(request: Request, next: axum::middleware::Next) -> Response {

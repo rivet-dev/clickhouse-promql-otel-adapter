@@ -4,6 +4,7 @@ use clickhouse_promql::{
     storage::Store,
 };
 #[derive(Parser)]
+#[command(version)]
 struct Config {
     #[arg(long, default_value = "127.0.0.1")]
     host: String,

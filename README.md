@@ -1,4 +1,4 @@
-# ClickHouse PromQL adapter
+# clickhouse-promql-otel-adapter
 
 A **strictly Rust** PromQL evaluator and Prometheus/Thanos query HTTP adapter over
 the unmodified OpenTelemetry Collector ClickHouse metrics tables. Point Grafana's
@@ -77,3 +77,27 @@ accepted corpus. Thanos reference generation uses seeded replica data and real
 XOR iterators. Go is test tooling only. See [evaluator results](docs/evaluator-report.md),
 [storage results and exclusions](docs/storage-report.md), and
 [independent review corrections](docs/review-report.md).
+
+## Releases
+
+Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`. The tag must match
+`Cargo.toml`. Native Linux amd64 and arm64 jobs run the real ClickHouse tests and
+PromQL corpus, then package the binary, license and notices. Each archive is
+saved as an Actions artifact and attached to the GitHub release with SHA256SUMS.
+The binary remains named `clickhouse-promql`; use `--version` to inspect it.
+Linux binaries require glibc 2.39 or newer (for example Ubuntu 24.04).
+
+The Dockerfile packages those same binaries into a nonroot distroless image.
+The release workflow publishes the two architectures as one container image,
+with version and `latest` tags. To build locally:
+
+```sh
+cargo build --locked --release
+mkdir -p dist/amd64 # use arm64 when building on an arm64 host
+cp target/release/clickhouse-promql dist/amd64/
+docker build -t clickhouse-promql-otel-adapter .
+docker run --rm clickhouse-promql-otel-adapter --version
+```
+
+Set `CLICKHOUSE_URL`, `CLICKHOUSE_DATABASE`, `CLICKHOUSE_USER` and
+`CLICKHOUSE_PASSWORD` when running the container; it listens on port 9091.
