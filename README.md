@@ -18,7 +18,7 @@
 
 - **Vanilla OTel → ClickHouse**: stock Collector exporter, no extra observability layer
 - **Full PromQL**: works with Grafana's built-in Prometheus data source
-- **Stateless**: translates PromQL into ClickHouse queries; no storage, cache or ingestion of its own
+- **Stateless**: translates PromQL into ClickHouse queries; no durable storage or ingestion of its own; metric-name metadata is cached briefly
 
 ## Why ClickHouse
 
@@ -329,3 +329,12 @@ Built for internal use at [Rivet](https://rivet.dev). PRs welcome, but we'll lik
 ## License
 
 [Apache 2.0](LICENSE) · [NOTICE](NOTICE)
+
+### Metric discovery cache
+
+The server shares a metric-name dictionary across concurrent requests for each
+OTel table. `--metric-cache-ttl-seconds` defaults to 60; set it to 0 to disable
+reuse. New metric names and unit/scope changes may take up to that interval to
+appear. Sample values are never cached. Failed refreshes are retried, and each
+table has one refresh in flight. This avoids rescanning all retained metric rows
+for every Grafana panel. The library `Store` defaults to zero TTL; servers opt in.

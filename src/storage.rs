@@ -6,7 +6,15 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use promql_parser::parser::{Expr, VectorSelector};
 use serde_json::Value as Json;
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::sync::Mutex;
+
+type Dictionary = Arc<Vec<Json>>;
+type DictionaryEntry = Option<(Instant, String, Dictionary)>;
 
 pub(crate) const TABLES: [&str; 5] = [
     "gauge",
@@ -32,11 +40,14 @@ pub struct Store {
     pub password: String,
     pub max_rows: usize,
     pub max_bytes: usize,
+    /// Maximum age of metric-name metadata; zero disables caching.
+    pub metric_cache_ttl: Duration,
     /// Resource attributes copied onto every series as labels, as
     /// (attribute, label) pairs. This mirrors Prometheus'
     /// `promote_resource_attributes` for producers that identify a target with
     /// an attribute other than `service.instance.id`.
     pub promoted_resource_attributes: Vec<(String, String)>,
+    dictionaries: Arc<[Mutex<DictionaryEntry>; 5]>,
 }
 #[derive(Default)]
 pub struct Loaded {
@@ -58,7 +69,9 @@ impl Store {
             password,
             max_rows: 1_000_000,
             max_bytes: 64 * 1024 * 1024,
+            metric_cache_ttl: Duration::ZERO,
             promoted_resource_attributes: Vec::new(),
+            dictionaries: Arc::new(std::array::from_fn(|_| Mutex::new(None))),
         })
     }
     pub async fn query(&self, sql: &str, params: &[(&str, String)]) -> Result<String> {
@@ -136,21 +149,51 @@ impl Store {
             self.database,
             self.max_rows.saturating_add(1)
         );
-        let rows = self.query(&sql, &[]).await?;
+        let rows = self.metric_dictionary(kind, &sql).await?;
         let mut names = std::collections::BTreeSet::new();
-        for (i, line) in rows.lines().enumerate() {
-            if i >= self.max_rows {
-                bail!("ClickHouse metric dictionary limit exceeded");
-            }
-            let row: Json = serde_json::from_str(line)?;
-            let Ok(name) = row_metric_name(&row, kind) else {
+        for row in rows.iter() {
+            let Ok(name) = row_metric_name(row, kind) else {
                 continue;
             };
             if derived_names(&name, kind).iter().any(|n| accepts(n)) {
-                names.insert(string(&row, "MetricName").to_owned());
+                names.insert(string(row, "MetricName").to_owned());
             }
         }
         Ok(Some(names.into_iter().collect()))
+    }
+    async fn metric_dictionary(&self, kind: &str, sql: &str) -> Result<Dictionary> {
+        let index = TABLES
+            .iter()
+            .position(|table| *table == kind)
+            .context("unknown metric table")?;
+        // Hold the per-table lock during refresh so concurrent panels share one
+        // scan. Samples are never cached. Failed/cancelled refreshes remain retryable.
+        let mut cache = self.dictionaries[index].lock().await;
+        let identity = format!(
+            "{}\n{}\n{}\n{}",
+            self.url, self.username, self.max_bytes, sql
+        );
+        if let Some((at, key, rows)) = cache.as_ref()
+            && key == &identity
+            && at.elapsed() < self.metric_cache_ttl
+        {
+            return Ok(rows.clone());
+        }
+        let text = self.query(sql, &[]).await?;
+        let mut rows = Vec::new();
+        for (i, line) in text.lines().enumerate() {
+            if i >= self.max_rows {
+                bail!("ClickHouse metric dictionary limit exceeded");
+            }
+            rows.push(serde_json::from_str(line)?);
+        }
+        let rows = Arc::new(rows);
+        *cache = if self.metric_cache_ttl.is_zero() {
+            None
+        } else {
+            Some((Instant::now(), identity, rows.clone()))
+        };
+        Ok(rows)
     }
     pub async fn load(&self, start: i64, end: i64, selectors: &[VectorSelector]) -> Result<Loaded> {
         self.load_inner(start, end, selectors, true).await

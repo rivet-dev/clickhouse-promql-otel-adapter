@@ -19,6 +19,9 @@ struct Config {
     username: String,
     #[arg(long, env = "CLICKHOUSE_PASSWORD", default_value = "")]
     password: String,
+    /// Metric-name metadata cache lifetime. New metric names appear within this interval.
+    #[arg(long, default_value_t = 60)]
+    metric_cache_ttl_seconds: u64,
     /// Labels identifying HA replicas; may be repeated.
     #[arg(long = "replica-label")]
     replica_labels: Vec<String>,
@@ -38,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let c = Config::parse();
     let mut store = Store::new(c.clickhouse_url, c.database, c.username, c.password)?;
+    store.metric_cache_ttl = std::time::Duration::from_secs(c.metric_cache_ttl_seconds);
     store.promoted_resource_attributes = c.promoted_resource_attributes;
     let address = format!("{}:{}", c.host, c.port);
     let listener = tokio::net::TcpListener::bind(&address).await?;
