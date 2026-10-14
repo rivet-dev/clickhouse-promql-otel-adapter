@@ -5,7 +5,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="./.github/media/architecture-dark.svg">
-    <img src="./.github/media/architecture-light.svg" alt="Grafana queries the stateless Rust adapter over the Prometheus HTTP API. The adapter pushes series and time-range selection to ClickHouse as SQL against the five default otel_metrics tables, which the OpenTelemetry Collector's ClickHouse exporter writes." width="440">
+    <img src="./.github/media/architecture-light.svg" alt="Left to right: Grafana sends PromQL to the stateless clickhouse-promql adapter, which queries the otel_metrics tables in ClickHouse with SQL. Below ClickHouse, the OpenTelemetry Collector's ClickHouse exporter writes those tables." width="680">
   </picture>
 </p>
 
