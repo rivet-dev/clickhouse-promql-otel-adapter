@@ -316,7 +316,7 @@ Add a **Prometheus** data source in Grafana: `http://<host>:9091`. Full local st
 
 ## Maintenance
 
-Built for internal use at [Rivet](https://rivet.dev). PRs welcome but likely won't be merged. Maintaining a serious fork? Open an issue and we'll list it here.
+Built for internal use at [Rivet](https://rivet.dev). PRs welcome, but we'll likely only merge ones that affect our own workloads. Maintaining a serious fork? Open an issue and we'll list it here.
 
 ## License
 
