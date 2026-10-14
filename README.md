@@ -222,6 +222,29 @@ dimension. In PromQL, you switch the query to a range query.
 
 </details>
 
+### What it costs
+
+These are rough list prices for **1M active series scraped every 15s**
+(about 173B samples a month), with 30-day retention and moderate querying.
+Prices were checked in October 2026. Negotiated contracts will differ.
+
+| Backend | Billed on | Est. per month |
+|---|---|---|
+| CloudWatch custom metrics | Each metric + dimension combination | ~$66,000 |
+| Datadog custom metrics | Each metric + tag set ($5 per 100) | ~$50,000 |
+| Grafana Cloud (Pro) | Active series, scaled by data points per minute | ~$26,000 |
+| New Relic | GB ingested ($0.40/GB) | ~$5,000–20,000 |
+| Google Managed Prometheus | Samples ingested | ~$9,000 |
+| Amazon Managed Prometheus | Samples ingested + storage + query | ~$6,200 |
+| Azure Monitor managed Prometheus | Samples ingested | ~$1,900 |
+| **ClickHouse Cloud** (Scale, 2 replicas) | Compute hours + compressed storage | **~$500–1,000** |
+| **ClickHouse self-hosted** (1 node on AWS) | Instance + disk | **~$500** |
+
+The ClickHouse estimates assume 8–30 bytes per sample on disk with the
+exporter's default schema. We measured about 13 bytes with Kubernetes-style
+resource attributes. Your real cost depends mostly on label cardinality and how
+long you keep data. Prices come from each vendor's public pricing page.
+
 ## Architecture
 
 <p align="center">
