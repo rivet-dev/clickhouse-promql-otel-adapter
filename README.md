@@ -97,7 +97,7 @@ per_step AS (
     t,
     ServiceName,
     any(ExplicitBounds) AS bounds, -- assumes every series uses the same buckets
-    sumForEach(arrayMap((c, p) -> if(c >= p, c - p, c), BucketCounts, prev)) AS counts
+    sumForEach(arrayMap((c, p) -> toFloat64(c) - if(c >= p, p, 0), BucketCounts, prev)) AS counts
   FROM deltas
   GROUP BY t, ServiceName
 ),
