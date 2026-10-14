@@ -27,11 +27,12 @@ change the schema, add a second ingestion path or make a copy of the data.
 
 ## Architecture
 
-```
-apps ──OTLP──▶ OTel Collector ──clickhouse exporter──▶ ClickHouse
-                                                          ▲
-Grafana ──Prometheus HTTP API──▶ clickhouse-promql ───SQL──┘
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./.github/media/architecture-dark.svg">
+    <img src="./.github/media/architecture-light.svg" alt="Grafana queries the stateless Rust adapter over the Prometheus HTTP API. The adapter pushes series and time-range selection to ClickHouse as SQL against the five default otel_metrics tables, which the OpenTelemetry Collector's ClickHouse exporter writes." width="440">
+  </picture>
+</p>
 
 - The **Collector** owns ingestion and creates the five default
   `otel_metrics_*` tables (gauge, sum, histogram, exponential histogram,
