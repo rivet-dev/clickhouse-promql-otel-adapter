@@ -74,6 +74,10 @@ dedup *args:
 dataset:
     python3 scripts/datasets.py
 
+# Exercise selective queries over an isolated local high-cardinality dataset.
+benchmark-cardinality *args: build clickhouse-up
+    python3 scripts/benchmark-cardinality.py --binary target/release/clickhouse-promql "$@"
+
 # Check real Collector schema/row snapshots; pass --update to accept changes.
 snapshots *args: clickhouse-up
     python3 scripts/generate-snapshots.py "$@"

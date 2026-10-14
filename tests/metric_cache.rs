@@ -60,8 +60,16 @@ async fn concurrent_panels_share_refresh_and_failed_refresh_is_retried() {
     store.metric_cache_ttl = Duration::from_millis(1);
     tokio::time::sleep(Duration::from_millis(10)).await;
     backend.fail.store(true, Ordering::SeqCst);
-    assert!(store.load(0, 1, &[selector.clone()]).await.is_err());
-    store.load(0, 1, &[selector.clone()]).await.unwrap();
+    assert!(
+        store
+            .load(0, 1, std::slice::from_ref(&selector))
+            .await
+            .is_err()
+    );
+    store
+        .load(0, 1, std::slice::from_ref(&selector))
+        .await
+        .unwrap();
     assert_eq!(backend.requests.load(Ordering::SeqCst), 11);
 
     store.metric_cache_ttl = Duration::ZERO;

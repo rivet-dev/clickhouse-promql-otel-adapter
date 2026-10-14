@@ -20,7 +20,7 @@ pub(super) fn histogram_range(
     }
     let histograms = points
         .iter()
-        .filter_map(|p| p.histogram.as_ref())
+        .filter_map(|p| p.histogram.as_deref())
         .collect::<Vec<_>>();
     if histograms.len() != points.len() {
         return Ok(None);

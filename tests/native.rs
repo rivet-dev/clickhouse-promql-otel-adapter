@@ -9,13 +9,13 @@ fn input() -> Vec<Series> {
         labels: Labels::from([("__name__".into(), "latency".into())]),
         points: vec![Point {
             timestamp: 0,
-            histogram: Some(Histogram {
+            histogram: Some(Box::new(Histogram {
                 schema: 0,
                 count: 4.0,
                 sum: 6.0,
                 positive: BTreeMap::from([(1, 4.0)]),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         }],
     }]

@@ -2,7 +2,10 @@
 use crate::{
     engine::matches,
     model::{Labels, float_string},
-    storage::{Store, TABLES, number, prometheus_scope, row_labels, row_metric_name},
+    storage::{
+        Store, TABLES, charge_samples, label_filter, number, prometheus_scope, row_labels,
+        row_metric_name,
+    },
     translation::label_name,
 };
 use anyhow::{Context, Result, bail};
@@ -18,6 +21,8 @@ impl Store {
     ) -> Result<Vec<Value>> {
         let mut groups: BTreeMap<Labels, Vec<Value>> = BTreeMap::new();
         let mut total = 0;
+        let mut bytes_read = 0usize;
+        let mut retained = 0usize;
         for kind in TABLES.into_iter().filter(|k| *k != "summary") {
             let filter = self.metric_filter(kind, selectors).await?;
             if filter.as_ref().is_some_and(|v| v.is_empty()) {
@@ -28,24 +33,34 @@ impl Store {
             } else {
                 ""
             };
+            let (labels_predicate, labels_params) = label_filter(kind, selectors);
+            let extra = match kind {
+                "sum" => ", IsMonotonic",
+                "histogram" => ", ExplicitBounds",
+                _ => "",
+            };
             let sql = format!(
-                "SELECT *, arrayMap(t -> toUnixTimestamp64Milli(toDateTime64(t,3)), `Exemplars.TimeUnix`) AS _times FROM {}.otel_metrics_{kind} WHERE arrayExists(t -> t >= {{start:Int64}} AND t <= {{end:Int64}}, _times){predicate} LIMIT {} SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow",
+                "SELECT MetricName, MetricUnit, ResourceAttributes, ScopeName, ScopeVersion, ScopeSchemaUrl, ScopeAttributes, Attributes, `Exemplars.FilteredAttributes`, `Exemplars.Value`, `Exemplars.SpanId`, `Exemplars.TraceId`{extra}, arrayMap(t -> toUnixTimestamp64Milli(toDateTime64(t,3)), `Exemplars.TimeUnix`) AS _times FROM {}.otel_metrics_{kind} WHERE arrayExists(t -> t >= {{start:Int64}} AND t <= {{end:Int64}}, _times){predicate}{labels_predicate} LIMIT {} SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow",
                 self.database,
-                self.max_rows + 1
+                self.max_rows.saturating_sub(total).saturating_add(1)
             );
-            let text = self
-                .query(
-                    &sql,
-                    &[
-                        ("param_start", start.to_string()),
-                        ("param_end", end.to_string()),
-                        (
-                            "param_names",
-                            crate::storage::string_array(&filter.unwrap_or_default()),
-                        ),
-                    ],
-                )
-                .await?;
+            let mut params = vec![
+                ("param_start", start.to_string()),
+                ("param_end", end.to_string()),
+                (
+                    "param_names",
+                    crate::storage::string_array(&filter.unwrap_or_default()),
+                ),
+            ];
+            params.extend(
+                labels_params
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.clone())),
+            );
+            let mut reader = self.clone();
+            reader.max_bytes = self.max_bytes.saturating_sub(bytes_read);
+            let text = reader.query(&sql, &params).await?;
+            bytes_read += text.len();
             for line in text.lines() {
                 if total % 1024 == 0 {
                     tokio::task::yield_now().await;
@@ -57,12 +72,25 @@ impl Store {
                 let row: Value = serde_json::from_str(line)?;
                 let name = row_metric_name(&row, kind)?;
                 let base = row_labels(&row, &self.promoted_resource_attributes)?;
+                let bounds = if kind == "histogram" {
+                    row["ExplicitBounds"]
+                        .as_array()
+                        .context("missing histogram bounds")?
+                        .iter()
+                        .map(number)
+                        .collect::<Result<Vec<_>>>()?
+                } else {
+                    Vec::new()
+                };
                 for (i, t) in row["_times"]
                     .as_array()
                     .context("missing exemplar timestamps")?
                     .iter()
                     .enumerate()
                 {
+                    if i.is_multiple_of(1024) {
+                        tokio::task::yield_now().await;
+                    }
                     let t = t
                         .as_i64()
                         .or_else(|| t.as_str().and_then(|t| t.parse().ok()))
@@ -73,13 +101,9 @@ impl Store {
                     let value = number(&row["Exemplars.Value"][i])?;
                     let mut series = base.clone();
                     if kind == "histogram" {
-                        let bound = row["ExplicitBounds"]
-                            .as_array()
-                            .context("missing histogram bounds")?
+                        let bound = bounds
                             .iter()
-                            .map(number)
-                            .collect::<Result<Vec<_>>>()?
-                            .into_iter()
+                            .copied()
                             .find(|b| value <= *b)
                             .unwrap_or(f64::INFINITY);
                         series.insert("__name__".into(), format!("{name}_bucket"));
@@ -90,6 +114,7 @@ impl Store {
                     if !selectors.iter().any(|s| matches(s, &series)) {
                         continue;
                     }
+                    charge_samples(&mut retained, 1, self.max_samples)?;
                     let mut labels = Labels::new();
                     if let Some(attrs) = row["Exemplars.FilteredAttributes"][i].as_object() {
                         for (k, v) in attrs {

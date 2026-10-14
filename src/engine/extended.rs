@@ -116,7 +116,7 @@ pub(super) fn rate(
         }
         histogram.reset_hint = 3;
         Ok(Some(Sample {
-            histogram: Some(histogram),
+            histogram: Some(*histogram),
             ..Default::default()
         }))
     } else {

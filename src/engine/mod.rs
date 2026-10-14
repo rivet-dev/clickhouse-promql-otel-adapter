@@ -11,7 +11,7 @@ use crate::model::{Labels, Point, Sample, Series, Value};
 use anyhow::{Result, bail};
 use promql_parser::parser::{AtModifier, Expr, Offset, VectorSelector};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     time::{Duration, Instant, UNIX_EPOCH},
 };
 
@@ -37,6 +37,9 @@ pub struct Engine<'a> {
     pub is_range: bool,
     pub query_step: i64,
     invariant_cache: BTreeMap<String, Value>,
+    // Match labels once per query, not once per evaluation timestamp.
+    selector_cache: BTreeMap<String, Vec<&'a Series>>,
+    selector_cache_entries: usize,
     overlaps: BTreeMap<String, usize>,
     monotonic: BTreeMap<String, (i64, i64, f64, f64, f64, i64)>,
     histogram_stats: bool,
@@ -66,6 +69,8 @@ impl<'a> Engine<'a> {
             is_range: false,
             query_step: 0,
             invariant_cache: BTreeMap::new(),
+            selector_cache: BTreeMap::new(),
+            selector_cache_entries: 0,
             overlaps: BTreeMap::new(),
             monotonic: BTreeMap::new(),
             histogram_stats: false,
@@ -73,6 +78,8 @@ impl<'a> Engine<'a> {
         }
     }
     pub fn evaluate(&mut self, expr: &Expr, t: i64) -> Result<Value> {
+        self.selector_cache.clear();
+        self.selector_cache_entries = 0;
         self.eval(expr, t)
     }
     pub fn parse(query: &str) -> Result<Expr> {
@@ -82,10 +89,14 @@ impl<'a> Engine<'a> {
         frontend::parse(query, start, end, step)
     }
     pub fn instant(&mut self, query: &str, timestamp: i64) -> Result<Value> {
+        self.selector_cache.clear();
+        self.selector_cache_entries = 0;
         self.source = query.into();
         self.eval(&Self::parse_at(query, self.start, self.end, 0)?, timestamp)
     }
     pub fn range(&mut self, expr: &Expr, step: i64) -> Result<Value> {
+        self.selector_cache.clear();
+        self.selector_cache_entries = 0;
         self.is_range = true;
         self.query_step = step;
         if self.source.is_empty() {
@@ -118,7 +129,7 @@ impl<'a> Engine<'a> {
                         result.entry(s.labels).or_default().push(Point {
                             timestamp,
                             value: s.value,
-                            histogram: s.histogram,
+                            histogram: s.histogram.map(Box::new),
                             start_timestamp: s.start_timestamp,
                             drop_name: s.drop_name,
                         });
@@ -370,7 +381,9 @@ impl<'a> Engine<'a> {
             }
         }
         if let Ok(Value::Vector(v)) = &result {
-            let mut seen = BTreeSet::new();
+            // Only membership matters here. Hash complete labelsets once instead
+            // of repeatedly comparing their shared prefixes; preserve v's order.
+            let mut seen = HashSet::with_capacity(v.len());
             for sample in v {
                 if !seen.insert(&sample.labels) {
                     bail!("vector cannot contain metrics with the same labelset")
@@ -384,19 +397,36 @@ impl<'a> Engine<'a> {
         }
         result
     }
-    fn selected(&self, v: &VectorSelector) -> Vec<std::borrow::Cow<'a, Series>> {
-        let selected = self
-            .series
-            .iter()
-            .filter(|s| matches(v, &s.labels))
-            .collect::<Vec<_>>();
+    fn selected(&mut self, v: &VectorSelector) -> Result<Vec<std::borrow::Cow<'a, Series>>> {
+        let key = v.to_string();
+        if !self.selector_cache.contains_key(&key) {
+            let mut selected = Vec::new();
+            for (index, series) in self.series.iter().enumerate() {
+                if index % 1024 == 0 {
+                    self.charge(0)?;
+                }
+                if matches(v, &series.labels) {
+                    selected.push(series);
+                }
+            }
+            // Bound reference storage for queries with many broad selectors. A
+            // cache miss is safe; failing an otherwise small result is not.
+            if selected.len() > self.max_samples.saturating_sub(self.selector_cache_entries) {
+                return Ok(self.select_replicas(&selected));
+            }
+            self.selector_cache_entries += selected.len();
+            self.selector_cache.insert(key.clone(), selected);
+        }
+        Ok(self.select_replicas(&self.selector_cache[&key]))
+    }
+    fn select_replicas(&self, selected: &[&'a Series]) -> Vec<std::borrow::Cow<'a, Series>> {
         if self.replica_labels.is_empty() {
             selected
-                .into_iter()
-                .map(std::borrow::Cow::Borrowed)
+                .iter()
+                .map(|&series| std::borrow::Cow::Borrowed(series))
                 .collect()
         } else {
-            crate::dedup::merge(&selected, &self.replica_labels, self.counter_hint)
+            crate::dedup::merge(selected, &self.replica_labels, self.counter_hint)
                 .into_iter()
                 .map(std::borrow::Cow::Owned)
                 .collect()
@@ -426,17 +456,27 @@ impl<'a> Engine<'a> {
             Expr::VectorSelector(v) => {
                 let target = self.target(timestamp, &v.at, &v.offset)?;
                 let mut samples = Vec::new();
+                let resident_before = self.resident_samples;
+                let mut retained = 0usize;
                 if v.smoothed {
-                    let selected = self.selected(v);
-                    for s in selected {
+                    let selected = self.selected(v)?;
+                    for (index, s) in selected.into_iter().enumerate() {
+                        if index % 1024 == 0 {
+                            self.charge(0)?;
+                        }
                         match extended::smooth(&s, target, self.lookback) {
-                            Ok(Some(p)) => samples.push(Sample {
-                                labels: s.labels.clone(),
-                                value: p.value,
-                                histogram: p.histogram,
-                                timestamp: target,
-                                ..Default::default()
-                            }),
+                            Ok(Some(p)) => {
+                                retained =
+                                    retained.saturating_add(sample_size(p.histogram.as_deref()));
+                                self.account(resident_before.saturating_add(retained))?;
+                                samples.push(Sample {
+                                    labels: s.labels.clone(),
+                                    value: p.value,
+                                    histogram: p.histogram.map(|h| *h),
+                                    timestamp: target,
+                                    ..Default::default()
+                                });
+                            }
                             Ok(None) => {}
                             Err(e) => {
                                 let metric = s.labels.get("__name__").cloned().unwrap_or_default();
@@ -456,11 +496,20 @@ impl<'a> Engine<'a> {
                     self.charge(samples.len())?;
                     return Ok(Value::Vector(samples));
                 }
-                for s in self.selected(v) {
+                for (series_index, s) in self.selected(v)?.into_iter().enumerate() {
+                    if series_index % 1024 == 0 {
+                        self.charge(0)?;
+                    }
                     let index = s.points.partition_point(|p| p.timestamp <= target);
                     if index > 0 {
                         let p = &s.points[index - 1];
                         if p.timestamp > target.saturating_sub(self.lookback) && !p.stale() {
+                            retained = retained.saturating_add(if self.histogram_stats {
+                                1
+                            } else {
+                                sample_size(p.histogram.as_deref())
+                            });
+                            self.account(resident_before.saturating_add(retained))?;
                             samples.push(Sample {
                                 labels: s.labels.clone(),
                                 timestamp: p.timestamp,
@@ -479,7 +528,12 @@ impl<'a> Engine<'a> {
                 let target = self.target(timestamp, &m.vs.at, &m.vs.offset)?;
                 let begin = target.saturating_sub(m.range.as_millis().try_into()?);
                 let mut result = Vec::new();
-                for s in self.selected(&m.vs) {
+                let resident_before = self.resident_samples;
+                let mut retained = 0usize;
+                for (series_index, s) in self.selected(&m.vs)?.into_iter().enumerate() {
+                    if series_index % 1024 == 0 {
+                        self.charge(0)?;
+                    }
                     let mut a = s.points.partition_point(|p| p.timestamp <= begin);
                     let mut b = s.points.partition_point(|p| p.timestamp <= target);
                     if (m.anchored || m.smoothed)
@@ -494,14 +548,31 @@ impl<'a> Engine<'a> {
                     {
                         b += 1;
                     }
-                    let points = (a..b)
-                        .filter(|&i| !s.points[i].stale())
-                        .map(|i| {
-                            let mut p = s.points[i].clone();
-                            p.histogram = resolved_histogram(&s, i, self.histogram_stats);
-                            p
-                        })
-                        .collect::<Vec<_>>();
+                    let mut points = Vec::new();
+                    for i in a..b {
+                        if i % 1024 == 0 {
+                            self.charge(0)?;
+                        }
+                        if s.points[i].stale() {
+                            continue;
+                        }
+                        retained = retained.saturating_add(if self.histogram_stats {
+                            1
+                        } else {
+                            sample_size(s.points[i].histogram.as_deref())
+                        });
+                        // Reject over-budget ranges before cloning their samples/buckets.
+                        self.account(resident_before.saturating_add(retained))?;
+                        let p = &s.points[i];
+                        points.push(Point {
+                            timestamp: p.timestamp,
+                            value: p.value,
+                            histogram: resolved_histogram(&s, i, self.histogram_stats)
+                                .map(Box::new),
+                            start_timestamp: p.start_timestamp,
+                            drop_name: p.drop_name,
+                        });
+                    }
                     if !points.is_empty() {
                         result.push(Series {
                             labels: s.labels.clone(),
@@ -540,7 +611,7 @@ impl<'a> Engine<'a> {
                                 if h.reset_hint != 3 {
                                     h.reset_hint = 0
                                 }
-                                h
+                                Box::new(h)
                             }),
                             start_timestamp: 0,
                             drop_name: s.drop_name,
@@ -622,22 +693,25 @@ fn resolved_histogram(
     index: usize,
     stats: bool,
 ) -> Option<crate::histogram::Histogram> {
-    let mut h = series.points[index].histogram.clone()?;
+    let source = series.points[index].histogram.as_deref()?;
     if !stats {
-        return Some(h);
+        return Some(source.clone());
     }
+    // Statistics-only functions need count/sum, not copies of every bucket.
+    let mut h = crate::histogram::Histogram {
+        schema: source.schema,
+        count: source.count,
+        sum: source.sum,
+        reset_hint: source.reset_hint,
+        ..Default::default()
+    };
     if h.reset_hint == 0
         && index > 0
         && let Some(previous) = &series.points[index - 1].histogram
         && !series.points[index - 1].stale()
     {
-        h.reset_hint = if h.detects_reset(previous) { 1 } else { 2 };
+        h.reset_hint = if source.detects_reset(previous) { 1 } else { 2 };
     }
-    h.positive.clear();
-    h.negative.clear();
-    h.custom.clear();
-    h.zero_count = 0.0;
-    h.zero_threshold = 0.0;
     Some(h)
 }
 
@@ -714,7 +788,7 @@ fn value_samples(value: &Value) -> usize {
         Value::Matrix(v) => v
             .iter()
             .flat_map(|s| s.points.iter())
-            .map(|p| sample_size(p.histogram.as_ref()))
+            .map(|p| sample_size(p.histogram.as_deref()))
             .sum(),
     }
 }

@@ -55,15 +55,31 @@ gRPC and object-store management are not implemented.
   are measured. Admission/body time is bounded separately. `resultSortTime` is
   zero because sorting is included in evaluation, not timed as a separate phase.
 
-Default limits: 16 admitted requests, 120-second request/query/ClickHouse timeout,
+Default limits: 16 admitted requests, 128 pending requests, 120-second request/query/ClickHouse timeout,
 1 MiB form body, 65,536 query bytes, 2,048 parser tokens, 128 evaluation depth,
 5 million retained sample slots, 11,000 intervals per range series, 1 million
-fetched rows and 64 MiB per ClickHouse response. Search caps terms at 1,024 bytes
+fetched rows and 64 MiB of sample/discovery/exemplar responses across tables per request.
+Metric dictionaries have a separate 64 MiB response limit per table and a shared
+60-second cache in the CLI (library caching is opt-in). The 5-million-sample
+budget also bounds storage expansion before evaluation, including classic
+histogram buckets, native buckets, discovery series and exemplars.
+Search caps terms at 1,024 bytes
 and scoring work at 100 million estimated character operations. These limits
 are explicit protections, not identical Prometheus or Thanos deployment defaults.
 
-Timeout covers body reading and admission. Blocking evaluation/scoring owns its
-permit until completion and observes cancellation. Dropped ClickHouse reads
+Configure limits with `--max-concurrency`, `--max-pending-requests`,
+`--request-timeout-seconds`, `--max-rows`, `--max-bytes`, `--max-samples`, and
+`--max-response-bytes` (64 MiB of uncompressed success output by default).
+Oversized output returns `422 execution` without sending a partial success.
+An exhausted pending queue returns `503 unavailable`. Request parameters are
+limited to 1,024 pairs and 1 MiB per body/query string.
+
+Timeout covers body reading and admission; the client query timeout includes
+time waiting for an execution slot. Blocking evaluation/scoring/serialization owns its
+permit until completion. Encoding checks cancellation and byte limits on each
+write. Cancellation is cooperative: parsing, a single series sort, and native
+histogram bucket preparation can finish their current CPU operation after the deadline.
+Dropped ClickHouse reads
 request server cancellation. Backend request failures return `500 internal`;
 conversion/evaluation failures return `422 execution`; parameter errors return
 `400 bad_data`, and timeouts return `503 timeout`. Warning/info output uses the
@@ -71,3 +87,6 @@ upstream ten-annotation cap with an omission count.
 
 The service has no built-in authentication or TLS termination. Bind/access it
 according to the deployment's existing network and reverse-proxy controls.
+
+See [high-cardinality performance](performance.md) for measured workloads and
+the limits of raw-sample evaluation.

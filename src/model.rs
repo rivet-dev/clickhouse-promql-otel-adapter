@@ -8,7 +8,8 @@ pub const STALE_BITS: u64 = 0x7ff0000000000002;
 pub struct Point {
     pub timestamp: i64,
     pub value: f64,
-    pub histogram: Option<crate::histogram::Histogram>,
+    /// Keep float points compact; native histogram payloads allocate only when present.
+    pub histogram: Option<Box<crate::histogram::Histogram>>,
     pub start_timestamp: i64,
     /// Preserve names within the expression; remove them when returning results.
     pub drop_name: bool,
