@@ -28,7 +28,7 @@ pub(super) async fn run(
     p: &Params,
     endpoint: &str,
     deadline: Instant,
-    permit: OwnedSemaphorePermit,
+    permit: Arc<OwnedSemaphorePermit>,
 ) -> Result<JsonValue> {
     let now = chrono::Utc::now().timestamp_millis();
     let start = p.time("start", now - 3_600_000)?;
@@ -106,23 +106,6 @@ pub(super) async fn run(
         .discover(start, end, &selectors)
         .await
         .map_err(ApiError::storage)?;
-    let names = loaded
-        .series
-        .iter()
-        .flat_map(|s| match endpoint {
-            "label_names" => s.labels.keys().cloned().collect::<Vec<_>>(),
-            _ => s
-                .labels
-                .get(if endpoint == "metric_names" {
-                    "__name__"
-                } else {
-                    label
-                })
-                .cloned()
-                .into_iter()
-                .collect(),
-        })
-        .collect::<BTreeSet<_>>();
     let terms = searches
         .into_iter()
         .filter(|s| !s.is_empty())
@@ -134,6 +117,7 @@ pub(super) async fn run(
             }
         })
         .collect::<Vec<_>>();
+    let label = label.to_owned();
     let algorithm = algorithm.to_owned();
     let endpoint = endpoint.to_owned();
     let sort = sort.to_owned();
@@ -142,6 +126,33 @@ pub(super) async fn run(
     let _cancel_on_drop = CancelOnDrop(cancelled.clone());
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        let check = || {
+            if Instant::now() >= deadline || cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                Err(ApiError::timeout())
+            } else {
+                Ok(())
+            }
+        };
+        let mut names = BTreeSet::new();
+        for series in &loaded.series {
+            check()?;
+            if endpoint == "label_names" {
+                names.extend(series.labels.keys().cloned());
+            } else if let Some(name) = series.labels.get(if endpoint == "metric_names" {
+                "__name__"
+            } else {
+                &label
+            }) {
+                names.insert(name.clone());
+            }
+        }
+        let names: Box<dyn Iterator<Item = String>> = if direction == "dsc" {
+            Box::new(names.into_iter().rev())
+        } else {
+            Box::new(names.into_iter())
+        };
+        let mut best = std::collections::BinaryHeap::new();
+        let mut matched = 0usize;
         let mut work = 0usize;
         let mut results = Vec::new();
         for name in names {
@@ -174,15 +185,28 @@ pub(super) async fn run(
                     .max_by(f64::total_cmp)
             };
             if let Some(score) = result {
-                results.push((name, score));
+                matched += 1;
+                if sort == "score" {
+                    best.push(Ranked { name, score });
+                    if best.len() > limit {
+                        best.pop();
+                    }
+                } else {
+                    results.push((name, score));
+                    if results.len() > limit {
+                        break;
+                    }
+                }
             }
         }
         if sort == "score" {
-            results.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-        } else if direction == "dsc" {
-            results.reverse();
+            results = best
+                .into_sorted_vec()
+                .into_iter()
+                .map(|r| (r.name, r.score))
+                .collect();
         }
-        let has_more = results.len() > limit;
+        let has_more = matched > limit;
         results.truncate(limit);
         let records = results
             .into_iter()
@@ -217,6 +241,27 @@ pub(super) async fn run(
     })
     .await
     .map_err(ApiError::exec)?
+}
+// The heap root is the worst retained match: lowest score, then largest name.
+// Keep only the requested top-k instead of sorting every matched label value.
+#[derive(PartialEq)]
+struct Ranked {
+    name: String,
+    score: f64,
+}
+impl Eq for Ranked {}
+impl PartialOrd for Ranked {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Ranked {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .score
+            .total_cmp(&self.score)
+            .then(self.name.cmp(&other.name))
+    }
 }
 fn score(query: &str, text: &str, algorithm: &str, threshold: f64) -> Option<f64> {
     if text.starts_with(query) {

@@ -1,3 +1,4 @@
+mod output;
 mod search;
 use crate::{
     engine::Engine,
@@ -24,6 +25,10 @@ use tower_http::{compression::CompressionLayer, cors::CorsLayer};
 pub struct App {
     pub store: Store,
     pub concurrency: Arc<Semaphore>,
+    /// Bound request bodies and requests waiting for an execution slot.
+    pub pending: Arc<Semaphore>,
+    pub max_samples: usize,
+    pub max_response_bytes: usize,
     pub replica_labels: Vec<String>,
     pub store_labels: crate::model::Labels,
     pub request_timeout: Duration,
@@ -34,6 +39,9 @@ impl App {
         Self {
             store,
             concurrency: Arc::new(Semaphore::new(16)),
+            pending: Arc::new(Semaphore::new(128)),
+            max_samples: 5_000_000,
+            max_response_bytes: 64 * 1024 * 1024,
             replica_labels: Vec::new(),
             store_labels: Default::default(),
             request_timeout: Duration::from_secs(120),
@@ -55,9 +63,14 @@ async fn options_status(request: Request, next: axum::middleware::Next) -> Respo
     response
 }
 async fn ready(State(app): State<App>) -> Response {
-    match app.store.ready().await {
-        Ok(()) => (StatusCode::OK, "Ready\n").into_response(),
-        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "ClickHouse unavailable\n").into_response(),
+    match tokio::time::timeout(
+        app.request_timeout.min(Duration::from_secs(5)),
+        app.store.ready(),
+    )
+    .await
+    {
+        Ok(Ok(())) => (StatusCode::OK, "Ready\n").into_response(),
+        _ => (StatusCode::SERVICE_UNAVAILABLE, "ClickHouse unavailable\n").into_response(),
     }
 }
 struct ApiError {
@@ -129,6 +142,10 @@ impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         self.0.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+}
+enum Payload {
+    Json(JsonValue),
+    Encoded(Vec<u8>),
 }
 type Result<T> = std::result::Result<T, ApiError>;
 #[derive(Default, serde::Deserialize)]
@@ -313,38 +330,115 @@ async fn handle(State(app): State<App>, request: Request) -> Response {
         return (StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed\n").into_response();
     }
     let search = request.uri().path().starts_with("/api/v1/search/");
+    let started = Instant::now();
     let timeout = app.request_timeout;
     let result = tokio::time::timeout(timeout, async {
-        let permit = app
-            .concurrency
+        let pending = app
+            .pending
             .clone()
-            .acquire_owned()
+            .try_acquire_owned()
+            .map_err(|_| ApiError::unavailable("request queue is full"))?;
+        let (path, params) = parameters(request).await?;
+        // Prometheus helper endpoints ignore query execution options. They
+        // still obey the adapter's server-wide body/admission deadline.
+        let requested = if matches!(
+            path.as_str(),
+            "status/buildinfo" | "format_query" | "parse_query"
+        ) {
+            None
+        } else {
+            params
+                .get("timeout")
+                .filter(|v| !v.is_empty())
+                .map(|v| parse_duration(v).map_err(|e| ApiError::parameter("timeout", e.message)))
+                .transpose()?
+        };
+        if requested.is_some_and(|v| v <= 0) {
+            return Err(ApiError::timeout());
+        }
+        let duration = requested
+            .map(|v| Duration::from_millis(v as u64))
+            .unwrap_or(timeout)
+            .min(timeout);
+        let deadline = started + duration;
+        tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
+            let permit = Arc::new(
+                app.concurrency
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(ApiError::unavailable)?,
+            );
+            drop(pending);
+            if Instant::now() >= deadline {
+                return Err(ApiError::timeout());
+            }
+            let max_response_bytes = app.max_response_bytes;
+            let value = dispatch(app, path, params, deadline, permit.clone()).await?;
+            let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let _cancel_on_drop = CancelOnDrop(cancelled.clone());
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                let check = || {
+                    if Instant::now() >= deadline
+                        || cancelled.load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        Err(ApiError::timeout())
+                    } else {
+                        Ok(())
+                    }
+                };
+                check()?;
+                let response = match value {
+                    Payload::Encoded(bytes) => {
+                        ([("content-type", "application/json")], bytes).into_response()
+                    }
+                    Payload::Json(value) => {
+                        if !search && value.get("data").is_none() {
+                            return Ok(StatusCode::NO_CONTENT.into_response());
+                        }
+                        let mut encoder =
+                            output::Encoder::new(max_response_bytes, deadline, &cancelled);
+                        if search {
+                            for record in value.as_array().unwrap() {
+                                encoder.json(record)?;
+                                encoder.newline()?;
+                            }
+                        } else {
+                            encoder.json(&value)?;
+                        }
+                        (
+                            [(
+                                "content-type",
+                                if search {
+                                    "application/x-ndjson; charset=utf-8"
+                                } else {
+                                    "application/json"
+                                },
+                            )],
+                            encoder.finish(),
+                        )
+                            .into_response()
+                    }
+                };
+                check()?;
+                Ok(response)
+            })
             .await
-            .map_err(ApiError::unavailable)?;
-        dispatch(app, request, permit).await
+            .map_err(ApiError::exec)?
+        })
+        .await
+        .map_err(|_| ApiError::timeout())?
     })
     .await
     .unwrap_or_else(|_| Err(ApiError::timeout()));
     match result {
-        Ok(value) if search => {
-            let text = value
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| format!("{v}\n"))
-                .collect::<String>();
-            (
-                [("content-type", "application/x-ndjson; charset=utf-8")],
-                text,
-            )
-                .into_response()
-        }
-        Ok(value) if value.get("data").is_none() => StatusCode::NO_CONTENT.into_response(),
-        Ok(value) => Json(value).into_response(),
+        Ok(response) => response,
         Err(error) => error.into_response(),
     }
 }
-async fn dispatch(app: App, request: Request, permit: OwnedSemaphorePermit) -> Result<JsonValue> {
+
+async fn parameters(request: Request) -> Result<(String, Params)> {
     let method = request.method().clone();
     if method != Method::GET && method != Method::POST {
         return Err(ApiError {
@@ -358,7 +452,11 @@ async fn dispatch(app: App, request: Request, permit: OwnedSemaphorePermit) -> R
         .path()
         .trim_start_matches("/api/v1/")
         .to_owned();
-    let query = request.uri().query().unwrap_or("").to_owned();
+    let query = request.uri().query().unwrap_or("");
+    if query.len() > 1024 * 1024 {
+        return Err(ApiError::bad("query parameters exceed 1 MiB limit"));
+    }
+    let query = query.to_owned();
     let mut params = Params::default();
     if method == Method::POST
         && request
@@ -373,67 +471,71 @@ async fn dispatch(app: App, request: Request, permit: OwnedSemaphorePermit) -> R
             .map_err(ApiError::bad)?;
         params
             .0
-            .extend(url::form_urlencoded::parse(&body).into_owned());
+            .extend(url::form_urlencoded::parse(&body).into_owned().take(1025));
     }
-    params
-        .0
-        .extend(url::form_urlencoded::parse(query.as_bytes()).into_owned());
+    params.0.extend(
+        url::form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .take(1025),
+    );
+    if params.0.len() > 1024 {
+        return Err(ApiError::bad("request exceeds 1024 parameter limit"));
+    }
+    Ok((path, params))
+}
+async fn dispatch(
+    app: App,
+    path: String,
+    params: Params,
+    deadline: Instant,
+    permit: Arc<OwnedSemaphorePermit>,
+) -> Result<Payload> {
     if path == "status/buildinfo" {
-        return Ok(success(
+        return Ok(Payload::Json(success(
             json!({"version":"3.15.0","revision":"","branch":"","buildUser":"","buildDate":"","goVersion":"","adapterVersion":env!("CARGO_PKG_VERSION")}),
-        ));
+        )));
     }
     if path == "format_query" || path == "parse_query" {
         let query = params.get("query").unwrap_or("");
         let expr = Engine::parse(query)
             .map_err(|e| ApiError::parameter("query", parse_error(query, &e.to_string())))?;
-        return Ok(success(if path == "format_query" {
+        return Ok(Payload::Json(success(if path == "format_query" {
             json!(promql_parser::parser::Prettier::pretty(&expr, 0, 100))
         } else {
             api_ast(serde_json::to_value(expr).map_err(ApiError::exec)?)
-        }));
+        })));
     }
-    let timeout = params
-        .get("timeout")
-        .filter(|v| !v.is_empty())
-        .map(|v| parse_duration(v).map_err(|e| ApiError::parameter("timeout", e.message)))
-        .transpose()?
-        .unwrap_or(120_000);
-    if timeout <= 0 {
-        return Err(ApiError::timeout());
+    if matches!(path.as_str(), "query" | "query_range") {
+        return query_api(&app, &params, path == "query_range", deadline, permit)
+            .await
+            .map(Payload::Encoded);
     }
-    let duration = Duration::from_millis(timeout.min(120_000) as u64);
-    let deadline = Instant::now() + duration;
-    tokio::time::timeout(duration, async {
-        match path.as_str() {
-            "query" | "query_range" => {
-                query_api(&app, &params, path == "query_range", deadline, permit).await
-            }
-            "query_explain" | "query_range_explain" => {
-                QueryOptions::parse(&app, &params)?;
-                Err(ApiError::bad(if params.get("engine") == Some("thanos") {
-                    "Query not explainable"
-                } else {
-                    "engine type must be 'thanos'"
-                }))
-            }
-            "search/metric_names" | "search/label_names" | "search/label_values" => {
-                search::run(&app, &params, &path[7..], deadline, permit).await
-            }
-            "query_exemplars" => exemplar_api(&app, &params).await,
-            "labels" | "series" | "metadata" => discovery_api(&app, &params, &path).await,
-            _ if path.starts_with("label/") && path.ends_with("/values") && path.len() > 13 => {
-                discovery_api(&app, &params, &path).await
-            }
-            _ => Err(ApiError {
-                status: StatusCode::NOT_FOUND,
-                kind: "not_found",
-                message: format!("endpoint /api/v1/{path} is not implemented"),
-            }),
+    match path.as_str() {
+        "query_explain" | "query_range_explain" => {
+            QueryOptions::parse(&app, &params)?;
+            Err(ApiError::bad(if params.get("engine") == Some("thanos") {
+                "Query not explainable"
+            } else {
+                "engine type must be 'thanos'"
+            }))
         }
-    })
-    .await
-    .map_err(|_| ApiError::timeout())?
+        "search/metric_names" | "search/label_names" | "search/label_values" => {
+            search::run(&app, &params, &path[7..], deadline, permit).await
+        }
+        "query_exemplars" => exemplar_api(&app, &params).await,
+        "labels" | "series" | "metadata" => {
+            discovery_api(&app, &params, &path, deadline, permit).await
+        }
+        _ if path.starts_with("label/") && path.ends_with("/values") && path.len() > 13 => {
+            discovery_api(&app, &params, &path, deadline, permit).await
+        }
+        _ => Err(ApiError {
+            status: StatusCode::NOT_FOUND,
+            kind: "not_found",
+            message: format!("endpoint /api/v1/{path} is not implemented"),
+        }),
+    }
+    .map(Payload::Json)
 }
 fn cap_annotations(mut values: Vec<String>, kind: &str) -> Vec<String> {
     let mut seen = BTreeSet::new();
@@ -453,8 +555,8 @@ async fn query_api(
     p: &Params,
     range: bool,
     deadline: Instant,
-    permit: OwnedSemaphorePermit,
-) -> Result<JsonValue> {
+    permit: Arc<OwnedSemaphorePermit>,
+) -> Result<Vec<u8>> {
     let preparation_time = Instant::now();
     let query = p.get("query").unwrap_or("");
     let limit = p.limit()?;
@@ -558,18 +660,21 @@ async fn query_api(
         }
     });
 
+    let max_samples = app.max_samples;
+    let max_response_bytes = app.max_response_bytes;
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let _cancel_on_drop = CancelOnDrop(cancelled.clone());
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let eval_start=Instant::now();
         let mut engine = Engine::new(&loaded.series, start, end);
+        engine.max_samples = max_samples;
         engine.source = query_source;
         engine.replica_labels = replica_labels;
         engine.lookback = lookback;
         engine.deadline = deadline;
-        engine.cancelled = Some(cancelled);
-        let value = if range {
+        engine.cancelled = Some(cancelled.clone());
+        let mut value = if range {
             engine.range(&expr, step)
         } else {
             engine.evaluate(&expr, start)
@@ -581,30 +686,31 @@ async fn query_api(
                 ApiError::exec(e)
             }
         })?;
-        let mut data = value.json(start);
-        let elapsed=eval_start.elapsed().as_secs_f64();
-        if !stats.is_empty() {
-            data["stats"]=json!({"timings":{"evalTotalTime":elapsed,"execQueueTime":eval_start.duration_since(prepared).as_secs_f64(),"execTotalTime":preparation_time.elapsed().as_secs_f64(),"innerEvalTime":elapsed,"queryPreparationTime":prepared.duration_since(preparation_time).as_secs_f64(),"resultSortTime":0.0},"samples":{"totalQueryableSamples":engine.samples_read,"samplesRead":engine.samples_read,"peakSamples":engine.peak_samples}});
-        }
-        let mut warnings = engine.warnings.into_iter().collect::<Vec<_>>();
-        warnings.extend(loaded.warnings);
-        if let Some(warning) = analyze_warning {warnings.push(warning.into());}
-        if !stats.is_empty() && stats!="all" && stats!="true" {warnings.push(format!("value {stats:?} for parameter \"stats\" is deprecated and will be rejected in the next major release, use \"true\" or \"all\""));}
-        if limit > 0 && matches!(data["resultType"].as_str(), Some("vector" | "matrix")) {
-            let values = data["result"].as_array_mut().unwrap();
-            if values.len() > limit {
-                values.truncate(limit);
-                warnings.push("results truncated due to limit".into());
-            }
-        }
-        let mut response = success(data);
-        if !warnings.is_empty() {
-            response["warnings"] = json!(cap_annotations(warnings, "warning"))
-        }
-        if !engine.infos.is_empty() {
-            response["infos"] = json!(cap_annotations(engine.infos.into_iter().collect(), "info"))
-        }
-        Ok(response)
+        // Limit before JSON materialization: a small response must not duplicate
+        // every high-cardinality result into another complete JSON tree.
+        let truncated = match &mut value {
+            crate::model::Value::Vector(values) if limit > 0 && values.len() > limit => { values.truncate(limit); true }
+            crate::model::Value::Matrix(values) if limit > 0 && values.len() > limit => { values.truncate(limit); true }
+            _ => false,
+        };
+        let samples_read = engine.samples_read;
+        let peak_samples = engine.peak_samples;
+        let mut warnings = std::mem::take(&mut engine.warnings).into_iter().collect::<Vec<_>>();
+        let infos = std::mem::take(&mut engine.infos).into_iter().collect::<Vec<_>>();
+        // Evaluation caches and loaded input can dwarf a small aggregate result.
+        // Drop them before allocating encoded output and never build a second JSON tree.
+        drop(engine);
+        warnings.extend(std::mem::take(&mut loaded.warnings));
+        drop(loaded);
+        let elapsed = eval_start.elapsed().as_secs_f64();
+        let stats_value = (!stats.is_empty()).then(|| json!({"timings":{"evalTotalTime":elapsed,"execQueueTime":eval_start.duration_since(prepared).as_secs_f64(),"execTotalTime":preparation_time.elapsed().as_secs_f64(),"innerEvalTime":elapsed,"queryPreparationTime":prepared.duration_since(preparation_time).as_secs_f64(),"resultSortTime":0.0},"samples":{"totalQueryableSamples":samples_read,"samplesRead":samples_read,"peakSamples":peak_samples}}));
+        if let Some(warning) = analyze_warning { warnings.push(warning.into()); }
+        if !stats.is_empty() && stats != "all" && stats != "true" { warnings.push(format!("value {stats:?} for parameter \"stats\" is deprecated and will be rejected in the next major release, use \"true\" or \"all\"")); }
+        if truncated { warnings.push("results truncated due to limit".into()); }
+        let response = output::Query { status: "success", data: output::Data { value: &value, timestamp: start, stats: stats_value }, warnings: cap_annotations(warnings, "warning"), infos: cap_annotations(infos, "info") };
+        let mut encoder = output::Encoder::new(max_response_bytes, deadline, &cancelled);
+        encoder.json(&response)?;
+        Ok(encoder.finish())
     })
     .await
     .map_err(ApiError::exec)?
@@ -631,7 +737,13 @@ async fn exemplar_api(app: &App, p: &Params) -> Result<JsonValue> {
         .map_err(ApiError::storage)?;
     Ok(success(json!(result)))
 }
-async fn discovery_api(app: &App, p: &Params, path: &str) -> Result<JsonValue> {
+async fn discovery_api(
+    app: &App,
+    p: &Params,
+    path: &str,
+    deadline: Instant,
+    permit: Arc<OwnedSemaphorePermit>,
+) -> Result<JsonValue> {
     let label = if !path.starts_with("label/") {
         None
     } else {
@@ -677,57 +789,96 @@ async fn discovery_api(app: &App, p: &Params, path: &str) -> Result<JsonValue> {
     } else {
         Default::default()
     };
-    if !options.replica_labels.is_empty() {
-        let mut seen = BTreeSet::new();
-        for s in &mut loaded.series {
-            for label in &options.replica_labels {
-                s.labels.remove(label);
+    let path = path.to_owned();
+    let metric = p.get("metric").filter(|v| !v.is_empty()).map(str::to_owned);
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _cancel_on_drop = CancelOnDrop(cancelled.clone());
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let check = || {
+            if Instant::now() >= deadline || cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                Err(ApiError::timeout())
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
+        if path == "metadata" {
+            let mut metadata = loaded.metadata;
+            if let Some(name) = &metric {
+                metadata.retain(|k, _| k == name)
+            }
+            if metric_limit >= 0 {
+                metadata = metadata.into_iter().take(metric_limit as usize).collect();
+            }
+            if per_metric > 0 {
+                for values in metadata.values_mut() {
+                    values.truncate(per_metric as usize);
+                }
+            }
+            return Ok(success(json!(metadata)));
+        }
+        if !options.replica_labels.is_empty() {
+            for s in &mut loaded.series {
+                check()?;
+                for label in &options.replica_labels {
+                    s.labels.remove(label);
+                }
+            }
+            if path == "series" {
+                let mut seen = BTreeSet::new();
+                let mut unique = Vec::new();
+                for s in loaded.series {
+                    check()?;
+                    if seen.insert(s.labels.clone()) {
+                        unique.push(s);
+                    }
+                }
+                loaded.series = unique;
             }
         }
-        loaded.series.retain(|s| seen.insert(s.labels.clone()));
-    }
-    let data = if path == "series" {
-        json!(
-            loaded
-                .series
-                .into_iter()
-                .map(|s| s.labels)
-                .collect::<Vec<_>>()
-        )
-    } else if path == "metadata" {
-        let mut metadata = loaded.metadata;
-        if let Some(name) = p.get("metric").filter(|v| !v.is_empty()) {
-            metadata.retain(|k, _| k == name)
-        }
-        if metric_limit >= 0 {
-            metadata = metadata.into_iter().take(metric_limit as usize).collect();
-        }
-        if per_metric > 0 {
-            for values in metadata.values_mut() {
-                values.truncate(per_metric as usize);
+        let mut truncated = false;
+        let data = if path == "series" {
+            if limit > 0 && loaded.series.len() > limit {
+                loaded.series.truncate(limit);
+                truncated = true;
             }
-        }
-        return Ok(success(json!(metadata)));
-    } else {
-        let values = loaded
-            .series
-            .iter()
-            .flat_map(|s| match &label {
-                None => s.labels.keys().cloned().collect::<Vec<_>>(),
-                Some(name) => s.labels.get(name).cloned().into_iter().collect(),
-            })
-            .collect::<BTreeSet<_>>();
-        json!(values)
-    };
-    let mut response = success(data);
-    if limit > 0 {
-        let values = response["data"].as_array_mut().unwrap();
-        if values.len() > limit {
-            values.truncate(limit);
+            json!(
+                loaded
+                    .series
+                    .into_iter()
+                    .map(|s| s.labels)
+                    .collect::<Vec<_>>()
+            )
+        } else {
+            let mut values = BTreeSet::new();
+            for series in &loaded.series {
+                check()?;
+                if let Some(name) = &label {
+                    if let Some(value) = series.labels.get(name) {
+                        values.insert(value.clone());
+                    }
+                } else {
+                    values.extend(series.labels.keys().cloned());
+                }
+                if limit > 0 {
+                    while values.len() > limit {
+                        values.pop_last();
+                        truncated = true;
+                    }
+                }
+            }
+            json!(values)
+        };
+        let mut response = success(data);
+        if truncated {
             response["warnings"] = json!(["results truncated due to limit"]);
         }
-    }
-    Ok(response)
+        check()?;
+        Ok(response)
+    })
+    .await
+    .map_err(ApiError::exec)?
 }
 fn parse_time(text: &str) -> Result<i64> {
     if let Ok(number) = text.parse::<f64>() {

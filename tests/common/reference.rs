@@ -20,7 +20,7 @@ pub fn load(data: &Value) -> Result<Vec<Series>, String> {
                         return Ok(Point {
                             timestamp: p["timestamp"].as_i64().unwrap(),
                             start_timestamp: p["start_timestamp"].as_i64().unwrap_or(0),
-                            histogram: Some(load_histogram(h)?),
+                            histogram: Some(Box::new(load_histogram(h)?)),
                             ..Default::default()
                         });
                     }

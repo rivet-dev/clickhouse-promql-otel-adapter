@@ -4,10 +4,13 @@ use crate::{
     translation::{label_name, metric_name},
 };
 use anyhow::{Context, Result, bail};
-use promql_parser::parser::{Expr, VectorSelector};
+use promql_parser::{
+    label::MatchOp,
+    parser::{Expr, VectorSelector},
+};
 use serde_json::Value as Json;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -40,6 +43,8 @@ pub struct Store {
     pub password: String,
     pub max_rows: usize,
     pub max_bytes: usize,
+    /// Maximum retained samples, native buckets, or discovered series per read.
+    pub max_samples: usize,
     /// Maximum age of metric-name metadata; zero disables caching.
     pub metric_cache_ttl: Duration,
     /// Resource attributes copied onto every series as labels, as
@@ -69,8 +74,9 @@ impl Store {
             password,
             max_rows: 1_000_000,
             max_bytes: 64 * 1024 * 1024,
-            metric_cache_ttl: Duration::ZERO,
             promoted_resource_attributes: Vec::new(),
+            max_samples: 5_000_000,
+            metric_cache_ttl: Duration::ZERO,
             dictionaries: Arc::new(std::array::from_fn(|_| Mutex::new(None))),
         })
     }
@@ -132,7 +138,7 @@ impl Store {
             .iter()
             .map(|s| {
                 let mut s = s.clone();
-                s.matchers.matchers.retain(|m| m.name == "__name__");
+                retain_matchers(&mut s, |name| name == "__name__");
                 s
             })
             .collect::<Vec<_>>();
@@ -151,7 +157,10 @@ impl Store {
         );
         let rows = self.metric_dictionary(kind, &sql).await?;
         let mut names = std::collections::BTreeSet::new();
-        for row in rows.iter() {
+        for (index, row) in rows.iter().enumerate() {
+            if index.is_multiple_of(1024) {
+                tokio::task::yield_now().await;
+            }
             let Ok(name) = row_metric_name(row, kind) else {
                 continue;
             };
@@ -182,6 +191,9 @@ impl Store {
         let text = self.query(sql, &[]).await?;
         let mut rows = Vec::new();
         for (i, line) in text.lines().enumerate() {
+            if i.is_multiple_of(1024) {
+                tokio::task::yield_now().await;
+            }
             if i >= self.max_rows {
                 bail!("ClickHouse metric dictionary limit exceeded");
             }
@@ -216,6 +228,8 @@ impl Store {
         let mut groups: BTreeMap<Labels, Vec<Point>> = BTreeMap::new();
         let mut loaded = Loaded::default();
         let mut total = 0usize;
+        let mut bytes_read = 0usize;
+        let mut retained = 0usize;
         for kind in TABLES {
             let filter = self.metric_filter(kind, selectors).await?;
             if filter.as_ref().is_some_and(|v| v.is_empty()) {
@@ -226,8 +240,33 @@ impl Store {
             } else {
                 ""
             };
+            let (labels_predicate, labels_params) = label_filter(kind, selectors);
             let projection = if samples {
-                "*, toUnixTimestamp64Milli(toDateTime64(TimeUnix, 3)) AS _timestamp, toUnixTimestamp64Milli(toDateTime64(StartTimeUnix, 3)) AS _start_timestamp".to_owned()
+                // Keep optional schema additions such as ZeroThreshold while
+                // avoiding unused strings and potentially huge exemplar arrays.
+                let mut excluded = vec![
+                    "ResourceSchemaUrl",
+                    "ScopeDroppedAttrCount",
+                    "ServiceName",
+                    "TimeUnix",
+                    "StartTimeUnix",
+                ];
+                if kind != "summary" {
+                    excluded.extend([
+                        "`Exemplars.FilteredAttributes`",
+                        "`Exemplars.TimeUnix`",
+                        "`Exemplars.Value`",
+                        "`Exemplars.SpanId`",
+                        "`Exemplars.TraceId`",
+                    ]);
+                }
+                if matches!(kind, "histogram" | "exponential_histogram") {
+                    excluded.extend(["Min", "Max"]);
+                }
+                let columns = format!("* EXCEPT ({})", excluded.join(", "));
+                format!(
+                    "{columns}, toUnixTimestamp64Milli(toDateTime64(TimeUnix, 3)) AS _timestamp, toUnixTimestamp64Milli(toDateTime64(StartTimeUnix, 3)) AS _start_timestamp"
+                )
             } else {
                 let extra = match kind {
                     "sum" => ", IsMonotonic",
@@ -239,32 +278,96 @@ impl Store {
                     "DISTINCT MetricName, MetricDescription, MetricUnit, ResourceAttributes, ScopeName, ScopeVersion, ScopeSchemaUrl, ScopeAttributes, Attributes{extra}"
                 )
             };
-            let sql = format!(
-                "SELECT {projection} FROM {}.otel_metrics_{} WHERE TimeUnix >= fromUnixTimestamp64Milli({{start:Int64}}) AND TimeUnix <= fromUnixTimestamp64Milli({{end:Int64}}){predicate} LIMIT {} SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow",
-                self.database,
-                kind,
-                self.max_rows + 1
+            let grouped = samples;
+            let mut sample_fields = vec!["_timestamp", "_start_timestamp", "Flags"];
+            sample_fields.extend(match kind {
+                "gauge" | "sum" => vec!["Value"],
+                "histogram" => vec!["Count", "Sum", "BucketCounts", "ExplicitBounds"],
+                "summary" => vec![
+                    "Count",
+                    "Sum",
+                    "ValueAtQuantiles.Quantile",
+                    "ValueAtQuantiles.Value",
+                ],
+                "exponential_histogram" => vec![
+                    "Count",
+                    "Sum",
+                    "Scale",
+                    "ZeroCount",
+                    "PositiveOffset",
+                    "PositiveBucketCounts",
+                    "NegativeOffset",
+                    "NegativeBucketCounts",
+                ],
+                _ => unreachable!(),
+            });
+            let row_limit = self.max_rows.saturating_sub(total).saturating_add(1);
+            let source = format!(
+                "{}.otel_metrics_{kind} WHERE TimeUnix >= fromUnixTimestamp64Milli({{start:Int64}}) AND TimeUnix <= fromUnixTimestamp64Milli({{end:Int64}}){predicate}{labels_predicate}",
+                self.database
             );
-            let text = self
-                .query(
-                    &sql,
-                    &[
-                        ("param_start", start.to_string()),
-                        ("param_end", end.to_string()),
-                        ("param_names", string_array(&filter.unwrap_or_default())),
-                    ],
+            let sql = if grouped {
+                let fields = sample_fields
+                    .iter()
+                    .map(|field| format!("`{field}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                // Bound raw rows BEFORE aggregation. The extra row survives as
+                // a tuple and causes the same scan-limit error during decoding.
+                // Every other projected field remains part of the grouping key,
+                // including optional schema additions such as ZeroThreshold.
+                // No values are aggregated away: only repeated labels/metadata
+                // are removed from the transport representation.
+                format!(
+                    "SELECT * EXCEPT ({fields}), groupArray(tuple({fields})) AS _samples FROM (SELECT {projection} FROM {source} LIMIT {row_limit}) GROUP BY ALL SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow"
                 )
-                .await?;
-            for line in text.lines() {
-                if total.is_multiple_of(1024) {
+            } else {
+                format!(
+                    "SELECT {projection} FROM {source} LIMIT {row_limit} SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow"
+                )
+            };
+            let mut params = vec![
+                ("param_start", start.to_string()),
+                ("param_end", end.to_string()),
+                ("param_names", string_array(&filter.unwrap_or_default())),
+            ];
+            params.extend(
+                labels_params
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.clone())),
+            );
+            // The budget is shared across sample/discovery tables, not reset
+            // for each response. Dictionary metadata has its own bounded cache.
+            let mut reader = self.clone();
+            reader.max_bytes = self.max_bytes.saturating_sub(bytes_read);
+            let text = reader.query(&sql, &params).await?;
+            bytes_read += text.len();
+            for (group_index, line) in text.lines().enumerate() {
+                if group_index.is_multiple_of(1024) {
                     tokio::task::yield_now().await;
                 }
-                total += 1;
-                if total > self.max_rows {
-                    bail!("ClickHouse sample scan limit exceeded")
-                }
-                let row: Json =
+                let mut row: Json =
                     serde_json::from_str(line).context("invalid ClickHouse metric row")?;
+                let tuples = if grouped {
+                    match row
+                        .as_object_mut()
+                        .context("invalid grouped metric row")?
+                        .remove("_samples")
+                    {
+                        Some(Json::Array(tuples)) => tuples,
+                        _ => bail!("missing grouped metric samples"),
+                    }
+                } else {
+                    vec![Json::Null]
+                };
+                total = total
+                    .checked_add(tuples.len())
+                    .context("ClickHouse sample scan limit exceeded")?;
+                if total > self.max_rows {
+                    bail!("ClickHouse sample scan limit exceeded");
+                }
+                // Group identity is immutable. Normalize/match labels and
+                // metadata once, then decode only point fields inside the loop.
                 let name = match row_metric_name(&row, kind) {
                     Ok(name) => name,
                     Err(e) => {
@@ -280,18 +383,9 @@ impl Store {
                 };
                 let mut labels = row_labels(&row, &self.promoted_resource_attributes)?;
                 labels.insert("__name__".into(), name.clone());
-                if let Some(info) = target_info(&row)?
-                    && (selectors.is_empty() || selectors.iter().any(|s| matches(s, &info)))
-                {
-                    let points = groups.entry(info).or_default();
-                    if samples && integer(&row["Flags"]).unwrap_or(0) & 1 == 0 {
-                        points.push(Point {
-                            timestamp: integer(&row["_timestamp"])?,
-                            value: 1.0,
-                            ..Default::default()
-                        });
-                    }
-                }
+                let info = target_info(&row)?.filter(|info| {
+                    selectors.is_empty() || selectors.iter().any(|s| matches(s, info))
+                });
                 let candidates = derived_names(&name, kind);
                 let selected = selectors.is_empty()
                     || candidates.iter().any(|n| {
@@ -304,194 +398,331 @@ impl Store {
                             .iter()
                             .any(|s| matches(s, &l) || potential_bucket_match(s, &l, kind))
                     });
-                if !selected {
-                    continue;
-                }
-                let typ = match kind {
-                    "sum" if row["IsMonotonic"].as_bool() == Some(true) => "counter",
-                    "sum" | "gauge" => "gauge",
-                    "histogram" | "exponential_histogram" => "histogram",
-                    _ => "summary",
-                };
-                let metadata = serde_json::json!({"type":typ,"help":string(&row,"MetricDescription"),"unit":string(&row,"MetricUnit")});
-                let entries = loaded.metadata.entry(name.clone()).or_default();
-                if !entries.contains(&metadata) {
-                    entries.push(metadata)
-                }
-                if !samples {
-                    for n in &candidates {
-                        let mut ls = labels.clone();
-                        ls.insert("__name__".into(), n.clone());
-                        let extra: Vec<Option<(&str, String)>> =
-                            if n.ends_with("_bucket") && kind == "histogram" {
-                                let mut bounds = row["ExplicitBounds"]
-                                    .as_array()
-                                    .context("missing bounds")?
-                                    .iter()
-                                    .map(|v| number(v).map(|x| Some(("le", float_string(x)))))
-                                    .collect::<Result<Vec<_>>>()?;
-                                bounds.push(Some(("le", "+Inf".into())));
-                                bounds
-                            } else if n == &name && kind == "summary" {
-                                row["ValueAtQuantiles.Quantile"]
-                                    .as_array()
-                                    .context("missing quantiles")?
-                                    .iter()
-                                    .map(|v| number(v).map(|x| Some(("quantile", float_string(x)))))
-                                    .collect::<Result<Vec<_>>>()?
-                            } else {
-                                vec![None]
-                            };
-                        for e in extra {
-                            let mut ls = ls.clone();
-                            if let Some((k, v)) = e {
-                                ls.insert(k.into(), v);
-                            }
-                            if selectors.is_empty() || selectors.iter().any(|s| matches(s, &ls)) {
-                                groups.entry(ls).or_default();
-                            }
-                        }
-                    }
-                    continue;
-                }
-                if matches!(kind, "sum" | "histogram" | "exponential_histogram")
-                    && integer(&row["AggregationTemporality"])? == 1
-                {
-                    bail!(
-                        "delta temporality for {name} requires cumulative conversion; configure the collector deltatocumulative processor"
-                    )
-                }
-                let timestamp = integer(&row["_timestamp"])?;
-                let stale = integer(&row["Flags"]).unwrap_or(0) & 1 != 0;
-                let start_timestamp = integer(&row["_start_timestamp"])?;
-                if kind == "exponential_histogram" {
-                    let mut h = crate::histogram::Histogram {
-                        schema: integer(&row["Scale"])? as i32,
-                        count: number(&row["Count"])?,
-                        sum: number(&row["Sum"])?,
-                        zero_count: number(&row["ZeroCount"])?,
-                        zero_threshold: row
-                            .get("ZeroThreshold")
-                            .map(number)
-                            .transpose()?
-                            .unwrap_or(0.0),
-                        ..Default::default()
+                if selected {
+                    let typ = match kind {
+                        "sum" if row["IsMonotonic"].as_bool() == Some(true) => "counter",
+                        "sum" | "gauge" => "gauge",
+                        "histogram" | "exponential_histogram" => "histogram",
+                        _ => "summary",
                     };
-                    if !(-4..=20).contains(&h.schema) {
-                        bail!(
-                            "OTLP exponential histogram scale {} cannot be represented as a Prometheus native histogram",
-                            h.schema
-                        );
-                    }
-                    for (prefix, buckets) in
-                        [("Positive", &mut h.positive), ("Negative", &mut h.negative)]
-                    {
-                        let offset = integer(&row[format!("{prefix}Offset")])? as i32;
-                        for (i, v) in row[format!("{prefix}BucketCounts")]
-                            .as_array()
-                            .context("missing native bucket counts")?
-                            .iter()
-                            .enumerate()
-                        {
-                            buckets.insert(offset + i as i32 + 1, number(v)?);
-                        }
-                    }
-                    if h.schema > 8 {
-                        h.reduce(8)?;
-                    }
-                    if row.get("ZeroThreshold").is_none() {
-                        let warning="Collector schema does not store exponential histogram ZeroThreshold; assuming zero".to_owned();
-                        if !loaded.warnings.contains(&warning) {
-                            loaded.warnings.push(warning)
-                        }
-                    }
-                    if stale {
-                        h.sum = f64::from_bits(STALE_BITS)
-                    }
-                    groups.entry(labels).or_default().push(Point {
-                        timestamp,
-                        start_timestamp,
-                        histogram: Some(h),
-                        ..Default::default()
+                    let help = string(&row, "MetricDescription");
+                    let unit = string(&row, "MetricUnit");
+                    // Most sample rows repeat the same metadata. Compare borrowed
+                    // strings before allocating another JSON object for every point.
+                    let known = loaded.metadata.get(&name).is_some_and(|entries| {
+                        entries.iter().any(|entry| {
+                            entry["type"] == typ && entry["help"] == help && entry["unit"] == unit
+                        })
                     });
-                    continue;
+                    if !known {
+                        loaded
+                            .metadata
+                            .entry(name.clone())
+                            .or_default()
+                            .push(serde_json::json!({"type":typ,"help":help,"unit":unit}));
+                    }
                 }
-                let mut push = |suffix: &str, extra: Option<(&str, String)>, value: f64| {
-                    let mut ls = labels.clone();
-                    ls.insert("__name__".into(), format!("{name}{suffix}"));
-                    if let Some((k, v)) = extra {
-                        ls.insert(k.into(), v);
+                // One output buffer per derived series within this transport
+                // group. Keys contain only suffix + generated label bits, so the
+                // hot point loop neither clones nor compares full label maps.
+                type OutputKey = (&'static str, Option<(&'static str, u64)>);
+                let mut outputs: Vec<(Labels, Vec<Point>)> = Vec::new();
+                let mut output_cache: HashMap<OutputKey, Option<usize>> = HashMap::new();
+                let mut info_points = Vec::new();
+                let mut native_points = Vec::new();
+                for (sample_index, tuple) in tuples.into_iter().enumerate() {
+                    if sample_index.is_multiple_of(1024) {
+                        tokio::task::yield_now().await;
                     }
-                    if selectors.is_empty() || selectors.iter().any(|s| matches(s, &ls)) {
-                        groups.entry(ls).or_default().push(Point {
-                            timestamp,
-                            start_timestamp,
-                            value: if stale {
-                                f64::from_bits(STALE_BITS)
-                            } else {
-                                value
-                            },
-                            ..Default::default()
-                        });
-                    }
-                };
-                match kind {
-                    "gauge" | "sum" => push("", None, number(&row["Value"])?),
-                    "histogram" => {
-                        let counts = row["BucketCounts"]
-                            .as_array()
-                            .context("missing BucketCounts")?;
-                        let bounds = row["ExplicitBounds"]
-                            .as_array()
-                            .context("missing ExplicitBounds")?;
-                        if (counts.is_empty() && !bounds.is_empty())
-                            || (!counts.is_empty() && counts.len() != bounds.len() + 1)
-                        {
-                            bail!("invalid histogram bucket count for {name}")
+                    if grouped {
+                        let Json::Array(values) = tuple else {
+                            bail!("invalid grouped metric sample")
+                        };
+                        if values.len() != sample_fields.len() {
+                            bail!("invalid grouped metric sample length")
                         }
-                        if counts.is_empty() {
-                            push(
-                                "_bucket",
-                                Some(("le", "+Inf".into())),
-                                number(&row["Count"])?,
+                        for (field, value) in sample_fields.iter().copied().zip(values) {
+                            row[field] = value;
+                        }
+                    }
+                    if let Some(info) = &info {
+                        if !samples && !groups.contains_key(info) {
+                            charge_samples(&mut retained, 1, self.max_samples)?;
+                        }
+                        if !samples {
+                            groups.entry(info.clone()).or_default();
+                        }
+                        if samples && integer(&row["Flags"]).unwrap_or(0) & 1 == 0 {
+                            charge_samples(&mut retained, 1, self.max_samples)?;
+                            info_points.push(Point {
+                                timestamp: integer(&row["_timestamp"])?,
+                                value: 1.0,
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    if !selected {
+                        continue;
+                    }
+                    if !samples {
+                        for n in &candidates {
+                            let mut ls = labels.clone();
+                            ls.insert("__name__".into(), n.clone());
+                            let extra: Box<
+                                dyn Iterator<Item = Result<Option<(&str, String)>>> + Send + '_,
+                            > = if n.ends_with("_bucket") && kind == "histogram" {
+                                Box::new(
+                                    row["ExplicitBounds"]
+                                        .as_array()
+                                        .context("missing bounds")?
+                                        .iter()
+                                        .map(|v| number(v).map(|x| Some(("le", float_string(x)))))
+                                        .chain(std::iter::once(Ok(Some(("le", "+Inf".into()))))),
+                                )
+                            } else if n == &name && kind == "summary" {
+                                Box::new(
+                                    row["ValueAtQuantiles.Quantile"]
+                                        .as_array()
+                                        .context("missing quantiles")?
+                                        .iter()
+                                        .map(|v| {
+                                            number(v).map(|x| Some(("quantile", float_string(x))))
+                                        }),
+                                )
+                            } else {
+                                Box::new(std::iter::once(Ok(None)))
+                            };
+                            for (index, e) in extra.enumerate() {
+                                if index.is_multiple_of(1024) {
+                                    tokio::task::yield_now().await;
+                                }
+                                let mut ls = ls.clone();
+                                if let Some((k, v)) = e? {
+                                    ls.insert(k.into(), v);
+                                }
+                                if selectors.is_empty() || selectors.iter().any(|s| matches(s, &ls))
+                                {
+                                    if !groups.contains_key(&ls) {
+                                        charge_samples(&mut retained, 1, self.max_samples)?;
+                                    }
+                                    groups.entry(ls).or_default();
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    if matches!(kind, "sum" | "histogram" | "exponential_histogram")
+                        && integer(&row["AggregationTemporality"])? == 1
+                    {
+                        bail!(
+                            "delta temporality for {name} requires cumulative conversion; configure the collector deltatocumulative processor"
+                        )
+                    }
+                    let timestamp = integer(&row["_timestamp"])?;
+                    let stale = integer(&row["Flags"]).unwrap_or(0) & 1 != 0;
+                    let start_timestamp = integer(&row["_start_timestamp"])?;
+                    if kind == "exponential_histogram" {
+                        charge_samples(&mut retained, 1, self.max_samples)?;
+                        for field in ["PositiveBucketCounts", "NegativeBucketCounts"] {
+                            charge_samples(
+                                &mut retained,
+                                row[field]
+                                    .as_array()
+                                    .context("missing native bucket counts")?
+                                    .len(),
+                                self.max_samples,
+                            )?;
+                        }
+                        let mut h = crate::histogram::Histogram {
+                            schema: integer(&row["Scale"])? as i32,
+                            count: number(&row["Count"])?,
+                            sum: number(&row["Sum"])?,
+                            zero_count: number(&row["ZeroCount"])?,
+                            zero_threshold: row
+                                .get("ZeroThreshold")
+                                .map(number)
+                                .transpose()?
+                                .unwrap_or(0.0),
+                            ..Default::default()
+                        };
+                        if !(-4..=20).contains(&h.schema) {
+                            bail!(
+                                "OTLP exponential histogram scale {} cannot be represented as a Prometheus native histogram",
+                                h.schema
                             );
                         }
-                        let mut cumulative = 0.0;
-                        for (i, count) in counts.iter().enumerate() {
-                            cumulative += number(count)?;
-                            let bound = if i < bounds.len() {
-                                number(&bounds[i])?
+                        for (prefix, buckets) in
+                            [("Positive", &mut h.positive), ("Negative", &mut h.negative)]
+                        {
+                            let offset = integer(&row[format!("{prefix}Offset")])? as i32;
+                            for (i, v) in row[format!("{prefix}BucketCounts")]
+                                .as_array()
+                                .context("missing native bucket counts")?
+                                .iter()
+                                .enumerate()
+                            {
+                                if i.is_multiple_of(1024) {
+                                    tokio::task::yield_now().await;
+                                }
+                                let index = i64::from(offset) + i as i64 + 1;
+                                let index = i32::try_from(index)
+                                    .context("native histogram bucket index overflow")?;
+                                buckets.insert(index, number(v)?);
+                            }
+                        }
+                        if h.schema > 8 {
+                            h.reduce(8)?;
+                        }
+                        if row.get("ZeroThreshold").is_none() {
+                            let warning="Collector schema does not store exponential histogram ZeroThreshold; assuming zero".to_owned();
+                            if !loaded.warnings.contains(&warning) {
+                                loaded.warnings.push(warning)
+                            }
+                        }
+                        if stale {
+                            h.sum = f64::from_bits(STALE_BITS)
+                        }
+                        native_points.push(Point {
+                            timestamp,
+                            start_timestamp,
+                            histogram: Some(Box::new(h)),
+                            ..Default::default()
+                        });
+                        continue;
+                    }
+                    let mut push = |suffix: &'static str,
+                                    extra: Option<(&'static str, f64)>,
+                                    value: f64|
+                     -> Result<()> {
+                        let key = (suffix, extra.map(|(label, value)| (label, value.to_bits())));
+                        let index = if let Some(index) = output_cache.get(&key) {
+                            *index
+                        } else {
+                            let mut ls = labels.clone();
+                            ls.insert("__name__".into(), format!("{name}{suffix}"));
+                            if let Some((label, value)) = extra {
+                                ls.insert(label.into(), float_string(value));
+                            }
+                            let index = if selectors.is_empty()
+                                || selectors.iter().any(|s| matches(s, &ls))
+                            {
+                                let index = outputs.len();
+                                outputs.push((ls, Vec::new()));
+                                Some(index)
                             } else {
-                                f64::INFINITY
+                                None
                             };
-                            push("_bucket", Some(("le", float_string(bound))), cumulative);
+                            // Retained outputs are bounded by max_samples. Cap
+                            // negative cache entries independently when arbitrary
+                            // changing bounds never match the requested selector.
+                            if index.is_some() || output_cache.len() < 4096 {
+                                output_cache.insert(key, index);
+                            }
+                            index
+                        };
+                        if let Some(index) = index {
+                            charge_samples(&mut retained, 1, self.max_samples)?;
+                            outputs[index].1.push(Point {
+                                timestamp,
+                                start_timestamp,
+                                value: if stale {
+                                    f64::from_bits(STALE_BITS)
+                                } else {
+                                    value
+                                },
+                                ..Default::default()
+                            });
                         }
-                        push("_sum", None, number(&row["Sum"])?);
-                        push("_count", None, number(&row["Count"])?);
+                        Ok(())
+                    };
+                    match kind {
+                        "gauge" | "sum" => push("", None, number(&row["Value"])?)?,
+                        "histogram" => {
+                            let counts = row["BucketCounts"]
+                                .as_array()
+                                .context("missing BucketCounts")?;
+                            let bounds = row["ExplicitBounds"]
+                                .as_array()
+                                .context("missing ExplicitBounds")?;
+                            if (counts.is_empty() && !bounds.is_empty())
+                                || (!counts.is_empty() && counts.len() != bounds.len() + 1)
+                            {
+                                bail!("invalid histogram bucket count for {name}")
+                            }
+                            if counts.is_empty() {
+                                push(
+                                    "_bucket",
+                                    Some(("le", f64::INFINITY)),
+                                    number(&row["Count"])?,
+                                )?;
+                            }
+                            let mut cumulative = 0.0;
+                            for (i, count) in counts.iter().enumerate() {
+                                if i.is_multiple_of(1024) {
+                                    tokio::task::yield_now().await;
+                                }
+                                cumulative += number(count)?;
+                                let bound = if i < bounds.len() {
+                                    number(&bounds[i])?
+                                } else {
+                                    f64::INFINITY
+                                };
+                                push("_bucket", Some(("le", bound)), cumulative)?;
+                            }
+                            push("_sum", None, number(&row["Sum"])?)?;
+                            push("_count", None, number(&row["Count"])?)?;
+                        }
+                        "summary" => {
+                            let quantiles = row["ValueAtQuantiles.Quantile"]
+                                .as_array()
+                                .context("missing quantiles")?;
+                            let values = row["ValueAtQuantiles.Value"]
+                                .as_array()
+                                .context("missing quantile values")?;
+                            if quantiles.len() != values.len() {
+                                bail!("invalid summary quantiles for {name}")
+                            }
+                            for (index, (q, v)) in quantiles.iter().zip(values).enumerate() {
+                                if index.is_multiple_of(1024) {
+                                    tokio::task::yield_now().await;
+                                }
+                                push("", Some(("quantile", number(q)?)), number(v)?)?;
+                            }
+                            push("_sum", None, number(&row["Sum"])?)?;
+                            push("_count", None, number(&row["Count"])?)?;
+                        }
+                        _ => unreachable!(),
                     }
-                    "summary" => {
-                        let quantiles = row["ValueAtQuantiles.Quantile"]
-                            .as_array()
-                            .context("missing quantiles")?;
-                        let values = row["ValueAtQuantiles.Value"]
-                            .as_array()
-                            .context("missing quantile values")?;
-                        if quantiles.len() != values.len() {
-                            bail!("invalid summary quantiles for {name}")
-                        }
-                        for (q, v) in quantiles.iter().zip(values) {
-                            push("", Some(("quantile", float_string(number(q)?))), number(v)?)
-                        }
-                        push("_sum", None, number(&row["Sum"])?);
-                        push("_count", None, number(&row["Count"])?);
+                }
+                if samples {
+                    if let Some(info) = info {
+                        outputs.push((info, info_points));
                     }
-                    _ => unreachable!(),
+                    if !native_points.is_empty() {
+                        outputs.push((labels, native_points));
+                    }
+                    for (labels, mut points) in outputs {
+                        match groups.entry(labels) {
+                            std::collections::btree_map::Entry::Vacant(entry) => {
+                                entry.insert(points);
+                            }
+                            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                                entry.get_mut().append(&mut points);
+                            }
+                        }
+                    }
                 }
             }
         }
-        for (labels, mut points) in groups {
+        for (index, (labels, mut points)) in groups.into_iter().enumerate() {
+            if index.is_multiple_of(1024) {
+                tokio::task::yield_now().await;
+            }
             points.sort_by_key(|p| p.timestamp);
-            for pair in points.windows(2) {
+            for (index, pair) in points.windows(2).enumerate() {
+                if index.is_multiple_of(1024) {
+                    tokio::task::yield_now().await;
+                }
                 if pair[0].timestamp == pair[1].timestamp
                     && (pair[0].value.to_bits() != pair[1].value.to_bits()
                         || pair[0].histogram != pair[1].histogram
@@ -519,16 +750,154 @@ fn potential_bucket_match(selector: &VectorSelector, labels: &Labels, kind: &str
         return false;
     }
     let mut selector = selector.clone();
-    selector.matchers.matchers.retain(|m| {
-        m.name
-            != if kind == "histogram" {
-                "le"
-            } else {
-                "quantile"
-            }
+    retain_matchers(&mut selector, |name| {
+        name != if kind == "histogram" {
+            "le"
+        } else {
+            "quantile"
+        }
     });
     matches(&selector, labels)
 }
+/// Removing a matcher must preserve every OR alternative; an empty alternative
+/// remains true, rather than accidentally becoming an empty selector.
+fn retain_matchers(selector: &mut VectorSelector, keep: impl Fn(&str) -> bool) {
+    selector.matchers.matchers.retain(|m| keep(&m.name));
+    for branch in &mut selector.matchers.or_matchers {
+        branch.retain(|m| keep(&m.name));
+    }
+}
+
+/// Conservative SQL prefilter. Rust remains the authority for final matching.
+/// General regex, generated labels and scope labels stay in Rust to avoid
+/// ClickHouse RE2/normalization differences changing which series are returned.
+/// Each OR branch contributes independently; an unfilterable branch admits all.
+pub(crate) fn label_filter(
+    kind: &str,
+    selectors: &[VectorSelector],
+) -> (String, Vec<(String, String)>) {
+    let mut params = Vec::new();
+    let mut alternatives = Vec::new();
+    for selector in selectors {
+        let branches = if selector.matchers.or_matchers.is_empty() {
+            vec![selector.matchers.matchers.as_slice()]
+        } else {
+            selector
+                .matchers
+                .or_matchers
+                .iter()
+                .map(Vec::as_slice)
+                .collect()
+        };
+        for branch in branches {
+            // target_info has resource attributes, not point attributes. A
+            // branch that could select it cannot use ordinary label pushdown.
+            if selector.name.as_deref().is_none_or(|n| n == "target_info")
+                && branch
+                    .iter()
+                    .filter(|m| m.name == "__name__")
+                    .all(|m| m.is_match("target_info"))
+            {
+                return (String::new(), Vec::new());
+            }
+            let mut terms = Vec::new();
+            for matcher in branch {
+                if matcher.name == "__name__"
+                    || matcher.name.starts_with("otel_scope_")
+                    || (kind == "histogram" && matcher.name == "le")
+                    || (kind == "summary" && matcher.name == "quantile")
+                {
+                    continue;
+                }
+                let (op, value_type, parameter) = match &matcher.op {
+                    MatchOp::Equal => ("=", "String", string_param(&matcher.value)),
+                    MatchOp::NotEqual => ("!=", "String", string_param(&matcher.value)),
+                    MatchOp::Re(_) | MatchOp::NotRe(_) => {
+                        // Prometheus regexes are fully anchored. Bare literals
+                        // and literal alternatives are exactly an equality set;
+                        // all other regex syntax remains in Rust.
+                        if matcher.value.chars().any(|c| ".*+?()[]{}\\^$".contains(c)) {
+                            continue;
+                        }
+                        let values = matcher
+                            .value
+                            .split('|')
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>();
+                        (
+                            if matches!(matcher.op, MatchOp::Re(_)) {
+                                "IN"
+                            } else {
+                                "NOT IN"
+                            },
+                            "Array(String)",
+                            string_array(&values),
+                        )
+                    }
+                };
+                let index = params.len();
+                let key = format!("label_key_{index}");
+                let value = format!("label_value_{index}");
+                params.push((format!("param_{key}"), string_param(&matcher.name)));
+                params.push((format!("param_{value}"), parameter));
+                // RE2 replaces each Unicode codepoint, matching label_name's
+                // permissive escaping; consecutive punctuation is not collapsed.
+                let normalized = "concat(if(match(k, '^[0-9]'), 'key_', ''), replaceRegexpAll(k, '[^a-zA-Z0-9]', '_'))";
+                let attribute = format!(
+                    "if(ScopeName = 'github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver', Attributes[{{{key}:String}}], ifNull(arrayFirstOrNull((v, k) -> {normalized} = {{{key}:String}} AND v != '', mapValues(Attributes), mapKeys(Attributes)), ''))"
+                );
+                let expression = match matcher.name.as_str() {
+                    "job" => format!(
+                        "if(notEmpty({attribute}), {attribute}, if(empty(ResourceAttributes['service.name']), '', concat(if(empty(ResourceAttributes['service.namespace']), '', concat(ResourceAttributes['service.namespace'], '/')), ResourceAttributes['service.name'])))"
+                    ),
+                    "instance" => format!(
+                        "if(notEmpty({attribute}), {attribute}, ResourceAttributes['service.instance.id'])"
+                    ),
+                    _ => attribute,
+                };
+                // A normalized-key collision is an error, not a choice between
+                // values. Admit ambiguous rows so row_labels reports that error.
+                let collision = format!(
+                    "(ScopeName != 'github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver' AND arrayCount((v, k) -> {normalized} = {{{key}:String}} AND v != '', mapValues(Attributes), mapKeys(Attributes)) > 1)"
+                );
+                terms.push(format!(
+                    "(({expression} {op} {{{value}:{value_type}}}) OR {collision})"
+                ));
+            }
+            if terms.is_empty() {
+                return (String::new(), Vec::new());
+            }
+            alternatives.push(format!("({})", terms.join(" AND ")));
+        }
+    }
+    if alternatives.is_empty() {
+        (String::new(), Vec::new())
+    } else {
+        (format!(" AND ({})", alternatives.join(" OR ")), params)
+    }
+}
+
+// ClickHouse HTTP String parameters use escaped text; URL encoding alone does
+// not preserve a literal backslash followed by an escape character.
+fn string_param(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\t', "\\t")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\0', "\\0")
+}
+
+pub(crate) fn charge_samples(total: &mut usize, amount: usize, limit: usize) -> Result<()> {
+    *total = total
+        .checked_add(amount)
+        .context("ClickHouse expanded sample limit exceeded")?;
+    if *total > limit {
+        bail!("ClickHouse expanded sample limit exceeded");
+    }
+    Ok(())
+}
+
 pub fn validate_identifier(s: &str) -> Result<()> {
     if s.is_empty()
         || !s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')

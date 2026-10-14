@@ -13,6 +13,7 @@
 - **Stateless Rust binary**: Prometheus + Thanos query API, scale replicas freely
 - **Tested**: 21,442 upstream PromQL executions + 1,016 HTTP reference cases ([compatibility](docs/compatibility.md))
 - **Caveat**: default schema drops subsecond timestamps and some histogram fields ([details](docs/schema-findings.md))
+- **Performance**: [high-cardinality benchmarks and query limits](docs/performance.md)
 
 ## Goals
 

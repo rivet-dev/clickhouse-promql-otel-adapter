@@ -87,7 +87,8 @@ impl Engine<'_> {
             .map(|a| self.eval(a, t))
             .collect::<Result<Vec<_>>>()?;
         if matches!(name, "histogram_quantile" | "quantile_over_time")
-            && (name != "quantile_over_time" || !args[1].clone().matrix()?.is_empty())
+            && (name != "quantile_over_time"
+                || matches!(&args[1], Value::Matrix(series) if !series.is_empty()))
         {
             let q = args[0].scalar()?;
             if q.is_nan() || !(0.0..=1.0).contains(&q) {
@@ -278,7 +279,7 @@ impl Engine<'_> {
                 | "year"
         );
         let vector = if let Some(i) = vi {
-            args[i].clone().vector()?
+            std::mem::replace(&mut args[i], Value::Scalar(0.0)).vector()?
         } else if calendar {
             vec![Sample {
                 labels: Labels::new(),
@@ -602,7 +603,7 @@ impl Engine<'_> {
                     output = Some(Sample {
                         labels: labels.clone(),
                         value: p.value,
-                        histogram: p.histogram.clone(),
+                        histogram: p.histogram.as_deref().cloned(),
                         timestamp: t,
                         drop_name,
                         ..Default::default()
