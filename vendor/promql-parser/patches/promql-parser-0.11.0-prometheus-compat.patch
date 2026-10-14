@@ -1,0 +1,1480 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -89,3 +89,6 @@
+ 
+ [build-dependencies.lrpar]
+ version = "0.14.2"
++
++[dependencies.regex-syntax]
++version = "0.8"
+--- a/README.md
++++ b/README.md
+@@ -89,3 +89,5 @@
+ 
+ [prom-v3.8]: https://github.com/prometheus/prometheus/tree/v3.8.0/promql/parser
+ [querying-prometheus]: https://prometheus.io/docs/prometheus/latest/querying/basics/
++
++Local compatibility changes also retain duration-expression metadata and unary plus, preserve raw backtick escapes, format negative @ timestamps and Go string escapes, reject numeric/@ overflow, and use checked 64-bit duration arithmetic. The root adapter supplies contextual duration evaluation and Prometheus API AST translation.
+--- a/src/label/matcher.rs
++++ b/src/label/matcher.rs
+@@ -116,10 +116,8 @@
+     ///
+     /// Regex used in PromQL are fully anchored.
+     fn try_parse_re(original_re: &str) -> Result<Regex, String> {
+-        let re = format!("^(?:{})$", original_re);
+-        Regex::new(&re)
+-            .or_else(|_| Regex::new(&try_escape_for_repeat_re(&re)))
+-            .map_err(|_| format!("illegal regex for {original_re}",))
++        super::compile_regex(original_re)
++            .map_err(|_| format!("illegal regex for {original_re}"))
+     }
+ 
+     pub fn new_matcher(id: TokenId, name: String, value: String) -> Result<Matcher, String> {
+@@ -162,6 +160,7 @@
+ // in Go the following is valid: `aaa{bbb}ccc`
+ // in Rust {bbb} is seen as an invalid repeat and must be ecaped \{bbb}
+ // This escapes the opening { if its not followed by valid repeat pattern (e.g. 4,6).
++#[cfg(test)]
+ fn try_escape_for_repeat_re(re: &str) -> String {
+     fn is_repeat(chars: &mut std::str::Chars<'_>) -> (bool, String) {
+         let mut buf = String::new();
+--- a/src/label/mod.rs
++++ b/src/label/mod.rs
+@@ -21,6 +21,8 @@
+ use crate::util::escape_string;
+ 
+ mod matcher;
++mod regex;
++pub use regex::{compile_regex, expand_regex};
+ pub use matcher::{MatchOp, Matcher, Matchers};
+ 
+ /// "__name__"
+--- /dev/null
++++ b/src/label/regex.rs
+@@ -0,0 +1,259 @@
++//! Translate RE2's syntax differences before using Rust's linear-time regex engine.
++use regex::{Regex, RegexBuilder};
++
++pub fn compile_regex(pattern: &str) -> Result<Regex, String> {
++    let translated = translate(pattern)?;
++    let ast = regex_syntax::ast::parse::ParserBuilder::new()
++        .octal(true)
++        .build()
++        .parse(&translated)
++        .map_err(|e| e.to_string())?;
++    if !valid_repeats(&ast, 1000) {
++        return Err("invalid repeat count".into());
++    }
++    RegexBuilder::new(&format!("^(?:{translated})$"))
++        .dot_matches_new_line(true)
++        .octal(true)
++        .build()
++        .map_err(|e| e.to_string())
++}
++fn translate(pattern: &str) -> Result<String, String> {
++    let chars = pattern.chars().collect::<Vec<_>>();
++    let mut out = String::new();
++    let mut i = 0;
++    let mut class = false;
++    let mut class_first = false;
++    let mut named = 0usize;
++    while i < chars.len() {
++        let c = chars[i];
++        let first = class_first;
++        if class && c != '^' {
++            class_first = false;
++        }
++        if c == '\\' {
++            i += 1;
++            let Some(&escaped) = chars.get(i) else {
++                return Err("trailing backslash".into());
++            };
++            match escaped {
++                'd' => out.push_str("[0-9]"),
++                'D' => out.push_str("[^0-9]"),
++                'w' => out.push_str("[A-Za-z0-9_]"),
++                'W' => out.push_str("[^A-Za-z0-9_]"),
++                's' => out.push_str(r"[\t\n\f\r ]"),
++                'S' => out.push_str(r"[^\t\n\f\r ]"),
++                'b' | 'B' if !class => out.push_str(&format!("(?-u:\\{escaped})")),
++                'Q' => {
++                    i += 1;
++                    let mut literal = String::new();
++                    while i < chars.len() && !(chars[i] == '\\' && chars.get(i + 1) == Some(&'E')) {
++                        literal.push(chars[i]);
++                        i += 1;
++                    }
++                    out.push_str(&regex::escape(&literal));
++                    if i < chars.len() {
++                        i += 1;
++                    } else {
++                        break;
++                    }
++                }
++                'u' | 'U' => return Err("invalid RE2 escape".into()),
++                'p' | 'P' => {
++                    let start = i;
++                    i += 1;
++                    let property = if chars.get(i) == Some(&'{') {
++                        i += 1;
++                        let begin = i;
++                        while i < chars.len() && chars[i] != '}' {
++                            i += 1;
++                        }
++                        if i == chars.len() {
++                            return Err("unclosed Unicode class".into());
++                        }
++                        chars[begin..i].iter().collect::<String>()
++                    } else {
++                        let Some(&c) = chars.get(i) else {
++                            return Err("missing Unicode class".into());
++                        };
++                        c.to_string()
++                    };
++                    if !include_str!("unicode-properties.txt")
++                        .lines()
++                        .any(|p| p == property.trim_start_matches('^'))
++                    {
++                        return Err("invalid RE2 Unicode class".into());
++                    }
++                    out.push('\\');
++                    out.extend(chars[start..=i].iter());
++                }
++                '1'..='7' if !chars.get(i + 1).is_some_and(|c| ('0'..='7').contains(c)) => {
++                    return Err("invalid backreference".into());
++                }
++                _ => {
++                    out.push('\\');
++                    out.push(escaped);
++                }
++            }
++        } else if c == '[' {
++            if class && chars.get(i + 1) != Some(&':') {
++                out.push_str(r"\[");
++            } else {
++                if !class {
++                    class_first = true;
++                }
++                class = true;
++                out.push(c);
++            }
++        } else if c == ']' {
++            out.push(c);
++            // The inner closing bracket in POSIX classes does not close the outer class.
++            if !first && (i == 0 || chars[i - 1] != ':') {
++                class = false;
++            }
++        } else if class && c == '-' && chars.get(i + 1) == Some(&'-') {
++            if i > 0 && matches!(chars[i - 1], '[' | '^') {
++                out.push_str(r"\-");
++            } else {
++                out.push_str(r"-\-");
++                i += 1;
++            }
++        } else if class && matches!(c, '&' | '~') {
++            out.push('\\');
++            out.push(c);
++        } else if !class && c == '(' && chars.get(i + 1) == Some(&'?') {
++            let mut j = i + 2;
++            if chars.get(j) == Some(&'P') && chars.get(j + 1) == Some(&'<') {
++                j += 1;
++            }
++            if chars.get(j) == Some(&'<') {
++                j += 1;
++                let begin = j;
++                while j < chars.len() && chars[j] != '>' {
++                    j += 1;
++                }
++                if j == chars.len() {
++                    return Err("invalid capture name".into());
++                }
++                let name = chars[begin..j].iter().collect::<String>();
++                if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
++                {
++                    return Err("invalid capture name".into());
++                }
++                let hex = name.bytes().map(|b| format!("{b:02x}")).collect::<String>();
++                out.push_str(&format!("(?P<__promql_{hex}_{named}>"));
++                named += 1;
++                i = j;
++            } else {
++                while j < chars.len() && !matches!(chars[j], ':' | ')') {
++                    if !matches!(chars[j], 'i' | 'm' | 's' | 'U' | '-') {
++                        return Err("invalid RE2 flags".into());
++                    }
++                    j += 1;
++                }
++                out.push(c);
++            }
++        } else if !class && c == '{' {
++            let mut j = i + 1;
++            while j < chars.len() && chars[j].is_ascii_digit() {
++                j += 1;
++            }
++            let first = chars[i + 1..j].iter().collect::<String>();
++            let mut counts = vec![first.clone()];
++            if chars.get(j) == Some(&',') {
++                j += 1;
++                let start = j;
++                while j < chars.len() && chars[j].is_ascii_digit() {
++                    j += 1;
++                }
++                counts.push(chars[start..j].iter().collect());
++            }
++            if !first.is_empty()
++                && chars.get(j) == Some(&'}')
++                && !counts.iter().any(|v| v.len() > 1 && v.starts_with('0'))
++            {
++                if counts
++                    .iter()
++                    .filter(|v| !v.is_empty())
++                    .any(|v| v.parse::<u64>().map_or(true, |n| n > 1000))
++                {
++                    return Err("invalid repeat count".into());
++                }
++                out.push(c);
++            } else {
++                out.push_str(r"\{");
++            }
++        } else {
++            out.push(c);
++        }
++        i += 1;
++    }
++    Ok(out)
++}
++
++fn valid_repeats(ast: &regex_syntax::ast::Ast, n: u32) -> bool {
++    use regex_syntax::ast::{Ast, RepetitionKind, RepetitionRange};
++    match ast {
++        Ast::Repetition(r) => {
++            let m = match &r.op.kind {
++                RepetitionKind::Range(range) => match range {
++                    RepetitionRange::Exactly(n)
++                    | RepetitionRange::AtLeast(n)
++                    | RepetitionRange::Bounded(_, n) => *n,
++                },
++                _ => 1,
++            };
++            m == 0 || (m <= n && valid_repeats(&r.ast, n / m))
++        }
++        Ast::Group(g) => valid_repeats(&g.ast, n),
++        Ast::Alternation(a) => a.asts.iter().all(|a| valid_repeats(a, n)),
++        Ast::Concat(a) => a.asts.iter().all(|a| valid_repeats(a, n)),
++        _ => true,
++    }
++}
++/// Go replacement expansion, including duplicate named groups and literal dollars.
++pub fn expand_regex(regex: &Regex, input: &str, template: &str) -> Option<String> {
++    let captures = regex.captures(input)?;
++    let name_char = Regex::new(r"^[\pL\p{Nd}_]$").unwrap();
++    let mut out = String::new();
++    let mut rest = template;
++    while let Some(dollar) = rest.find('$') {
++        out.push_str(&rest[..dollar]);
++        rest = &rest[dollar + 1..];
++        if let Some(next) = rest.strip_prefix('$') {
++            out.push('$');
++            rest = next;
++            continue;
++        }
++        let brace = rest.starts_with('{');
++        let text = if brace { &rest[1..] } else { rest };
++        let len = text
++            .char_indices()
++            .take_while(|(_, c)| name_char.is_match(&c.to_string()))
++            .map(|(i, c)| i + c.len_utf8())
++            .last()
++            .unwrap_or(0);
++        if len == 0 || (brace && !text[len..].starts_with('}')) {
++            out.push('$');
++            continue;
++        }
++        let name = &text[..len];
++        rest = &text[len + usize::from(brace)..];
++        let value = if name.bytes().all(|b| b.is_ascii_digit())
++            && (name.len() == 1 || !name.starts_with('0'))
++        {
++            name.parse::<usize>().ok().and_then(|i| captures.get(i))
++        } else {
++            let hex = name.bytes().map(|b| format!("{b:02x}")).collect::<String>();
++            let prefix = format!("__promql_{hex}_");
++            regex.capture_names().enumerate().find_map(|(i, n)| {
++                n.filter(|n| n.starts_with(&prefix))
++                    .and_then(|_| captures.get(i))
++            })
++        };
++        if let Some(value) = value {
++            out.push_str(value.as_str());
++        }
++    }
++    out.push_str(rest);
++    Some(out)
++}
+--- /dev/null
++++ b/src/label/unicode-properties.txt
+@@ -0,0 +1,202 @@
++Adlam
++Ahom
++Anatolian_Hieroglyphs
++Any
++Arabic
++Armenian
++Avestan
++Balinese
++Bamum
++Bassa_Vah
++Batak
++Bengali
++Bhaiksuki
++Bopomofo
++Brahmi
++Braille
++Buginese
++Buhid
++C
++Canadian_Aboriginal
++Carian
++Caucasian_Albanian
++Cc
++Cf
++Chakma
++Cham
++Cherokee
++Chorasmian
++Cn
++Co
++Common
++Coptic
++Cs
++Cuneiform
++Cypriot
++Cypro_Minoan
++Cyrillic
++Deseret
++Devanagari
++Dives_Akuru
++Dogra
++Duployan
++Egyptian_Hieroglyphs
++Elbasan
++Elymaic
++Ethiopic
++Georgian
++Glagolitic
++Gothic
++Grantha
++Greek
++Gujarati
++Gunjala_Gondi
++Gurmukhi
++Han
++Hangul
++Hanifi_Rohingya
++Hanunoo
++Hatran
++Hebrew
++Hiragana
++Imperial_Aramaic
++Inherited
++Inscriptional_Pahlavi
++Inscriptional_Parthian
++Javanese
++Kaithi
++Kannada
++Katakana
++Kawi
++Kayah_Li
++Kharoshthi
++Khitan_Small_Script
++Khmer
++Khojki
++Khudawadi
++L
++LC
++Lao
++Latin
++Lepcha
++Limbu
++Linear_A
++Linear_B
++Lisu
++Ll
++Lm
++Lo
++Lt
++Lu
++Lycian
++Lydian
++M
++Mahajani
++Makasar
++Malayalam
++Mandaic
++Manichaean
++Marchen
++Masaram_Gondi
++Mc
++Me
++Medefaidrin
++Meetei_Mayek
++Mende_Kikakui
++Meroitic_Cursive
++Meroitic_Hieroglyphs
++Miao
++Mn
++Modi
++Mongolian
++Mro
++Multani
++Myanmar
++N
++Nabataean
++Nag_Mundari
++Nandinagari
++Nd
++New_Tai_Lue
++Newa
++Nko
++Nl
++No
++Nushu
++Nyiakeng_Puachue_Hmong
++Ogham
++Ol_Chiki
++Old_Hungarian
++Old_Italic
++Old_North_Arabian
++Old_Permic
++Old_Persian
++Old_Sogdian
++Old_South_Arabian
++Old_Turkic
++Old_Uyghur
++Oriya
++Osage
++Osmanya
++P
++Pahawh_Hmong
++Palmyrene
++Pau_Cin_Hau
++Pc
++Pd
++Pe
++Pf
++Phags_Pa
++Phoenician
++Pi
++Po
++Ps
++Psalter_Pahlavi
++Rejang
++Runic
++S
++Samaritan
++Saurashtra
++Sc
++Sharada
++Shavian
++Siddham
++SignWriting
++Sinhala
++Sk
++Sm
++So
++Sogdian
++Sora_Sompeng
++Soyombo
++Sundanese
++Syloti_Nagri
++Syriac
++Tagalog
++Tagbanwa
++Tai_Le
++Tai_Tham
++Tai_Viet
++Takri
++Tamil
++Tangsa
++Tangut
++Telugu
++Thaana
++Thai
++Tibetan
++Tifinagh
++Tirhuta
++Toto
++Ugaritic
++Vai
++Vithkuqi
++Wancho
++Warang_Citi
++Yezidi
++Yi
++Z
++Zanabazar_Square
++Zl
++Zp
++Zs
+--- a/src/parser/ast.rs
++++ b/src/parser/ast.rs
+@@ -364,10 +364,7 @@
+             map.serialize_entry("startOrEnd", &None::<&str>)?;
+             map.serialize_entry(
+                 "timestamp",
+-                &time
+-                    .duration_since(SystemTime::UNIX_EPOCH)
+-                    .unwrap_or(Duration::ZERO)
+-                    .as_millis(),
++                &match time.duration_since(SystemTime::UNIX_EPOCH) {Ok(d)=>d.as_millis() as i128,Err(e)=>-(e.duration().as_millis() as i128)},
+             )?;
+         }
+         None => {
+@@ -430,10 +427,8 @@
+             AtModifier::Start => write!(f, "@ {}()", token_display(T_START)),
+             AtModifier::End => write!(f, "@ {}()", token_display(T_END)),
+             AtModifier::At(time) => {
+-                let d = time
+-                    .duration_since(SystemTime::UNIX_EPOCH)
+-                    .unwrap_or(Duration::ZERO); // This should not happen
+-                write!(f, "@ {:.3}", d.as_secs_f64())
++                let seconds=match time.duration_since(SystemTime::UNIX_EPOCH){Ok(d)=>d.as_secs_f64(),Err(e)=>-e.duration().as_secs_f64()};
++                write!(f, "@ {seconds:.3}")
+             }
+         }
+     }
+@@ -487,7 +482,7 @@
+     fn try_from(secs: f64) -> Result<Self, Self::Error> {
+         let err_info = format!("timestamp out of bounds for @ modifier: {secs}");
+ 
+-        if secs.is_nan() || secs.is_infinite() || secs >= f64::MAX || secs <= f64::MIN {
++        if secs.is_nan() || secs.is_infinite() || secs * 1000.0 >= i64::MAX as f64 || secs * 1000.0 <= i64::MIN as f64 {
+             return Err(err_info);
+         }
+         let milli = (secs * 1000f64).round().abs() as u64;
+@@ -603,20 +598,22 @@
+ /// UnaryExpr will negate the expr
+ #[derive(Debug, Clone, PartialEq)]
+ pub struct UnaryExpr {
++    pub positive: bool,
+     pub expr: Box<Expr>,
+ }
+ 
+ impl fmt::Display for UnaryExpr {
+     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+-        write!(f, "-{}", self.expr)
++        write!(f, "{}{}", if self.positive {"+"}else{"-"}, self.expr)
+     }
+ }
+ 
+ impl Prettier for UnaryExpr {
+     fn pretty(&self, level: usize, max: usize) -> String {
+         format!(
+-            "{}-{}",
++            "{}{}{}",
+             indent(level),
++            if self.positive { "+" } else { "-" },
+             self.expr.pretty(level, max).trim_start()
+         )
+     }
+@@ -630,7 +627,7 @@
+     {
+         use serde::ser::SerializeMap;
+         let mut map = serializer.serialize_map(Some(2))?;
+-        map.serialize_entry("op", "-")?;
++        map.serialize_entry("op", if self.positive {"+"}else{"-"})?;
+         map.serialize_entry("expr", &self.expr)?;
+ 
+         map.end()
+@@ -745,6 +742,12 @@
+ #[derive(Debug, Clone, PartialEq)]
+ #[cfg_attr(feature = "ser", derive(serde::Serialize))]
+ pub struct SubqueryExpr {
++    #[cfg_attr(feature = "ser", serde(rename = "rangeExpr", skip_serializing_if = "Option::is_none"))]
++    pub range_expr: Option<Box<Expr>>,
++    #[cfg_attr(feature = "ser", serde(rename = "stepExpr", skip_serializing_if = "Option::is_none"))]
++    pub step_expr: Option<Box<Expr>>,
++    #[cfg_attr(feature = "ser", serde(rename = "offsetExpr", skip_serializing_if = "Option::is_none"))]
++    pub offset_expr: Option<Box<Expr>>,
+     pub expr: Box<Expr>,
+     #[cfg_attr(feature = "ser", serde(serialize_with = "Offset::serialize_offset"))]
+     pub offset: Option<Offset>,
+@@ -766,11 +769,11 @@
+ 
+ impl SubqueryExpr {
+     fn get_time_suffix_string(&self) -> String {
+-        let step = match &self.step {
++        let step = if let Some(expr)=&self.step_expr {expr.to_string()}else{match &self.step {
+             Some(step) => display_duration(step),
+             None => String::from(""),
+-        };
+-        let range = display_duration(&self.range);
++        }};
++        let range = self.range_expr.as_ref().map_or_else(||display_duration(&self.range),ToString::to_string);
+ 
+         let mut s = format!("[{range}:{step}]");
+ 
+@@ -778,7 +781,7 @@
+             write!(s, " {at}").unwrap();
+         }
+ 
+-        if let Some(offset) = &self.offset {
++        if let Some(expr)=&self.offset_expr {write!(s," offset {expr}").unwrap();} else if let Some(offset) = &self.offset {
+             write!(s, " offset {offset}").unwrap();
+         }
+         s
+@@ -804,11 +807,12 @@
+ #[derive(Debug, Clone)]
+ pub struct NumberLiteral {
+     pub val: f64,
++    pub duration: bool,
+ }
+ 
+ impl NumberLiteral {
+     pub fn new(val: f64) -> Self {
+-        Self { val }
++        Self { val, duration: false }
+     }
+ }
+ 
+@@ -824,14 +828,18 @@
+     type Output = Self;
+ 
+     fn neg(self) -> Self::Output {
+-        NumberLiteral { val: -self.val }
++        NumberLiteral { val: -self.val, duration: self.duration }
+     }
+ }
+ 
+ impl fmt::Display for NumberLiteral {
+     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
++        if self.duration {
++            if self.val<0.0 {write!(f,"-")?;}
++            return write!(f,"{}", display_duration(&Duration::from_secs_f64(self.val.abs())));
++        }
+         if self.val == f64::INFINITY {
+-            write!(f, "Inf")
++            write!(f, "+Inf")
+         } else if self.val == f64::NEG_INFINITY {
+             write!(f, "-Inf")
+         } else if f64::is_nan(self.val) {
+@@ -850,7 +858,8 @@
+     {
+         use serde::ser::SerializeMap;
+         let mut map = serializer.serialize_map(Some(1))?;
+-        map.serialize_entry("val", &self.to_string())?;
++        map.serialize_entry("val", &NumberLiteral::new(self.val).to_string())?;
++        if self.duration {map.serialize_entry("duration", &true)?;}
+ 
+         map.end()
+     }
+@@ -866,11 +875,47 @@
+ #[cfg_attr(feature = "ser", derive(serde::Serialize))]
+ pub struct StringLiteral {
+     pub val: String,
+-}
+-
++    #[cfg_attr(feature = "ser", serde(skip))]
++    pub raw: Vec<u8>,
++}
++
++impl StringLiteral {
++    pub fn from_quoted(s: &str) -> Result<Self, String> {
++        let raw = crate::util::unquote_bytes(s)?;
++        Ok(Self {
++            val: String::from_utf8_lossy(&raw).into_owned(),
++            raw,
++        })
++    }
++    pub fn quoted(&self) -> String {
++        let mut output = String::from("\"");
++        let mut bytes = self.raw.as_slice();
++        while !bytes.is_empty() {
++            match std::str::from_utf8(bytes) {
++                Ok(text) => {
++                    output.push_str(&escape_string(text));
++                    break;
++                }
++                Err(error) => {
++                    let valid = error.valid_up_to();
++                    output.push_str(&escape_string(
++                        std::str::from_utf8(&bytes[..valid]).unwrap(),
++                    ));
++                    let len = error.error_len().unwrap_or(bytes.len() - valid);
++                    for b in &bytes[valid..valid + len] {
++                        output.push_str(&format!("\\x{b:02x}"));
++                    }
++                    bytes = &bytes[valid + len..];
++                }
++            }
++        }
++        output.push('"');
++        output
++    }
++}
+ impl fmt::Display for StringLiteral {
+     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+-        write!(f, "\"{}\"", escape_string(&self.val))
++        write!(f, "{}", self.quoted())
+     }
+ }
+ 
+@@ -883,6 +928,12 @@
+ #[derive(Debug, Clone, PartialEq)]
+ #[cfg_attr(feature = "ser", derive(serde::Serialize))]
+ pub struct VectorSelector {
++    #[cfg_attr(feature = "ser", serde(rename = "offsetExpr", skip_serializing_if = "Option::is_none"))]
++    pub offset_expr: Option<Box<Expr>>,
++    #[cfg_attr(feature = "ser", serde(skip_serializing_if = "is_false"))]
++    pub anchored: bool,
++    #[cfg_attr(feature = "ser", serde(skip_serializing_if = "is_false"))]
++    pub smoothed: bool,
+     pub name: Option<String>,
+     #[cfg_attr(feature = "ser", serde(flatten))]
+     pub matchers: Matchers,
+@@ -896,6 +947,9 @@
+ impl VectorSelector {
+     pub fn new(name: Option<String>, matchers: Matchers) -> Self {
+         VectorSelector {
++            offset_expr: None,
++            anchored: false,
++            smoothed: false,
+             name,
+             matchers,
+             offset: None,
+@@ -907,6 +961,9 @@
+ impl Default for VectorSelector {
+     fn default() -> Self {
+         Self {
++            offset_expr: None,
++            anchored: false,
++            smoothed: false,
+             name: None,
+             matchers: Matchers::empty(),
+             offset: None,
+@@ -918,6 +975,9 @@
+ impl From<String> for VectorSelector {
+     fn from(name: String) -> Self {
+         VectorSelector {
++            offset_expr: None,
++            anchored: false,
++            smoothed: false,
+             name: Some(name),
+             offset: None,
+             at: None,
+@@ -941,6 +1001,7 @@
+ ///     offset: None,
+ ///     at: None,
+ ///     matchers: Matchers::empty(),
++///     ..Default::default()
+ /// };
+ ///
+ /// assert_eq!(VectorSelector::from("foo"), vs);
+@@ -956,7 +1017,7 @@
+ 
+     fn neg(self) -> Self::Output {
+         let ex = Expr::VectorSelector(self);
+-        UnaryExpr { expr: Box::new(ex) }
++        UnaryExpr { positive: false, expr: Box::new(ex) }
+     }
+ }
+ 
+@@ -972,8 +1033,14 @@
+         if let Some(at) = &self.at {
+             write!(f, " {at}")?;
+         }
+-        if let Some(offset) = &self.offset {
++        if let Some(expr)=&self.offset_expr {write!(f," offset {expr}")?;} else if let Some(offset) = &self.offset {
+             write!(f, " offset {offset}")?;
++        }
++        if self.anchored {
++            write!(f, " anchored")?;
++        }
++        if self.smoothed {
++            write!(f, " smoothed")?;
+         }
+         Ok(())
+     }
+@@ -988,6 +1055,12 @@
+ #[derive(Debug, Clone, PartialEq)]
+ #[cfg_attr(feature = "ser", derive(serde::Serialize))]
+ pub struct MatrixSelector {
++    #[cfg_attr(feature = "ser", serde(rename = "rangeExpr", skip_serializing_if = "Option::is_none"))]
++    pub range_expr: Option<Box<Expr>>,
++    #[cfg_attr(feature = "ser", serde(skip_serializing_if = "is_false"))]
++    pub anchored: bool,
++    #[cfg_attr(feature = "ser", serde(skip_serializing_if = "is_false"))]
++    pub smoothed: bool,
+     #[cfg_attr(feature = "ser", serde(flatten))]
+     pub vs: VectorSelector,
+     #[cfg_attr(
+@@ -1008,13 +1081,19 @@
+             write!(f, "{{{matchers}}}")?;
+         }
+ 
+-        write!(f, "[{}]", display_duration(&self.range))?;
++        write!(f, "[{}]", self.range_expr.as_ref().map_or_else(||display_duration(&self.range),ToString::to_string))?;
++        if self.anchored {
++            write!(f, " anchored")?;
++        }
++        if self.smoothed {
++            write!(f, " smoothed")?;
++        }
+ 
+         if let Some(at) = &self.vs.at {
+             write!(f, " {at}")?;
+         }
+ 
+-        if let Some(offset) = &self.vs.offset {
++        if let Some(expr)=&self.vs.offset_expr {write!(f," offset {expr}")?;} else if let Some(offset) = &self.vs.offset {
+             write!(f, " offset {offset}")?;
+         }
+ 
+@@ -1175,6 +1254,13 @@
+         Ok(Self::VectorSelector(vs))
+     }
+ 
++    pub(crate) fn new_positive_expr(expr:Expr)->Result<Self,String> {
++        match expr.value_type() {
++            ValueType::Scalar|ValueType::Vector=>{},
++            _=>return Err("unary expression only allowed on expressions of type scalar or vector".into()),
++        }
++        if matches!(expr,Expr::NumberLiteral(_)){Ok(expr)}else{Ok(Expr::Unary(UnaryExpr{positive:true,expr:Box::new(expr)}))}
++    }
+     pub(crate) fn new_unary_expr(expr: Expr) -> Result<Self, String> {
+         match expr {
+             Expr::StringLiteral(_) => Err("unary expression only allowed on expressions of type scalar or vector, got: string".into()),
+@@ -1189,6 +1275,7 @@
+         step: Option<Duration>,
+     ) -> Result<Self, String> {
+         let se = Expr::Subquery(SubqueryExpr {
++            range_expr: None, step_expr: None, offset_expr: None,
+             expr: Box::new(expr),
+             offset: None,
+             at: None,
+@@ -1215,10 +1302,38 @@
+                 Err("no @ modifiers allowed before range".into())
+             }
+             Expr::VectorSelector(vs) => {
+-                let ms = Expr::MatrixSelector(MatrixSelector { vs, range });
++                let ms = Expr::MatrixSelector(MatrixSelector {
++                    range_expr: None,
++                    vs,
++                    range,
++                    anchored: false,
++                    smoothed: false,
++                });
+                 Ok(ms)
+             }
+             _ => Err("ranges only allowed for vector selectors".into()),
++        }
++    }
++
++    pub(crate) fn extended_range(self, smoothed: bool) -> Result<Self, String> {
++        match self {
++            Self::VectorSelector(mut v) => {
++                if v.anchored || v.smoothed {
++                    return Err("extended modifier may not be set multiple times".into());
++                }
++                v.smoothed = smoothed;
++                v.anchored = !smoothed;
++                Ok(Self::VectorSelector(v))
++            }
++            Self::MatrixSelector(mut m) => {
++                if m.anchored || m.smoothed {
++                    return Err("extended range modifier may not be set multiple times".into());
++                }
++                m.smoothed = smoothed;
++                m.anchored = !smoothed;
++                Ok(Self::MatrixSelector(m))
++            }
++            _ => Err("extended range modifiers only allowed on range selectors".into()),
+         }
+     }
+ 
+@@ -1380,19 +1495,25 @@
+ 
+ impl From<String> for Expr {
+     fn from(val: String) -> Self {
+-        Expr::StringLiteral(StringLiteral { val })
++        Expr::StringLiteral(StringLiteral {
++            raw: val.as_bytes().to_vec(),
++            val,
++        })
+     }
+ }
+ 
+ impl From<&str> for Expr {
+     fn from(s: &str) -> Self {
+-        Expr::StringLiteral(StringLiteral { val: s.into() })
++        Expr::StringLiteral(StringLiteral {
++            raw: s.as_bytes().to_vec(),
++            val: s.into(),
++        })
+     }
+ }
+ 
+ impl From<f64> for Expr {
+     fn from(val: f64) -> Self {
+-        Expr::NumberLiteral(NumberLiteral { val })
++        Expr::NumberLiteral(NumberLiteral { val, duration: false })
+     }
+ }
+ 
+@@ -1424,7 +1545,7 @@
+         match self {
+             Expr::NumberLiteral(nl) => Expr::NumberLiteral(-nl),
+             _ => Expr::Unary(UnaryExpr {
+-                expr: Box::new(self),
++                positive: false,                expr: Box::new(self),
+             }),
+         }
+     }
+@@ -1721,11 +1842,6 @@
+             )),
+             None => Ok(Expr::VectorSelector(ex)),
+         },
+-        None if ex.matchers.is_empty_matchers() => {
+-            // When name is None, a vector selector must contain at least one non-empty matcher
+-            // to prevent implicit selection of all metrics (e.g. by a typo).
+-            Err("vector selector must contain at least one non-empty matcher".into())
+-        }
+         _ => Ok(Expr::VectorSelector(ex)),
+     }
+ }
+@@ -1838,7 +1954,7 @@
+         assert_eq!(
+             -VectorSelector::from("foo"),
+             UnaryExpr {
+-                expr: Box::new(Expr::from(VectorSelector::from("foo")))
++                positive: false,                expr: Box::new(Expr::from(VectorSelector::from("foo")))
+             }
+         )
+     }
+@@ -1923,9 +2039,9 @@
+             ("1", "1"),
+             ("- 1", "-1"),
+             ("+ 1", "1"),
+-            ("Inf", "Inf"),
+-            ("inf", "Inf"),
+-            ("+Inf", "Inf"),
++            ("Inf", "+Inf"),
++            ("inf", "+Inf"),
++            ("+Inf", "+Inf"),
+             ("- Inf", "-Inf"),
+             (".5", "0.5"),
+             ("5.", "5"),
+@@ -2021,7 +2137,7 @@
+             ),
+             ("some_metric OFFSET 1m [10m:5s]", "some_metric offset 1m[10m:5s]"),
+             ("some_metric @123 [10m:5s]", "some_metric @ 123.000[10m:5s]"),
+-            ("some_metric <= 1ms", "some_metric <= 0.001"),
++            ("some_metric <= 1ms", "some_metric <= 1ms"),
+         ];
+ 
+         // the following cases are from https://github.com/prometheus/prometheus/blob/main/promql/parser/printer_test.go
+@@ -3012,3 +3128,8 @@
+         }
+     }
+ }
++
++#[cfg(feature = "ser")]
++fn is_false(value: &bool) -> bool {
++    !value
++}
+--- a/src/parser/function.rs
++++ b/src/parser/function.rs
+@@ -685,12 +685,14 @@
+         let arg1 = Expr::NumberLiteral(NumberLiteral::new(1.0));
+         let arg2 = Expr::StringLiteral(StringLiteral {
+             val: "prometheus".into(),
++            raw: b"prometheus".to_vec(),
+         });
+         let args1 = FunctionArgs::new_args(arg1).append_args(arg2);
+ 
+         let arg1 = Expr::NumberLiteral(NumberLiteral::new(0.5 + 0.5));
+         let arg2 = Expr::StringLiteral(StringLiteral {
+             val: String::from("prometheus"),
++            raw: b"prometheus".to_vec(),
+         });
+         let args2 = FunctionArgs::new_args(arg1).append_args(arg2);
+ 
+--- a/src/parser/lex.rs
++++ b/src/parser/lex.rs
+@@ -323,6 +323,10 @@
+                 None => State::Err("'!' can not be at the end".into()),
+             },
+             '<' => match self.peek() {
++                Some('/') => {
++                    self.pop();
++                    State::Lexeme(T_TRIM_UPPER)
++                }
+                 Some('=') => {
+                     self.pop();
+                     State::Lexeme(T_LTE)
+@@ -330,6 +334,10 @@
+                 _ => State::Lexeme(T_LSS),
+             },
+             '>' => match self.peek() {
++                Some('/') => {
++                    self.pop();
++                    State::Lexeme(T_TRIM_LOWER)
++                }
+                 Some('=') => {
+                     self.pop();
+                     State::Lexeme(T_GTE)
+@@ -556,7 +564,7 @@
+     /// scans a quoted string. The initial quote has already been consumed.
+     fn accept_string(&mut self, symbol: char) -> State {
+         while let Some(ch) = self.pop() {
+-            if ch == '\\' {
++            if ch == '\\' && symbol != '`' {
+                 return State::Escape(symbol);
+             }
+ 
+@@ -861,8 +869,8 @@
+             ),
+             (
+                 "`test\\.expression`",
+-                vec![],
+-                Some("unknown escape sequence '.'"),
++                vec![(T_STRING,0,18)],
++                None,
+             ),
+             (".٩", vec![], Some("unexpected character after '.': '٩'")),
+             // TODO: accept_escape SHOULD support invalid escape character
+--- a/src/parser/parse.rs
++++ b/src/parser/parse.rs
+@@ -13,17 +13,60 @@
+ // limitations under the License.
+ 
+ use crate::parser::{lex, Expr, INVALID_QUERY_INFO};
++use lrpar::Lexer;
+ 
+ /// Parse the given query literal to an AST (which is [`Expr`] in this crate).
+ pub fn parse(input: &str) -> Result<Expr, String> {
+     match lex::lexer(input) {
+         Err(e) => Err(e),
+         Ok(lexer) => {
++            if lexer.iter().take(2049).count() > 2048 {
++                return Err("query exceeds 2048 token limit".into());
++            }
+             // NOTE: the errs is ignored so far.
+             let (res, _errs) = crate::promql_y::parse(&lexer);
+-            res.ok_or_else(|| String::from(INVALID_QUERY_INFO))?
++            let expr = res.ok_or_else(|| String::from(INVALID_QUERY_INFO))??;
++            validate_selectors(&expr)?;
++            Ok(expr)
+         }
+     }
++}
++
++fn validate_selectors(expr: &Expr) -> Result<(), String> {
++    match expr {
++        Expr::VectorSelector(v) => {
++            if v.name.is_none() && v.matchers.is_empty_matchers() {
++                return Err("vector selector must contain at least one non-empty matcher".into());
++            }
++        }
++        Expr::MatrixSelector(m) => validate_selectors(&Expr::VectorSelector(m.vs.clone()))?,
++        Expr::Subquery(s) => validate_selectors(&s.expr)?,
++        Expr::Paren(p) => validate_selectors(&p.expr)?,
++        Expr::Unary(u) => validate_selectors(&u.expr)?,
++        Expr::Binary(b) => {
++            validate_selectors(&b.lhs)?;
++            validate_selectors(&b.rhs)?
++        }
++        Expr::Aggregate(a) => {
++            validate_selectors(&a.expr)?;
++            if let Some(p) = &a.param {
++                validate_selectors(p)?
++            }
++        }
++        Expr::Call(c) => {
++            for (i, a) in c.args.args.iter().enumerate() {
++                if c.func.name == "info" && i == 1 {
++                    match a.as_ref() {
++                        Expr::VectorSelector(v) if v.name.is_none()=>{},
++                        Expr::VectorSelector(_)=>return Err("expected label selectors only, got vector selector instead".into()),
++                        _=>return Err("expected label selectors only".into()),
++                    }
++                } else {validate_selectors(a)?}
++            }
++        }
++        _ => {}
++    }
++    Ok(())
+ }
+ 
+ /// cases in original prometheus is a huge slices which are constructed more than 3000 lines,
+@@ -93,6 +136,7 @@
+ 
+     #[test]
+     fn test_number_literal() {
++        assert!(crate::parser::parse(&"9".repeat(400)).unwrap_err().contains("value out of range"));
+         let cases = vec![
+             ("1", Expr::from(1.0)),
+             ("Inf", Expr::from(f64::INFINITY)),
+@@ -111,10 +155,7 @@
+ 
+             // for abnormal input
+             ("NaN", Expr::from(f64::NAN)),
+-            (
+-                "999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999",
+-                Expr::from(f64::INFINITY)
+-            ),
++
+         ];
+         assert_cases(Case::new_expr_cases(cases));
+     }
+@@ -141,11 +182,27 @@
+             // \a is not valid character in rust, use \u{7} instead
+             (
+                 r#""\a\b\f\n\r\t\v\\\" - \xFF\377\u1234\U00010111\U0001011111☺""#,
+-                Expr::from("\u{7}\u{8}\u{c}\n\r\t\u{b}\\\" - ÿÿሴ𐄑𐄑11☺"),
++                Expr::StringLiteral(crate::parser::StringLiteral {
++                    val: "\u{7}\u{8}\u{c}\n\r\t\u{b}\\\" - ��ሴ𐄑𐄑11☺".into(),
++                    raw: [
++                        "\u{7}\u{8}\u{c}\n\r\t\u{b}\\\" - ".as_bytes(),
++                        b"\xff\xff",
++                        "ሴ𐄑𐄑11☺".as_bytes(),
++                    ]
++                    .concat(),
++                }),
+             ),
+             (
+                 r"'\a\b\f\n\r\t\v\\\' - \xFF\377\u1234\U00010111\U0001011111☺'",
+-                Expr::from("\u{7}\u{8}\u{c}\n\r\t\u{b}\\' - ÿÿሴ𐄑𐄑11☺"),
++                Expr::StringLiteral(crate::parser::StringLiteral {
++                    val: "\u{7}\u{8}\u{c}\n\r\t\u{b}\\' - ��ሴ𐄑𐄑11☺".into(),
++                    raw: [
++                        "\u{7}\u{8}\u{c}\n\r\t\u{b}\\' - ".as_bytes(),
++                        b"\xff\xff",
++                        "ሴ𐄑𐄑11☺".as_bytes(),
++                    ]
++                    .concat(),
++                }),
+             ),
+             // no escape in ` quoted string
+             (
+@@ -763,11 +820,11 @@
+             ),
+             (
+                 "+some_metric",
+-                Expr::from(VectorSelector::from("some_metric")),
++                Expr::new_positive_expr(Expr::from(VectorSelector::from("some_metric"))).unwrap(),
+             ),
+             (
+                 " +some_metric",
+-                Expr::from(VectorSelector::from("some_metric")),
++                Expr::new_positive_expr(Expr::from(VectorSelector::from("some_metric"))).unwrap(),
+             ),
+         ];
+         assert_cases(Case::new_expr_cases(cases));
+@@ -2371,8 +2428,7 @@
+             // This is testing that we are not re-rendering the expression string for each error, which would timeout.
+             {
+                 let input = "(".to_string() + &"-{}-1".repeat(10_000) + ")" + &"[1m:]".repeat(1000);
+-                let expected =
+-                    Err("vector selector must contain at least one non-empty matcher".into());
++                let expected = Err("query exceeds 2048 token limit".into());
+                 Case { input, expected }
+             },
+         ];
+--- a/src/parser/promql.y
++++ b/src/parser/promql.y
+@@ -64,6 +64,8 @@
+ SUB
+ AT
+ ATAN2
++TRIM_UPPER
++TRIM_LOWER
+ %token OPERATORS_END
+ 
+ // Aggregators.
+@@ -121,7 +123,7 @@
+ %expect-unused 'KEYWORDS_START' 'KEYWORDS_END' 'PREPROCESSOR_START' 'PREPROCESSOR_END'
+ %expect-unused 'STEP' 'STARTSYMBOLS_START'
+ %expect-unused 'START_METRIC' 'START_SERIES_DESCRIPTION' 'START_EXPRESSION' 'START_METRIC_SELECTOR' 'STARTSYMBOLS_END'
+-%expect-unused 'SMOOTHED' 'ANCHORED'
++
+ 
+ %expect 5
+ 
+@@ -130,13 +132,13 @@
+ // Operators are listed with increasing precedence.
+ %left LOR
+ %left LAND LUNLESS
+-%left EQLC GTE GTR LSS LTE NEQ
++%left EQLC GTE GTR LSS LTE NEQ TRIM_UPPER TRIM_LOWER
+ %left ADD SUB
+ %left MUL DIV MOD ATAN2
+ %right POW
+ 
+ // Offset and At modifiers do not have associativity.
+-%nonassoc OFFSET AT GROUP_LEFT GROUP_RIGHT
++%nonassoc OFFSET AT GROUP_LEFT GROUP_RIGHT SMOOTHED ANCHORED
+ 
+ // This ensures that it is always attempted to parse range or subquery selectors when a left
+ // bracket is encountered.
+@@ -160,6 +162,8 @@
+         |       binary_expr { check_ast($1?) }
+         |       function_call { check_ast($1?) }
+         |       matrix_selector { check_ast($1?) }
++        |       expr SMOOTHED { $1?.extended_range(true) }
++        |       expr ANCHORED { $1?.extended_range(false) }
+         |       number_literal { check_ast($1?) }
+         |       offset_expr { check_ast($1?) }
+         |       paren_expr { check_ast($1?) }
+@@ -198,6 +202,8 @@
+ // Operator precedence only works if each of those is listed separately.
+ binary_expr -> Result<Expr, String>:
+                 expr ADD       bin_modifier expr { Expr::new_binary_expr($1?, lexeme_to_token($lexer, $2)?.id(), $3?, $4?) }
++        |       expr TRIM_UPPER bin_modifier expr { Expr::new_binary_expr($1?, lexeme_to_token($lexer, $2)?.id(), $3?, $4?) }
++        |       expr TRIM_LOWER bin_modifier expr { Expr::new_binary_expr($1?, lexeme_to_token($lexer, $2)?.id(), $3?, $4?) }
+         |       expr ATAN2   bin_modifier expr { Expr::new_binary_expr($1?, lexeme_to_token($lexer, $2)?.id(), $3?, $4?) }
+         |       expr DIV     bin_modifier expr { Expr::new_binary_expr($1?, lexeme_to_token($lexer, $2)?.id(), $3?, $4?) }
+         |       expr EQLC    bin_modifier expr { Expr::new_binary_expr($1?, lexeme_to_token($lexer, $2)?.id(), $3?, $4?) }
+@@ -448,7 +454,7 @@
+  * Unary expressions.
+  */
+ unary_expr -> Result<Expr, String>:
+-                ADD expr %prec MUL { $2 }
++                ADD expr %prec MUL { Expr::new_positive_expr($2?) }
+         |       SUB expr %prec MUL { Expr::new_unary_expr($2?) }
+ ;
+ 
+@@ -558,7 +564,9 @@
+  * Metric descriptions.
+  */
+ metric_identifier -> Result<Token, String>:
+-                AVG { lexeme_to_token($lexer, $1) }
++                ANCHORED { lexeme_to_token($lexer, $1) }
++        |       SMOOTHED { lexeme_to_token($lexer, $1) }
++        |       AVG { lexeme_to_token($lexer, $1) }
+         |       BOTTOMK { lexeme_to_token($lexer, $1) }
+         |       BY { lexeme_to_token($lexer, $1) }
+         |       COUNT { lexeme_to_token($lexer, $1) }
+@@ -615,7 +623,9 @@
+ // inside of grouping options label names can be recognized as keywords by the lexer.
+ // This is a list of keywords that could also be a label name.
+ maybe_label -> Result<Token, String>:
+-                AVG { lexeme_to_token($lexer, $1) }
++                ANCHORED { lexeme_to_token($lexer, $1) }
++        |       SMOOTHED { lexeme_to_token($lexer, $1) }
++        |       AVG { lexeme_to_token($lexer, $1) }
+         |       BOOL { lexeme_to_token($lexer, $1) }
+         |       BOTTOMK { lexeme_to_token($lexer, $1) }
+         |       BY { lexeme_to_token($lexer, $1) }
+@@ -668,12 +678,12 @@
+         |       DURATION
+                 {
+                         let duration = parse_duration($lexer.span_str($span))?;
+-                        Ok(Expr::from(duration.as_secs_f64()))
++                        Ok(Expr::NumberLiteral(crate::parser::ast::NumberLiteral {val:duration.as_secs_f64(),duration:true}))
+                 }
+ ;
+ 
+ string_literal -> Result<Expr, String>:
+-                STRING { Ok(Expr::from(unquote_string(&span_to_string($lexer, $span))?)) }
++                STRING { Ok(Expr::StringLiteral(crate::parser::ast::StringLiteral::from_quoted(&span_to_string($lexer, $span))?)) }
+ ;
+ 
+ string_identifier -> Result<String, String>:
+--- a/src/parser/token.rs
++++ b/src/parser/token.rs
+@@ -134,6 +134,8 @@
+         T_SUB => "-",
+         T_AT => "@",
+         T_ATAN2 => "atan2",
++        T_TRIM_UPPER => "</",
++        T_TRIM_LOWER => ">/",
+         T_OPERATORS_END => "operators_end",
+ 
+         // Aggregators.
+@@ -343,13 +345,15 @@
+         assert_eq!(token_display(T_PREPROCESSOR_END), "preprocessors_end");
+ 
+         // if new token added in promql.y, this has to be updated
+-        for i in 80..=85 {
+-            assert_eq!(token_display(i), "not used");
++        assert_eq!(token_display(T_TRIM_UPPER), "</");
++        assert_eq!(token_display(T_TRIM_LOWER), ">/");
++        for i in u16::MAX - 5..=u16::MAX {
++            assert_eq!(token_display(i), "unknown token");
+         }
+ 
+         // All tokens are now tested individually above
+ 
+-        for i in 86..=u16::MAX {
++        for i in T_STARTSYMBOLS_END + 1..=u16::MAX {
+             assert_eq!(token_display(i), "unknown token");
+         }
+     }
+--- a/src/util/duration.rs
++++ b/src/util/duration.rs
+@@ -77,7 +77,7 @@
+ 
+     // the duration is float number of seconds
+     if let Ok(float_duration) = ds.parse::<f64>() {
+-        return Ok(Duration::from_secs_f64(float_duration));
++        return Duration::try_from_secs_f64(float_duration).map_err(|_| "duration overflowed".into());
+     }
+ 
+     if !DURATION_RE.is_match(ds) {
+@@ -85,19 +85,12 @@
+     }
+ 
+     let caps = DURATION_RE.captures(ds).unwrap();
+-    let dur = ALL_CAPS
+-        .into_iter()
+-        // map captured string to Option<Duration> iterator
+-        // FIXME: None is ignored in closure. It is better to tell users which part is wrong.
+-        .map(|(title, duration)| {
+-            caps.name(title)
+-                .and_then(|cap| cap.as_str().parse::<u32>().ok())
+-                .and_then(|v| duration.checked_mul(v))
+-        })
+-        .try_fold(Duration::ZERO, |acc, x| {
+-            acc.checked_add(x.unwrap_or(Duration::ZERO))
+-                .ok_or_else(|| "duration overflowed".into())
+-        });
++    let dur = ALL_CAPS.into_iter().try_fold(Duration::ZERO, |acc, (title, unit)| {
++        let Some(cap)=caps.name(title) else {return Ok(acc)};
++        let value=cap.as_str().parse::<u64>().map_err(|_|"duration overflowed".to_owned())?;
++        let millis=(unit.as_millis() as u64).checked_mul(value).ok_or("duration overflowed")?;
++        acc.checked_add(Duration::from_millis(millis)).ok_or_else(||"duration overflowed".to_owned())
++    });
+ 
+     if matches!(dur, Ok(d) if d == Duration::ZERO) {
+         Err("duration must be greater than 0".into())
+@@ -108,7 +101,7 @@
+ 
+ /// display Duration in Prometheus format
+ pub fn display_duration(duration: &Duration) -> String {
+-    if duration.is_zero() {
++    if duration.as_millis() == 0 {
+         return "0s".into();
+     }
+     let mut ms = duration.as_millis();
+--- a/src/util/mod.rs
++++ b/src/util/mod.rs
+@@ -21,7 +21,7 @@
+ 
+ pub use duration::{display_duration, parse_duration};
+ pub use number::parse_str_radix;
+-pub use string::{escape_string, unquote_string};
++pub use string::{escape_string, unquote_bytes, unquote_string};
+ pub use visitor::{walk_expr, ExprVisitor};
+ 
+ pub(crate) fn join_vector<T: std::fmt::Display>(v: &[T], sep: &str, sort: bool) -> String {
+--- a/src/util/number.rs
++++ b/src/util/number.rs
+@@ -57,8 +57,9 @@
+             .map(|x| x as f64)
+             .map_err(|_| format!("ParseFloatError. {s} can't be parsed into i64"));
+     }
+-    st.parse()
+-        .map_err(|_| format!("ParseFloatError. {s} can't be parsed into f64"))
++    let value=st.parse::<f64>().map_err(|_| format!("ParseFloatError. {s} can't be parsed into f64"))?;
++    if value.is_infinite() && !matches!(st.as_str(), "inf"|"+inf"|"-inf") {return Err(format!("error parsing number: strconv.ParseFloat: parsing {s:?}: value out of range"));}
++    Ok(value)
+ }
+ 
+ #[cfg(test)]
+--- a/src/util/string.rs
++++ b/src/util/string.rs
+@@ -25,6 +25,11 @@
+             '\n' => result.push_str("\\n"),
+             '\r' => result.push_str("\\r"),
+             '\t' => result.push_str("\\t"),
++            '\x07' => result.push_str("\\a"),
++            '\x08' => result.push_str("\\b"),
++            '\x0c' => result.push_str("\\f"),
++            '\x0b' => result.push_str("\\v"),
++            c if c.is_control() => result.push_str(&format!("\\x{:02x}",c as u32)),
+             _ => result.push(c),
+         }
+     }
+@@ -34,6 +39,9 @@
+ /// This function is modified from original go version
+ /// https://github.com/prometheus/prometheus/blob/v3.8.0/util/strutil/quote.go
+ pub fn unquote_string(s: &str) -> Result<String, String> {
++    unquote_bytes(s).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
++}
++pub fn unquote_bytes(s: &str) -> Result<Vec<u8>, String> {
+     let n = s.len();
+     if n < 2 {
+         return Err("invalid syntax".to_string());
+@@ -51,7 +59,7 @@
+         if inner.contains('`') {
+             return Err("invalid syntax".to_string());
+         }
+-        return Ok(inner.to_string());
++        return Ok(inner.as_bytes().to_vec());
+     }
+ 
+     if quote != b'"' && quote != b'\'' {
+@@ -63,15 +71,26 @@
+     }
+ 
+     if !inner.contains('\\') && !inner.contains(quote as char) {
+-        return Ok(inner.to_string());
+-    }
+-
+-    let mut res = String::with_capacity(3 * inner.len() / 2);
++        return Ok(inner.as_bytes().to_vec());
++    }
++
++    let mut res = Vec::with_capacity(3 * inner.len() / 2);
+     let mut rest = inner;
+ 
+     while !rest.is_empty() {
+         let (c, tail) = unquote_char(rest, quote)?;
+-        res.push(c);
++        if rest.starts_with("\\x")
++            || (rest.starts_with('\\')
++                && rest
++                    .as_bytes()
++                    .get(1)
++                    .is_some_and(|v| (b'0'..=b'7').contains(v)))
++        {
++            res.push(c as u8);
++        } else {
++            let mut buf = [0u8; 4];
++            res.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
++        }
+         rest = tail;
+     }
+ 
+--- a/src/util/visitor.rs
++++ b/src/util/visitor.rs
+@@ -63,7 +63,7 @@
+ 
+     let recurse = match expr {
+         Expr::Aggregate(AggregateExpr { expr, .. }) => walk_expr(visitor, expr)?,
+-        Expr::Unary(UnaryExpr { expr }) => walk_expr(visitor, expr)?,
++        Expr::Unary(UnaryExpr { expr, .. }) => walk_expr(visitor, expr)?,
+         Expr::Binary(BinaryExpr { lhs, rhs, .. }) => {
+             walk_expr(visitor, lhs)? && walk_expr(visitor, rhs)?
+         }
+@@ -116,7 +116,7 @@
+ 
+     let recurse = match expr {
+         Expr::Aggregate(AggregateExpr { expr, .. }) => walk_expr_mut(visitor, expr)?,
+-        Expr::Unary(UnaryExpr { expr }) => walk_expr_mut(visitor, expr)?,
++        Expr::Unary(UnaryExpr { expr, .. }) => walk_expr_mut(visitor, expr)?,
+         Expr::Binary(BinaryExpr { lhs, rhs, .. }) => {
+             walk_expr_mut(visitor, lhs)? && walk_expr_mut(visitor, rhs)?
+         }
+--- a/tests/ser.rs
++++ b/tests/ser.rs
+@@ -654,7 +654,7 @@
+         "op":"<=",
+         "rhs":{
+             "type":"numberLiteral",
+-            "val":"1296000"
++            "val":"1296000", "duration":true
+         },
+         "type":"binaryExpr"
+     });

@@ -4,6 +4,8 @@
 __pycache__/
 .env
 
-/vendor/promql-parser/Cargo.lock
+/vendor/promql-parser/out/Cargo.lock
 
 /dist/
+/artifacts/
+/vendor/promql-parser/.promql-parser-*/

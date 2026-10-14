@@ -32,4 +32,4 @@ tar = "0.4.46"
 tower = { version = "0.5", features = ["util"] }
 
 [patch.crates-io]
-promql-parser = { path = "vendor/promql-parser" }
+promql-parser = { path = "vendor/promql-parser/out" }
