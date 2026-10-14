@@ -314,6 +314,10 @@ Add a **Prometheus** data source in Grafana: `http://<host>:9091`. Full local st
 - **Dev**: `docker compose up -d --wait && cargo test --locked && python3 scripts/conformance.py`
 - **Release**: push a `vX.Y.Z` tag → Linux amd64/arm64 binaries + GHCR image
 
+## Why is the name so awful?
+
+Your agent will use this, not you, and your agent doesn't care what it's called.
+
 ## Maintenance
 
 Built for internal use at [Rivet](https://rivet.dev). PRs welcome, but we'll likely only merge ones that affect our own workloads. Maintaining a serious fork? Open an issue and we'll list it here.
