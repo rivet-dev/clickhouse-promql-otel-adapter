@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/route"
 	"github.com/prometheus/prometheus/config"
+	"github.com/prometheus/prometheus/model/exemplar"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 	"github.com/prometheus/prometheus/promql/promqltest"
@@ -33,6 +34,11 @@ func TestAPIReference(t *testing.T) {
 	for _, instance := range []string{"a", "b"} {
 		for i := 0; i < 6; i++ {
 			_, err := app.Append(0, labels.FromStrings("__name__", "test_gauge", "job", "api", "instance", instance), 1700000000000+int64(i)*15000, float64(i+1))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = app.AppendExemplar(0, labels.FromStrings("__name__", "test_gauge", "job", "api", "instance", instance), exemplar.Exemplar{Labels: labels.FromStrings("sample", "yes", "trace_id", "0123456789abcdef0123456789abcdef"), Value: float64(i+1) / 10, Ts: 1700000000000 + int64(i)*15000 - 1000, HasTs: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -119,6 +125,17 @@ func TestAPIReference(t *testing.T) {
 	add("query", base, "PUT", "", "")
 	add("query", base, "POST", "", "")
 	add("query", base, "POST", "{}", "application/json")
+	for _, q := range []string{"test_gauge", `test_gauge{instance="a"}`, "rate(test_gauge[1m])", "test_gauge offset 1h", "missing", "1+2", "", "("} {
+		for _, method := range []string{"GET", "POST"} {
+			p := url.Values{"query": {q}, "start": {"1700000000"}, "end": {"1700000075"}}
+			body := ""
+			if method == "POST" {
+				body = p.Encode()
+				p = url.Values{}
+			}
+			add("query_exemplars", p, method, body, "application/x-www-form-urlencoded")
+		}
+	}
 	parserData, err := os.ReadFile("../../tests/conformance/parser.json")
 	if err != nil {
 		t.Fatal(err)

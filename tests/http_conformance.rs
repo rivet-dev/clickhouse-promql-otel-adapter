@@ -38,8 +38,8 @@ async fn pinned_prometheus_http_contract() {
             store.query(&format!("TRUNCATE TABLE {}.otel_metrics_{kind}",store.database),&[]).await.unwrap();
         }
         let mut rows=Vec::new();
-        for instance in ["a","b"] {for i in 0..6 {rows.push(json!({"MetricName":"test_gauge","TimeUnix":1700000000+i*15,"Value":i+1,"Attributes":{"job":"api","instance":instance}}).to_string());}}
-        store.query(&format!("INSERT INTO {}.otel_metrics_gauge (MetricName,TimeUnix,Value,Attributes) FORMAT JSONEachRow\n{}",store.database,rows.join("\n")),&[]).await.unwrap();
+        for instance in ["a","b"] {for i in 0..6 {rows.push(json!({"MetricName":"test_gauge","TimeUnix":1700000000+i*15,"Value":i+1,"Attributes":{"job":"api","instance":instance},"Exemplars.FilteredAttributes":[{"sample":"yes"}],"Exemplars.TimeUnix":[1699999999+i*15],"Exemplars.Value":[(i+1) as f64/10.0],"Exemplars.TraceId":["0123456789abcdef0123456789abcdef"],"Exemplars.SpanId":[""]}).to_string());}}
+        store.query(&format!("INSERT INTO {}.otel_metrics_gauge (MetricName,TimeUnix,Value,Attributes,`Exemplars.FilteredAttributes`,`Exemplars.TimeUnix`,`Exemplars.Value`,`Exemplars.TraceId`,`Exemplars.SpanId`) FORMAT JSONEachRow\n{}",store.database,rows.join("\n")),&[]).await.unwrap();
         let app=router(App::new(store));
         let cases:Vec<Value>=serde_json::from_str(include_str!("conformance/http.json")).unwrap();
         let mut failures=Vec::new();let total=cases.len();

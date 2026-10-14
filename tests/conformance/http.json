@@ -14,10 +14,10 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=1%2B2&time=1700000075"
+    "uri": "/api/v1/query?query=1%2B2\u0026time=1700000075"
   },
   {
-    "body": "query=1%2B2&time=1700000075",
+    "body": "query=1%2B2\u0026time=1700000075",
     "content_type": "application/x-www-form-urlencoded",
     "method": "POST",
     "response": {
@@ -68,10 +68,10 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1700000075"
   },
   {
-    "body": "query=test_gauge&time=1700000075",
+    "body": "query=test_gauge\u0026time=1700000075",
     "content_type": "application/x-www-form-urlencoded",
     "method": "POST",
     "response": {
@@ -131,10 +131,10 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge%7Binstance%3D%22a%22%7D&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge%7Binstance%3D%22a%22%7D\u0026time=1700000075"
   },
   {
-    "body": "query=test_gauge%7Binstance%3D%22a%22%7D&time=1700000075",
+    "body": "query=test_gauge%7Binstance%3D%22a%22%7D\u0026time=1700000075",
     "content_type": "application/x-www-form-urlencoded",
     "method": "POST",
     "response": {
@@ -179,10 +179,10 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=sum%28test_gauge%29&time=1700000075"
+    "uri": "/api/v1/query?query=sum%28test_gauge%29\u0026time=1700000075"
   },
   {
-    "body": "query=sum%28test_gauge%29&time=1700000075",
+    "body": "query=sum%28test_gauge%29\u0026time=1700000075",
     "content_type": "application/x-www-form-urlencoded",
     "method": "POST",
     "response": {
@@ -266,10 +266,10 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge%5B1m%5D&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge%5B1m%5D\u0026time=1700000075"
   },
   {
-    "body": "query=test_gauge%5B1m%5D&time=1700000075",
+    "body": "query=test_gauge%5B1m%5D\u0026time=1700000075",
     "content_type": "application/x-www-form-urlencoded",
     "method": "POST",
     "response": {
@@ -348,10 +348,10 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=%22hello%22&time=1700000075"
+    "uri": "/api/v1/query?query=%22hello%22\u0026time=1700000075"
   },
   {
-    "body": "query=%22hello%22&time=1700000075",
+    "body": "query=%22hello%22\u0026time=1700000075",
     "content_type": "application/x-www-form-urlencoded",
     "method": "POST",
     "response": {
@@ -382,10 +382,10 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=1%2F0&time=1700000075"
+    "uri": "/api/v1/query?query=1%2F0\u0026time=1700000075"
   },
   {
-    "body": "query=1%2F0&time=1700000075",
+    "body": "query=1%2F0\u0026time=1700000075",
     "content_type": "application/x-www-form-urlencoded",
     "method": "POST",
     "response": {
@@ -416,10 +416,10 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=0%2F0&time=1700000075"
+    "uri": "/api/v1/query?query=0%2F0\u0026time=1700000075"
   },
   {
-    "body": "query=0%2F0&time=1700000075",
+    "body": "query=0%2F0\u0026time=1700000075",
     "content_type": "application/x-www-form-urlencoded",
     "method": "POST",
     "response": {
@@ -445,10 +445,10 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?query=&time=1700000075"
+    "uri": "/api/v1/query?query=\u0026time=1700000075"
   },
   {
-    "body": "query=&time=1700000075",
+    "body": "query=\u0026time=1700000075",
     "content_type": "application/x-www-form-urlencoded",
     "method": "POST",
     "response": {
@@ -469,10 +469,10 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?query=%28&time=1700000075"
+    "uri": "/api/v1/query?query=%28\u0026time=1700000075"
   },
   {
-    "body": "query=%28&time=1700000075",
+    "body": "query=%28\u0026time=1700000075",
     "content_type": "application/x-www-form-urlencoded",
     "method": "POST",
     "response": {
@@ -493,10 +493,10 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?query=unknown%28test_gauge%29&time=1700000075"
+    "uri": "/api/v1/query?query=unknown%28test_gauge%29\u0026time=1700000075"
   },
   {
-    "body": "query=unknown%28test_gauge%29&time=1700000075",
+    "body": "query=unknown%28test_gauge%29\u0026time=1700000075",
     "content_type": "application/x-www-form-urlencoded",
     "method": "POST",
     "response": {
@@ -517,10 +517,10 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?query=rate%28test_gauge%29&time=1700000075"
+    "uri": "/api/v1/query?query=rate%28test_gauge%29\u0026time=1700000075"
   },
   {
-    "body": "query=rate%28test_gauge%29&time=1700000075",
+    "body": "query=rate%28test_gauge%29\u0026time=1700000075",
     "content_type": "application/x-www-form-urlencoded",
     "method": "POST",
     "response": {
@@ -541,10 +541,10 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?query=sum%281%29&time=1700000075"
+    "uri": "/api/v1/query?query=sum%281%29\u0026time=1700000075"
   },
   {
-    "body": "query=sum%281%29&time=1700000075",
+    "body": "query=sum%281%29\u0026time=1700000075",
     "content_type": "application/x-www-form-urlencoded",
     "method": "POST",
     "response": {
@@ -565,10 +565,10 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?query=%7B%7D&time=1700000075"
+    "uri": "/api/v1/query?query=%7B%7D\u0026time=1700000075"
   },
   {
-    "body": "query=%7B%7D&time=1700000075",
+    "body": "query=%7B%7D\u0026time=1700000075",
     "content_type": "application/x-www-form-urlencoded",
     "method": "POST",
     "response": {
@@ -589,10 +589,10 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?query=1+%3D%3D+1&time=1700000075"
+    "uri": "/api/v1/query?query=1+%3D%3D+1\u0026time=1700000075"
   },
   {
-    "body": "query=1+%3D%3D+1&time=1700000075",
+    "body": "query=1+%3D%3D+1\u0026time=1700000075",
     "content_type": "application/x-www-form-urlencoded",
     "method": "POST",
     "response": {
@@ -615,7 +615,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&time="
+    "uri": "/api/v1/query?query=test_gauge\u0026time="
   },
   {
     "body": "",
@@ -629,7 +629,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&time=-1"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=-1"
   },
   {
     "body": "",
@@ -643,7 +643,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&time=0"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=0"
   },
   {
     "body": "",
@@ -657,7 +657,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&time=1"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1"
   },
   {
     "body": "",
@@ -671,7 +671,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&time=1.5"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1.5"
   },
   {
     "body": "",
@@ -685,7 +685,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&time=NaN"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=NaN"
   },
   {
     "body": "",
@@ -699,7 +699,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&time=Inf"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=Inf"
   },
   {
     "body": "",
@@ -711,7 +711,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?query=test_gauge&time=garbage"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=garbage"
   },
   {
     "body": "",
@@ -723,7 +723,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?query=test_gauge&time=1m"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1m"
   },
   {
     "body": "",
@@ -735,7 +735,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?query=test_gauge&time=all"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=all"
   },
   {
     "body": "",
@@ -747,7 +747,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?query=test_gauge&time=samples"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=samples"
   },
   {
     "body": "",
@@ -784,7 +784,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&time=1700000075&timeout="
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1700000075\u0026timeout="
   },
   {
     "body": "",
@@ -796,7 +796,7 @@
       "status": "error"
     },
     "status": 503,
-    "uri": "/api/v1/query?query=test_gauge&time=1700000075&timeout=-1"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1700000075\u0026timeout=-1"
   },
   {
     "body": "",
@@ -808,7 +808,7 @@
       "status": "error"
     },
     "status": 503,
-    "uri": "/api/v1/query?query=test_gauge&time=1700000075&timeout=0"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1700000075\u0026timeout=0"
   },
   {
     "body": "",
@@ -845,7 +845,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&time=1700000075&timeout=1"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1700000075\u0026timeout=1"
   },
   {
     "body": "",
@@ -882,7 +882,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&time=1700000075&timeout=1.5"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1700000075\u0026timeout=1.5"
   },
   {
     "body": "",
@@ -894,7 +894,7 @@
       "status": "error"
     },
     "status": 503,
-    "uri": "/api/v1/query?query=test_gauge&time=1700000075&timeout=NaN"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1700000075\u0026timeout=NaN"
   },
   {
     "body": "",
@@ -906,7 +906,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?query=test_gauge&time=1700000075&timeout=Inf"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1700000075\u0026timeout=Inf"
   },
   {
     "body": "",
@@ -918,7 +918,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?query=test_gauge&time=1700000075&timeout=garbage"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1700000075\u0026timeout=garbage"
   },
   {
     "body": "",
@@ -955,7 +955,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&time=1700000075&timeout=1m"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1700000075\u0026timeout=1m"
   },
   {
     "body": "",
@@ -967,7 +967,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?query=test_gauge&time=1700000075&timeout=all"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1700000075\u0026timeout=all"
   },
   {
     "body": "",
@@ -979,7 +979,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?query=test_gauge&time=1700000075&timeout=samples"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1700000075\u0026timeout=samples"
   },
   {
     "body": "",
@@ -1016,7 +1016,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?lookback_delta=&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?lookback_delta=\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1053,7 +1053,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?lookback_delta=-1&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?lookback_delta=-1\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1090,7 +1090,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?lookback_delta=0&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?lookback_delta=0\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1127,7 +1127,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?lookback_delta=1&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?lookback_delta=1\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1164,7 +1164,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?lookback_delta=1.5&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?lookback_delta=1.5\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1201,7 +1201,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?lookback_delta=NaN&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?lookback_delta=NaN\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1213,7 +1213,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?lookback_delta=Inf&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?lookback_delta=Inf\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1225,7 +1225,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?lookback_delta=garbage&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?lookback_delta=garbage\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1262,7 +1262,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?lookback_delta=1m&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?lookback_delta=1m\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1274,7 +1274,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?lookback_delta=all&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?lookback_delta=all\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1286,7 +1286,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?lookback_delta=samples&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?lookback_delta=samples\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1323,7 +1323,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?limit=&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?limit=\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1335,7 +1335,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?limit=-1&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?limit=-1\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1372,7 +1372,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?limit=0&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?limit=0\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1401,7 +1401,7 @@
       ]
     },
     "status": 200,
-    "uri": "/api/v1/query?limit=1&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?limit=1\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1413,7 +1413,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?limit=1.5&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?limit=1.5\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1425,7 +1425,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?limit=NaN&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?limit=NaN\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1437,7 +1437,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?limit=Inf&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?limit=Inf\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1449,7 +1449,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?limit=garbage&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?limit=garbage\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1461,7 +1461,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?limit=1m&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?limit=1m\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1473,7 +1473,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?limit=all&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?limit=all\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1485,7 +1485,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query?limit=samples&query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?limit=samples\u0026query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1522,7 +1522,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&stats=&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge\u0026stats=\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1577,7 +1577,7 @@
       ]
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&stats=-1&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge\u0026stats=-1\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1632,7 +1632,7 @@
       ]
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&stats=0&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge\u0026stats=0\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1687,7 +1687,7 @@
       ]
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&stats=1&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge\u0026stats=1\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1742,7 +1742,7 @@
       ]
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&stats=1.5&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge\u0026stats=1.5\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1797,7 +1797,7 @@
       ]
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&stats=NaN&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge\u0026stats=NaN\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1852,7 +1852,7 @@
       ]
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&stats=Inf&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge\u0026stats=Inf\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1907,7 +1907,7 @@
       ]
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&stats=garbage&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge\u0026stats=garbage\u0026time=1700000075"
   },
   {
     "body": "",
@@ -1962,7 +1962,7 @@
       ]
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&stats=1m&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge\u0026stats=1m\u0026time=1700000075"
   },
   {
     "body": "",
@@ -2014,7 +2014,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&stats=all&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge\u0026stats=all\u0026time=1700000075"
   },
   {
     "body": "",
@@ -2069,7 +2069,7 @@
       ]
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&stats=samples&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge\u0026stats=samples\u0026time=1700000075"
   },
   {
     "body": "",
@@ -2150,7 +2150,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query_range?end=1700000075&query=test_gauge&start=1700000000&step=15"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=test_gauge\u0026start=1700000000\u0026step=15"
   },
   {
     "body": "",
@@ -2162,7 +2162,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=test_gauge&start=1700000000&step=0"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=test_gauge\u0026start=1700000000\u0026step=0"
   },
   {
     "body": "",
@@ -2174,7 +2174,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=test_gauge&start=1700000000&step=-1"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=test_gauge\u0026start=1700000000\u0026step=-1"
   },
   {
     "body": "",
@@ -2186,7 +2186,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=test_gauge&start=1700000000&step=NaN"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=test_gauge\u0026start=1700000000\u0026step=NaN"
   },
   {
     "body": "",
@@ -2267,7 +2267,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query_range?end=1700000075&query=test_gauge&start=1700000000&step=15s"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=test_gauge\u0026start=1700000000\u0026step=15s"
   },
   {
     "body": "",
@@ -2279,7 +2279,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=test_gauge&start=1700000000&step=0.0001"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=test_gauge\u0026start=1700000000\u0026step=0.0001"
   },
   {
     "body": "",
@@ -2323,7 +2323,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query_range?end=1700000075&query=sum%28test_gauge%29&start=1700000000&step=15"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=sum%28test_gauge%29\u0026start=1700000000\u0026step=15"
   },
   {
     "body": "",
@@ -2335,7 +2335,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=sum%28test_gauge%29&start=1700000000&step=0"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=sum%28test_gauge%29\u0026start=1700000000\u0026step=0"
   },
   {
     "body": "",
@@ -2347,7 +2347,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=sum%28test_gauge%29&start=1700000000&step=-1"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=sum%28test_gauge%29\u0026start=1700000000\u0026step=-1"
   },
   {
     "body": "",
@@ -2359,7 +2359,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=sum%28test_gauge%29&start=1700000000&step=NaN"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=sum%28test_gauge%29\u0026start=1700000000\u0026step=NaN"
   },
   {
     "body": "",
@@ -2403,7 +2403,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query_range?end=1700000075&query=sum%28test_gauge%29&start=1700000000&step=15s"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=sum%28test_gauge%29\u0026start=1700000000\u0026step=15s"
   },
   {
     "body": "",
@@ -2415,7 +2415,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=sum%28test_gauge%29&start=1700000000&step=0.0001"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=sum%28test_gauge%29\u0026start=1700000000\u0026step=0.0001"
   },
   {
     "body": "",
@@ -2427,7 +2427,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=test_gauge%5B1m%5D&start=1700000000&step=15"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=test_gauge%5B1m%5D\u0026start=1700000000\u0026step=15"
   },
   {
     "body": "",
@@ -2439,7 +2439,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=test_gauge%5B1m%5D&start=1700000000&step=0"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=test_gauge%5B1m%5D\u0026start=1700000000\u0026step=0"
   },
   {
     "body": "",
@@ -2451,7 +2451,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=test_gauge%5B1m%5D&start=1700000000&step=-1"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=test_gauge%5B1m%5D\u0026start=1700000000\u0026step=-1"
   },
   {
     "body": "",
@@ -2463,7 +2463,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=test_gauge%5B1m%5D&start=1700000000&step=NaN"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=test_gauge%5B1m%5D\u0026start=1700000000\u0026step=NaN"
   },
   {
     "body": "",
@@ -2475,7 +2475,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=test_gauge%5B1m%5D&start=1700000000&step=15s"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=test_gauge%5B1m%5D\u0026start=1700000000\u0026step=15s"
   },
   {
     "body": "",
@@ -2487,7 +2487,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=test_gauge%5B1m%5D&start=1700000000&step=0.0001"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=test_gauge%5B1m%5D\u0026start=1700000000\u0026step=0.0001"
   },
   {
     "body": "",
@@ -2499,7 +2499,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=%22hello%22&start=1700000000&step=15"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=%22hello%22\u0026start=1700000000\u0026step=15"
   },
   {
     "body": "",
@@ -2511,7 +2511,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=%22hello%22&start=1700000000&step=0"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=%22hello%22\u0026start=1700000000\u0026step=0"
   },
   {
     "body": "",
@@ -2523,7 +2523,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=%22hello%22&start=1700000000&step=-1"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=%22hello%22\u0026start=1700000000\u0026step=-1"
   },
   {
     "body": "",
@@ -2535,7 +2535,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=%22hello%22&start=1700000000&step=NaN"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=%22hello%22\u0026start=1700000000\u0026step=NaN"
   },
   {
     "body": "",
@@ -2547,7 +2547,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=%22hello%22&start=1700000000&step=15s"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=%22hello%22\u0026start=1700000000\u0026step=15s"
   },
   {
     "body": "",
@@ -2559,7 +2559,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=%22hello%22&start=1700000000&step=0.0001"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=%22hello%22\u0026start=1700000000\u0026step=0.0001"
   },
   {
     "body": "",
@@ -2603,7 +2603,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query_range?end=1700000075&query=1&start=1700000000&step=15"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=1\u0026start=1700000000\u0026step=15"
   },
   {
     "body": "",
@@ -2615,7 +2615,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=1&start=1700000000&step=0"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=1\u0026start=1700000000\u0026step=0"
   },
   {
     "body": "",
@@ -2627,7 +2627,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=1&start=1700000000&step=-1"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=1\u0026start=1700000000\u0026step=-1"
   },
   {
     "body": "",
@@ -2639,7 +2639,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=1&start=1700000000&step=NaN"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=1\u0026start=1700000000\u0026step=NaN"
   },
   {
     "body": "",
@@ -2683,7 +2683,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query_range?end=1700000075&query=1&start=1700000000&step=15s"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=1\u0026start=1700000000\u0026step=15s"
   },
   {
     "body": "",
@@ -2695,7 +2695,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/query_range?end=1700000075&query=1&start=1700000000&step=0.0001"
+    "uri": "/api/v1/query_range?end=1700000075\u0026query=1\u0026start=1700000000\u0026step=0.0001"
   },
   {
     "body": "",
@@ -2707,7 +2707,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/series?end=1700000075&start=1700000000"
+    "uri": "/api/v1/series?end=1700000075\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2729,7 +2729,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/series?end=1700000075&match%5B%5D=test_gauge&start=1700000000"
+    "uri": "/api/v1/series?end=1700000075\u0026match%5B%5D=test_gauge\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2751,7 +2751,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/series?end=1700000075&match%5B%5D=%7Bjob%3D%22api%22%7D&start=1700000000"
+    "uri": "/api/v1/series?end=1700000075\u0026match%5B%5D=%7Bjob%3D%22api%22%7D\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2763,7 +2763,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/series?end=1700000075&match%5B%5D=%7Bjob%3D~%22.%2A%22%7D&start=1700000000"
+    "uri": "/api/v1/series?end=1700000075\u0026match%5B%5D=%7Bjob%3D~%22.%2A%22%7D\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2775,7 +2775,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/series?end=1700000075&match%5B%5D=sum%28test_gauge%29&start=1700000000"
+    "uri": "/api/v1/series?end=1700000075\u0026match%5B%5D=sum%28test_gauge%29\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2787,7 +2787,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/series?end=1700000075&match%5B%5D=invalid%7B&start=1700000000"
+    "uri": "/api/v1/series?end=1700000075\u0026match%5B%5D=invalid%7B\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2802,7 +2802,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/labels?end=1700000075&start=1700000000"
+    "uri": "/api/v1/labels?end=1700000075\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2817,7 +2817,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/labels?end=1700000075&match%5B%5D=test_gauge&start=1700000000"
+    "uri": "/api/v1/labels?end=1700000075\u0026match%5B%5D=test_gauge\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2832,7 +2832,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/labels?end=1700000075&match%5B%5D=%7Bjob%3D%22api%22%7D&start=1700000000"
+    "uri": "/api/v1/labels?end=1700000075\u0026match%5B%5D=%7Bjob%3D%22api%22%7D\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2844,7 +2844,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/labels?end=1700000075&match%5B%5D=%7Bjob%3D~%22.%2A%22%7D&start=1700000000"
+    "uri": "/api/v1/labels?end=1700000075\u0026match%5B%5D=%7Bjob%3D~%22.%2A%22%7D\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2856,7 +2856,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/labels?end=1700000075&match%5B%5D=sum%28test_gauge%29&start=1700000000"
+    "uri": "/api/v1/labels?end=1700000075\u0026match%5B%5D=sum%28test_gauge%29\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2868,7 +2868,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/labels?end=1700000075&match%5B%5D=invalid%7B&start=1700000000"
+    "uri": "/api/v1/labels?end=1700000075\u0026match%5B%5D=invalid%7B\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2882,7 +2882,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/label/instance/values?end=1700000075&start=1700000000"
+    "uri": "/api/v1/label/instance/values?end=1700000075\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2896,7 +2896,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/label/instance/values?end=1700000075&match%5B%5D=test_gauge&start=1700000000"
+    "uri": "/api/v1/label/instance/values?end=1700000075\u0026match%5B%5D=test_gauge\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2910,7 +2910,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/label/instance/values?end=1700000075&match%5B%5D=%7Bjob%3D%22api%22%7D&start=1700000000"
+    "uri": "/api/v1/label/instance/values?end=1700000075\u0026match%5B%5D=%7Bjob%3D%22api%22%7D\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2922,7 +2922,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/label/instance/values?end=1700000075&match%5B%5D=%7Bjob%3D~%22.%2A%22%7D&start=1700000000"
+    "uri": "/api/v1/label/instance/values?end=1700000075\u0026match%5B%5D=%7Bjob%3D~%22.%2A%22%7D\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2934,7 +2934,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/label/instance/values?end=1700000075&match%5B%5D=sum%28test_gauge%29&start=1700000000"
+    "uri": "/api/v1/label/instance/values?end=1700000075\u0026match%5B%5D=sum%28test_gauge%29\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2946,7 +2946,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/label/instance/values?end=1700000075&match%5B%5D=invalid%7B&start=1700000000"
+    "uri": "/api/v1/label/instance/values?end=1700000075\u0026match%5B%5D=invalid%7B\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2959,7 +2959,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/label/__name__/values?end=1700000075&start=1700000000"
+    "uri": "/api/v1/label/__name__/values?end=1700000075\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2972,7 +2972,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/label/__name__/values?end=1700000075&match%5B%5D=test_gauge&start=1700000000"
+    "uri": "/api/v1/label/__name__/values?end=1700000075\u0026match%5B%5D=test_gauge\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2985,7 +2985,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/label/__name__/values?end=1700000075&match%5B%5D=%7Bjob%3D%22api%22%7D&start=1700000000"
+    "uri": "/api/v1/label/__name__/values?end=1700000075\u0026match%5B%5D=%7Bjob%3D%22api%22%7D\u0026start=1700000000"
   },
   {
     "body": "",
@@ -2997,7 +2997,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/label/__name__/values?end=1700000075&match%5B%5D=%7Bjob%3D~%22.%2A%22%7D&start=1700000000"
+    "uri": "/api/v1/label/__name__/values?end=1700000075\u0026match%5B%5D=%7Bjob%3D~%22.%2A%22%7D\u0026start=1700000000"
   },
   {
     "body": "",
@@ -3009,7 +3009,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/label/__name__/values?end=1700000075&match%5B%5D=sum%28test_gauge%29&start=1700000000"
+    "uri": "/api/v1/label/__name__/values?end=1700000075\u0026match%5B%5D=sum%28test_gauge%29\u0026start=1700000000"
   },
   {
     "body": "",
@@ -3021,7 +3021,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/label/__name__/values?end=1700000075&match%5B%5D=invalid%7B&start=1700000000"
+    "uri": "/api/v1/label/__name__/values?end=1700000075\u0026match%5B%5D=invalid%7B\u0026start=1700000000"
   },
   {
     "body": "",
@@ -3032,7 +3032,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/label/invalid-name/values?end=1700000075&start=1700000000"
+    "uri": "/api/v1/label/invalid-name/values?end=1700000075\u0026start=1700000000"
   },
   {
     "body": "",
@@ -3043,7 +3043,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/label/invalid-name/values?end=1700000075&match%5B%5D=test_gauge&start=1700000000"
+    "uri": "/api/v1/label/invalid-name/values?end=1700000075\u0026match%5B%5D=test_gauge\u0026start=1700000000"
   },
   {
     "body": "",
@@ -3054,7 +3054,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/label/invalid-name/values?end=1700000075&match%5B%5D=%7Bjob%3D%22api%22%7D&start=1700000000"
+    "uri": "/api/v1/label/invalid-name/values?end=1700000075\u0026match%5B%5D=%7Bjob%3D%22api%22%7D\u0026start=1700000000"
   },
   {
     "body": "",
@@ -3066,7 +3066,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/label/invalid-name/values?end=1700000075&match%5B%5D=%7Bjob%3D~%22.%2A%22%7D&start=1700000000"
+    "uri": "/api/v1/label/invalid-name/values?end=1700000075\u0026match%5B%5D=%7Bjob%3D~%22.%2A%22%7D\u0026start=1700000000"
   },
   {
     "body": "",
@@ -3078,7 +3078,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/label/invalid-name/values?end=1700000075&match%5B%5D=sum%28test_gauge%29&start=1700000000"
+    "uri": "/api/v1/label/invalid-name/values?end=1700000075\u0026match%5B%5D=sum%28test_gauge%29\u0026start=1700000000"
   },
   {
     "body": "",
@@ -3090,7 +3090,7 @@
       "status": "error"
     },
     "status": 400,
-    "uri": "/api/v1/label/invalid-name/values?end=1700000075&match%5B%5D=invalid%7B&start=1700000000"
+    "uri": "/api/v1/label/invalid-name/values?end=1700000075\u0026match%5B%5D=invalid%7B\u0026start=1700000000"
   },
   {
     "body": "",
@@ -3257,7 +3257,7 @@
     "method": "PUT",
     "response": "Method Not Allowed\n",
     "status": 405,
-    "uri": "/api/v1/query?query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "",
@@ -3294,7 +3294,7 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1700000075"
   },
   {
     "body": "{}",
@@ -3331,7 +3331,875 @@
       "status": "success"
     },
     "status": 200,
-    "uri": "/api/v1/query?query=test_gauge&time=1700000075"
+    "uri": "/api/v1/query?query=test_gauge\u0026time=1700000075"
+  },
+  {
+    "body": "",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "GET",
+    "response": {
+      "data": [
+        {
+          "exemplars": [
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000014,
+              "value": "0.2"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000029,
+              "value": "0.3"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000044,
+              "value": "0.4"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000059,
+              "value": "0.5"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000074,
+              "value": "0.6"
+            }
+          ],
+          "seriesLabels": {
+            "__name__": "test_gauge",
+            "instance": "a",
+            "job": "api"
+          }
+        },
+        {
+          "exemplars": [
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000014,
+              "value": "0.2"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000029,
+              "value": "0.3"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000044,
+              "value": "0.4"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000059,
+              "value": "0.5"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000074,
+              "value": "0.6"
+            }
+          ],
+          "seriesLabels": {
+            "__name__": "test_gauge",
+            "instance": "b",
+            "job": "api"
+          }
+        }
+      ],
+      "status": "success"
+    },
+    "status": 200,
+    "uri": "/api/v1/query_exemplars?end=1700000075\u0026query=test_gauge\u0026start=1700000000"
+  },
+  {
+    "body": "end=1700000075\u0026query=test_gauge\u0026start=1700000000",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "POST",
+    "response": {
+      "data": [
+        {
+          "exemplars": [
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000014,
+              "value": "0.2"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000029,
+              "value": "0.3"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000044,
+              "value": "0.4"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000059,
+              "value": "0.5"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000074,
+              "value": "0.6"
+            }
+          ],
+          "seriesLabels": {
+            "__name__": "test_gauge",
+            "instance": "a",
+            "job": "api"
+          }
+        },
+        {
+          "exemplars": [
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000014,
+              "value": "0.2"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000029,
+              "value": "0.3"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000044,
+              "value": "0.4"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000059,
+              "value": "0.5"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000074,
+              "value": "0.6"
+            }
+          ],
+          "seriesLabels": {
+            "__name__": "test_gauge",
+            "instance": "b",
+            "job": "api"
+          }
+        }
+      ],
+      "status": "success"
+    },
+    "status": 200,
+    "uri": "/api/v1/query_exemplars?"
+  },
+  {
+    "body": "",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "GET",
+    "response": {
+      "data": [
+        {
+          "exemplars": [
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000014,
+              "value": "0.2"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000029,
+              "value": "0.3"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000044,
+              "value": "0.4"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000059,
+              "value": "0.5"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000074,
+              "value": "0.6"
+            }
+          ],
+          "seriesLabels": {
+            "__name__": "test_gauge",
+            "instance": "a",
+            "job": "api"
+          }
+        }
+      ],
+      "status": "success"
+    },
+    "status": 200,
+    "uri": "/api/v1/query_exemplars?end=1700000075\u0026query=test_gauge%7Binstance%3D%22a%22%7D\u0026start=1700000000"
+  },
+  {
+    "body": "end=1700000075\u0026query=test_gauge%7Binstance%3D%22a%22%7D\u0026start=1700000000",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "POST",
+    "response": {
+      "data": [
+        {
+          "exemplars": [
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000014,
+              "value": "0.2"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000029,
+              "value": "0.3"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000044,
+              "value": "0.4"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000059,
+              "value": "0.5"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000074,
+              "value": "0.6"
+            }
+          ],
+          "seriesLabels": {
+            "__name__": "test_gauge",
+            "instance": "a",
+            "job": "api"
+          }
+        }
+      ],
+      "status": "success"
+    },
+    "status": 200,
+    "uri": "/api/v1/query_exemplars?"
+  },
+  {
+    "body": "",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "GET",
+    "response": {
+      "data": [
+        {
+          "exemplars": [
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000014,
+              "value": "0.2"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000029,
+              "value": "0.3"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000044,
+              "value": "0.4"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000059,
+              "value": "0.5"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000074,
+              "value": "0.6"
+            }
+          ],
+          "seriesLabels": {
+            "__name__": "test_gauge",
+            "instance": "a",
+            "job": "api"
+          }
+        },
+        {
+          "exemplars": [
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000014,
+              "value": "0.2"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000029,
+              "value": "0.3"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000044,
+              "value": "0.4"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000059,
+              "value": "0.5"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000074,
+              "value": "0.6"
+            }
+          ],
+          "seriesLabels": {
+            "__name__": "test_gauge",
+            "instance": "b",
+            "job": "api"
+          }
+        }
+      ],
+      "status": "success"
+    },
+    "status": 200,
+    "uri": "/api/v1/query_exemplars?end=1700000075\u0026query=rate%28test_gauge%5B1m%5D%29\u0026start=1700000000"
+  },
+  {
+    "body": "end=1700000075\u0026query=rate%28test_gauge%5B1m%5D%29\u0026start=1700000000",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "POST",
+    "response": {
+      "data": [
+        {
+          "exemplars": [
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000014,
+              "value": "0.2"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000029,
+              "value": "0.3"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000044,
+              "value": "0.4"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000059,
+              "value": "0.5"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000074,
+              "value": "0.6"
+            }
+          ],
+          "seriesLabels": {
+            "__name__": "test_gauge",
+            "instance": "a",
+            "job": "api"
+          }
+        },
+        {
+          "exemplars": [
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000014,
+              "value": "0.2"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000029,
+              "value": "0.3"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000044,
+              "value": "0.4"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000059,
+              "value": "0.5"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000074,
+              "value": "0.6"
+            }
+          ],
+          "seriesLabels": {
+            "__name__": "test_gauge",
+            "instance": "b",
+            "job": "api"
+          }
+        }
+      ],
+      "status": "success"
+    },
+    "status": 200,
+    "uri": "/api/v1/query_exemplars?"
+  },
+  {
+    "body": "",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "GET",
+    "response": {
+      "data": [
+        {
+          "exemplars": [
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000014,
+              "value": "0.2"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000029,
+              "value": "0.3"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000044,
+              "value": "0.4"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000059,
+              "value": "0.5"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000074,
+              "value": "0.6"
+            }
+          ],
+          "seriesLabels": {
+            "__name__": "test_gauge",
+            "instance": "a",
+            "job": "api"
+          }
+        },
+        {
+          "exemplars": [
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000014,
+              "value": "0.2"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000029,
+              "value": "0.3"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000044,
+              "value": "0.4"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000059,
+              "value": "0.5"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000074,
+              "value": "0.6"
+            }
+          ],
+          "seriesLabels": {
+            "__name__": "test_gauge",
+            "instance": "b",
+            "job": "api"
+          }
+        }
+      ],
+      "status": "success"
+    },
+    "status": 200,
+    "uri": "/api/v1/query_exemplars?end=1700000075\u0026query=test_gauge+offset+1h\u0026start=1700000000"
+  },
+  {
+    "body": "end=1700000075\u0026query=test_gauge+offset+1h\u0026start=1700000000",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "POST",
+    "response": {
+      "data": [
+        {
+          "exemplars": [
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000014,
+              "value": "0.2"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000029,
+              "value": "0.3"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000044,
+              "value": "0.4"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000059,
+              "value": "0.5"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000074,
+              "value": "0.6"
+            }
+          ],
+          "seriesLabels": {
+            "__name__": "test_gauge",
+            "instance": "a",
+            "job": "api"
+          }
+        },
+        {
+          "exemplars": [
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000014,
+              "value": "0.2"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000029,
+              "value": "0.3"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000044,
+              "value": "0.4"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000059,
+              "value": "0.5"
+            },
+            {
+              "labels": {
+                "sample": "yes",
+                "trace_id": "0123456789abcdef0123456789abcdef"
+              },
+              "timestamp": 1700000074,
+              "value": "0.6"
+            }
+          ],
+          "seriesLabels": {
+            "__name__": "test_gauge",
+            "instance": "b",
+            "job": "api"
+          }
+        }
+      ],
+      "status": "success"
+    },
+    "status": 200,
+    "uri": "/api/v1/query_exemplars?"
+  },
+  {
+    "body": "",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "GET",
+    "response": {
+      "data": [],
+      "status": "success"
+    },
+    "status": 200,
+    "uri": "/api/v1/query_exemplars?end=1700000075\u0026query=missing\u0026start=1700000000"
+  },
+  {
+    "body": "end=1700000075\u0026query=missing\u0026start=1700000000",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "POST",
+    "response": {
+      "data": [],
+      "status": "success"
+    },
+    "status": 200,
+    "uri": "/api/v1/query_exemplars?"
+  },
+  {
+    "body": "",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "GET",
+    "response": "",
+    "status": 204,
+    "uri": "/api/v1/query_exemplars?end=1700000075\u0026query=1%2B2\u0026start=1700000000"
+  },
+  {
+    "body": "end=1700000075\u0026query=1%2B2\u0026start=1700000000",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "POST",
+    "response": "",
+    "status": 204,
+    "uri": "/api/v1/query_exemplars?"
+  },
+  {
+    "body": "",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "GET",
+    "response": {
+      "error": "unknown position: parse error: no expression found in input",
+      "errorType": "bad_data",
+      "status": "error"
+    },
+    "status": 400,
+    "uri": "/api/v1/query_exemplars?end=1700000075\u0026query=\u0026start=1700000000"
+  },
+  {
+    "body": "end=1700000075\u0026query=\u0026start=1700000000",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "POST",
+    "response": {
+      "error": "unknown position: parse error: no expression found in input",
+      "errorType": "bad_data",
+      "status": "error"
+    },
+    "status": 400,
+    "uri": "/api/v1/query_exemplars?"
+  },
+  {
+    "body": "",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "GET",
+    "response": {
+      "error": "1:2: parse error: unclosed left parenthesis",
+      "errorType": "bad_data",
+      "status": "error"
+    },
+    "status": 400,
+    "uri": "/api/v1/query_exemplars?end=1700000075\u0026query=%28\u0026start=1700000000"
+  },
+  {
+    "body": "end=1700000075\u0026query=%28\u0026start=1700000000",
+    "content_type": "application/x-www-form-urlencoded",
+    "method": "POST",
+    "response": {
+      "error": "1:2: parse error: unclosed left parenthesis",
+      "errorType": "bad_data",
+      "status": "error"
+    },
+    "status": 400,
+    "uri": "/api/v1/query_exemplars?"
   },
   {
     "body": "",
@@ -3883,7 +4751,7 @@
     "content_type": "",
     "method": "GET",
     "response": {
-      "data": "1 > bool 1",
+      "data": "1 \u003e bool 1",
       "status": "success"
     },
     "status": 200,
@@ -3901,7 +4769,7 @@
           "val": "1"
         },
         "matching": null,
-        "op": ">",
+        "op": "\u003e",
         "rhs": {
           "type": "numberLiteral",
           "val": "1"
@@ -3918,7 +4786,7 @@
     "content_type": "",
     "method": "GET",
     "response": {
-      "data": "1 >= bool 1",
+      "data": "1 \u003e= bool 1",
       "status": "success"
     },
     "status": 200,
@@ -3936,7 +4804,7 @@
           "val": "1"
         },
         "matching": null,
-        "op": ">=",
+        "op": "\u003e=",
         "rhs": {
           "type": "numberLiteral",
           "val": "1"
@@ -3953,7 +4821,7 @@
     "content_type": "",
     "method": "GET",
     "response": {
-      "data": "1 < bool 1",
+      "data": "1 \u003c bool 1",
       "status": "success"
     },
     "status": 200,
@@ -3971,7 +4839,7 @@
           "val": "1"
         },
         "matching": null,
-        "op": "<",
+        "op": "\u003c",
         "rhs": {
           "type": "numberLiteral",
           "val": "1"
@@ -3988,7 +4856,7 @@
     "content_type": "",
     "method": "GET",
     "response": {
-      "data": "1 <= bool 1",
+      "data": "1 \u003c= bool 1",
       "status": "success"
     },
     "status": 200,
@@ -4006,7 +4874,7 @@
           "val": "1"
         },
         "matching": null,
-        "op": "<=",
+        "op": "\u003c=",
         "rhs": {
           "type": "numberLiteral",
           "val": "1"
@@ -4274,7 +5142,7 @@
     "content_type": "",
     "method": "GET",
     "response": {
-      "data": "1 < bool 2 - 1 * 2",
+      "data": "1 \u003c bool 2 - 1 * 2",
       "status": "success"
     },
     "status": 200,
@@ -4292,7 +5160,7 @@
           "val": "1"
         },
         "matching": null,
-        "op": "<",
+        "op": "\u003c",
         "rhs": {
           "bool": false,
           "lhs": {

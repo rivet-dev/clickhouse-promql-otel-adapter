@@ -346,6 +346,126 @@
   "otel_metrics_gauge": [
     {
       "Attributes": {
+        "array": "[1,\"two\"]",
+        "bool": "true",
+        "double": "1.25",
+        "int": "42",
+        "map": "{\"key\":\"value\"}"
+      },
+      "Exemplars.FilteredAttributes": [],
+      "Exemplars.SpanId": [],
+      "Exemplars.TimeUnix": [],
+      "Exemplars.TraceId": [],
+      "Exemplars.Value": [],
+      "Flags": 0,
+      "MetricDescription": "",
+      "MetricName": "typed_attributes",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "1970-01-01 00:00:00",
+      "TimeUnix": "2023-11-14 22:13:20",
+      "Value": 1
+    },
+    {
+      "Attributes": {
+        "kind": "nan"
+      },
+      "Exemplars.FilteredAttributes": [],
+      "Exemplars.SpanId": [],
+      "Exemplars.TimeUnix": [],
+      "Exemplars.TraceId": [],
+      "Exemplars.Value": [],
+      "Flags": 0,
+      "MetricDescription": "",
+      "MetricName": "special",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "1970-01-01 00:00:00",
+      "TimeUnix": "2023-11-14 22:13:20",
+      "Value": "nan"
+    },
+    {
+      "Attributes": {
+        "kind": "negative"
+      },
+      "Exemplars.FilteredAttributes": [],
+      "Exemplars.SpanId": [],
+      "Exemplars.TimeUnix": [],
+      "Exemplars.TraceId": [],
+      "Exemplars.Value": [],
+      "Flags": 0,
+      "MetricDescription": "",
+      "MetricName": "special",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "1970-01-01 00:00:00",
+      "TimeUnix": "2023-11-14 22:13:20",
+      "Value": "-inf"
+    },
+    {
+      "Attributes": {
+        "kind": "positive"
+      },
+      "Exemplars.FilteredAttributes": [],
+      "Exemplars.SpanId": [],
+      "Exemplars.TimeUnix": [],
+      "Exemplars.TraceId": [],
+      "Exemplars.Value": [],
+      "Flags": 0,
+      "MetricDescription": "",
+      "MetricName": "special",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "1970-01-01 00:00:00",
+      "TimeUnix": "2023-11-14 22:13:20",
+      "Value": "inf"
+    },
+    {
+      "Attributes": {
         "region": "west",
         "route": "/api"
       },
@@ -595,6 +715,33 @@
       "StartTimeUnix": "2023-11-14 22:13:20",
       "TimeUnix": "2023-11-14 22:14:35",
       "Value": 25.5
+    },
+    {
+      "Attributes": {},
+      "Exemplars.FilteredAttributes": [],
+      "Exemplars.SpanId": [],
+      "Exemplars.TimeUnix": [],
+      "Exemplars.TraceId": [],
+      "Exemplars.Value": [],
+      "Flags": 0,
+      "MetricDescription": "",
+      "MetricName": "large_integer",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "1970-01-01 00:00:00",
+      "TimeUnix": "2023-11-14 22:13:20",
+      "Value": 9007199254740992
     },
     {
       "Attributes": {},
@@ -1008,6 +1155,76 @@
       "StartTimeUnix": "2023-11-14 22:13:20",
       "Sum": 27,
       "TimeUnix": "2023-11-14 22:14:35"
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {},
+      "BucketCounts": [
+        0
+      ],
+      "Count": 0,
+      "Exemplars.FilteredAttributes": [],
+      "Exemplars.SpanId": [],
+      "Exemplars.TimeUnix": [],
+      "Exemplars.TraceId": [],
+      "Exemplars.Value": [],
+      "ExplicitBounds": [],
+      "Flags": 0,
+      "Max": 0,
+      "MetricDescription": "",
+      "MetricName": "hist_absent",
+      "MetricUnit": "",
+      "Min": 0,
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "1970-01-01 00:00:00",
+      "Sum": 0,
+      "TimeUnix": "2023-11-14 22:13:20"
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {},
+      "BucketCounts": [
+        0
+      ],
+      "Count": 0,
+      "Exemplars.FilteredAttributes": [],
+      "Exemplars.SpanId": [],
+      "Exemplars.TimeUnix": [],
+      "Exemplars.TraceId": [],
+      "Exemplars.Value": [],
+      "ExplicitBounds": [],
+      "Flags": 0,
+      "Max": 0,
+      "MetricDescription": "",
+      "MetricName": "hist_zero",
+      "MetricUnit": "",
+      "Min": 0,
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "1970-01-01 00:00:00",
+      "Sum": 0,
+      "TimeUnix": "2023-11-14 22:13:20"
     }
   ],
   "otel_metrics_sum": [
@@ -1802,6 +2019,122 @@
       "StartTimeUnix": "2023-11-14 22:13:20",
       "TimeUnix": "2023-11-14 22:14:35",
       "Value": 50
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {},
+      "Exemplars.FilteredAttributes": [],
+      "Exemplars.SpanId": [],
+      "Exemplars.TimeUnix": [],
+      "Exemplars.TraceId": [],
+      "Exemplars.Value": [],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "",
+      "MetricName": "reset_requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:13:20",
+      "Value": 10
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {},
+      "Exemplars.FilteredAttributes": [],
+      "Exemplars.SpanId": [],
+      "Exemplars.TimeUnix": [],
+      "Exemplars.TraceId": [],
+      "Exemplars.Value": [],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "",
+      "MetricName": "reset_requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:20",
+      "TimeUnix": "2023-11-14 22:13:35",
+      "Value": 20
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {},
+      "Exemplars.FilteredAttributes": [],
+      "Exemplars.SpanId": [],
+      "Exemplars.TimeUnix": [],
+      "Exemplars.TraceId": [],
+      "Exemplars.Value": [],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "",
+      "MetricName": "reset_requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:50",
+      "TimeUnix": "2023-11-14 22:13:50",
+      "Value": 3
+    },
+    {
+      "AggregationTemporality": 2,
+      "Attributes": {},
+      "Exemplars.FilteredAttributes": [],
+      "Exemplars.SpanId": [],
+      "Exemplars.TimeUnix": [],
+      "Exemplars.TraceId": [],
+      "Exemplars.Value": [],
+      "Flags": 0,
+      "IsMonotonic": true,
+      "MetricDescription": "",
+      "MetricName": "reset_requests",
+      "MetricUnit": "",
+      "ResourceAttributes": {
+        "service.instance.id": "one",
+        "service.name": "fixture",
+        "service.namespace": "tests"
+      },
+      "ResourceSchemaUrl": "",
+      "ScopeAttributes": {},
+      "ScopeDroppedAttrCount": 0,
+      "ScopeName": "fixture-generator",
+      "ScopeSchemaUrl": "",
+      "ScopeVersion": "1",
+      "ServiceName": "fixture",
+      "StartTimeUnix": "2023-11-14 22:13:50",
+      "TimeUnix": "2023-11-14 22:14:05",
+      "Value": 13
     }
   ],
   "otel_metrics_summary": [

@@ -30,10 +30,31 @@ Native histogram results must not claim exact fidelity when this value is lost.
 
 ## Optional histogram fields lose presence
 
-`Sum`, `Min`, and `Max` are non-nullable floats. The upstream exporter must be
-checked for its treatment of absent values: a stored zero cannot distinguish
-"not provided" from a recorded zero without an explicit presence field. Exact
-reconstruction requires nullable values or presence flags plus exporter support.
+`hist_absent` omits sum/min/max; `hist_zero` explicitly supplies zero for each.
+The real collector stores `Sum = Min = Max = 0` for both. The exporter directly
+reads these fields without recording their presence. Exact reconstruction
+requires nullable values or presence flags plus exporter support.
+
+## Integer and attribute representation
+
+The gauge fixture sends integer `9007199254740993`, which is stored as
+`9007199254740992` in Float64. Prometheus also represents float samples with
+Float64, so the adapter cannot provide integer precision beyond that model.
+Preserve a separate integer column/type flag if ClickHouse users need the
+original OTLP integer.
+
+The typed-attribute fixture stores bool `true`, integer `42`, double `1.25`,
+array `[1,"two"]`, and map `{"key":"value"}` as strings. This supports Prometheus
+label values but loses the original OTLP attribute types. Preserve typed
+attributes separately if consumers need round-trip OTLP fidelity.
+
+## Histogram exemplar bucket identity
+
+OTLP histogram exemplars retain value, labels, IDs and timestamp, but do not
+retain which classic Prometheus bucket originally carried the exemplar. The
+adapter assigns it to the smallest bound containing its value, as Prometheus
+exporters do. Arbitrary original bucket assignment cannot be reconstructed.
+
 
 ## Schema changes require new tables
 
@@ -43,8 +64,6 @@ The ClickHouse differential report is in [storage-report.md](storage-report.md).
 
 ## Additional validation still required
 
-- Attribute type preservation (Map(String,String) stores textual values).
-- Integer precision beyond the exact range of Float64.
 - Cumulative/delta conversion and reset/start-time boundaries.
 - Prometheus name/unit and job/instance round-trip behavior.
 - Deduplication, stale markers and no-recorded-value flags.

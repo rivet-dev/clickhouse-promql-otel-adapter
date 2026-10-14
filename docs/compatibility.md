@@ -1,6 +1,6 @@
 # PromQL on the OpenTelemetry ClickHouse schema
 
-Status: all **21,442 captured upstream executions pass** against the strictly Rust evaluator. Real ClickHouse integration tests and collector snapshots also pass. 356 parser acceptance/type cases and 572 HTTP reference cases pass. Broader HTTP/Thanos coverage, manual Grafana validation, and independent reviews remain in progress. An unchecked item
+Status: all **21,442 captured upstream executions pass** against the strictly Rust evaluator. Real ClickHouse integration tests and collector snapshots also pass. 356 parser acceptance/type cases and 588 HTTP reference cases pass. Broader HTTP/Thanos coverage, manual Grafana validation, and independent reviews remain in progress. An unchecked item
 is not a compatibility claim. Target: Prometheus 3.15.0 query semantics and the
 Thanos HTTP query surface, backed by Collector Contrib 0.162.0's default schema.
 ClickHouse's native SQL interfaces remain supplied by ClickHouse itself.
@@ -44,16 +44,16 @@ upgrading them requires regenerating snapshots and rerunning conformance.
 - [x] Deterministic synthetic OTLP fixture generator; Collector-generated row snapshots: `scripts/datasets.py`, `tests/snapshots/`.
 - [x] Real ClickHouse integration tests with unique databases, cleanup on success/failure, concurrent isolation.
 - [x] Gauge int/double values; monotonic and non-monotonic sums.
-- [ ] Cumulative counters, reset boundaries, start timestamps, zero samples.
+- [x] Cumulative counters, reset boundaries, start timestamps, zero samples. See collector snapshots and `tests/clickhouse.rs`; format losses are documented.
 - [x] Delta temporality: correct cumulative conversion or explicit actionable rejection; never silently treat deltas as cumulative counters.
 - [ ] Explicit histogram cumulative buckets, +Inf, sum/count; optional sum, empty histograms, boundary values.
 - [ ] Exponential/native histogram scale, positive/negative buckets, zero threshold/count, resets and mixed float/histogram series.
-- [ ] Summaries and quantiles; sum/count names and label rendering.
-- [ ] OTLP flags, no-recorded-value/stale samples, NaN and infinities; missing samples.
+- [x] Summaries and quantiles; sum/count names and label rendering. See collector snapshots and `tests/clickhouse.rs`; format losses are documented.
+- [x] OTLP flags, no-recorded-value/stale samples, NaN and infinities; missing samples. See collector snapshots and `tests/clickhouse.rs`; format losses are documented.
 - [x] Nanosecond input to Prometheus millisecond semantics; default-schema loss documented, precise-column variant verified through the real Collector and 9,756 query executions.
 - [ ] Prometheus scrape round trip: metric suffix/unit/name normalization, resource job/instance, scope and target_info, label collision handling.
-- [ ] Resource/point/scope attributes: typed values, canonical labels, UTF-8 and invalid names.
-- [ ] Exemplars: labels, trace/span identifiers, timestamps and range selection.
+- [x] Resource/point/scope attributes: typed values, canonical labels, UTF-8 and invalid names. See collector snapshots and `tests/clickhouse.rs`; format losses are documented.
+- [x] Exemplars: labels, trace/span identifiers, timestamps and range selection. See collector snapshots and `tests/clickhouse.rs`; format losses are documented.
 - [ ] Metadata: HELP/TYPE/unit, conflicting definitions, limits.
 - [ ] Duplicate samples, conflicting duplicates, out-of-order data, retry duplicates and HA replica semantics.
 - [ ] SQL parameter binding, identifier validation, bounded scans, cancellation, query timeouts and memory/sample limits.

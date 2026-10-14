@@ -1791,6 +1791,185 @@
                 ]
               },
               "name": "missing"
+            },
+            {
+              "histogram": {
+                "aggregationTemporality": 2,
+                "dataPoints": [
+                  {
+                    "bucketCounts": [
+                      "0"
+                    ],
+                    "count": "0",
+                    "explicitBounds": [],
+                    "timeUnixNano": "1700000000000000000"
+                  }
+                ]
+              },
+              "name": "hist_absent"
+            },
+            {
+              "histogram": {
+                "aggregationTemporality": 2,
+                "dataPoints": [
+                  {
+                    "bucketCounts": [
+                      "0"
+                    ],
+                    "count": "0",
+                    "explicitBounds": [],
+                    "max": 0,
+                    "min": 0,
+                    "sum": 0,
+                    "timeUnixNano": "1700000000000000000"
+                  }
+                ]
+              },
+              "name": "hist_zero"
+            },
+            {
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asInt": "9007199254740993",
+                    "timeUnixNano": "1700000000000000000"
+                  }
+                ]
+              },
+              "name": "large_integer"
+            },
+            {
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asDouble": "NaN",
+                    "attributes": [
+                      {
+                        "key": "kind",
+                        "value": {
+                          "stringValue": "nan"
+                        }
+                      }
+                    ],
+                    "timeUnixNano": "1700000000000000000"
+                  },
+                  {
+                    "asDouble": "Infinity",
+                    "attributes": [
+                      {
+                        "key": "kind",
+                        "value": {
+                          "stringValue": "positive"
+                        }
+                      }
+                    ],
+                    "timeUnixNano": "1700000000000000000"
+                  },
+                  {
+                    "asDouble": "-Infinity",
+                    "attributes": [
+                      {
+                        "key": "kind",
+                        "value": {
+                          "stringValue": "negative"
+                        }
+                      }
+                    ],
+                    "timeUnixNano": "1700000000000000000"
+                  }
+                ]
+              },
+              "name": "special"
+            },
+            {
+              "name": "reset_requests",
+              "sum": {
+                "aggregationTemporality": 2,
+                "dataPoints": [
+                  {
+                    "asInt": "10",
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000000000000000"
+                  },
+                  {
+                    "asInt": "20",
+                    "startTimeUnixNano": "1700000000000000000",
+                    "timeUnixNano": "1700000015000000000"
+                  },
+                  {
+                    "asInt": "3",
+                    "startTimeUnixNano": "1700000030000000000",
+                    "timeUnixNano": "1700000030000000000"
+                  },
+                  {
+                    "asInt": "13",
+                    "startTimeUnixNano": "1700000030000000000",
+                    "timeUnixNano": "1700000045000000000"
+                  }
+                ],
+                "isMonotonic": true
+              }
+            },
+            {
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asDouble": 1,
+                    "attributes": [
+                      {
+                        "key": "bool",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "int",
+                        "value": {
+                          "intValue": "42"
+                        }
+                      },
+                      {
+                        "key": "double",
+                        "value": {
+                          "doubleValue": 1.25
+                        }
+                      },
+                      {
+                        "key": "array",
+                        "value": {
+                          "arrayValue": {
+                            "values": [
+                              {
+                                "intValue": "1"
+                              },
+                              {
+                                "stringValue": "two"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "key": "map",
+                        "value": {
+                          "kvlistValue": {
+                            "values": [
+                              {
+                                "key": "key",
+                                "value": {
+                                  "stringValue": "value"
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ],
+                    "timeUnixNano": "1700000000000000000"
+                  }
+                ]
+              },
+              "name": "typed_attributes"
             }
           ],
           "scope": {

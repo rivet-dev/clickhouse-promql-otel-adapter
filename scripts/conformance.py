@@ -65,6 +65,8 @@ def main():
         package(generated)
         env |= {"PARSER_OUTPUT": str(SNAPSHOTS / "parser.json")}
         run("go", "test", "-run", "TestParserReference", "-count=1", "./...", cwd=ROOT / "tools/oracle", env=env)
+        env |= {"OTEL_NAMES_OUTPUT": str(SNAPSHOTS / "otel-names.json")}
+        run("go", "test", "-run", "TestOTelNames", "-count=1", "./...", cwd=ROOT / "tools/oracle", env=env)
         env |= {"API_OUTPUT": str(SNAPSHOTS / "http.json")}
         run("go", "test", "-run", "TestAPIReference", "-count=1", "./...", cwd=ROOT / "tools/oracle", env=env)
     manifest = json.loads((SNAPSHOTS / "manifest.json").read_text())

@@ -51,6 +51,18 @@ def dataset():
         for offset, value in [(100_000_000, 1), (900_000_000, 2)]]}})
     metrics.append({"name": "missing", "gauge": {"dataPoints": [
         {"timeUnixNano": str(BASE_NS), "asDouble": 0, "flags": 1}]}})
+    metrics.extend([
+        {"name": "hist_absent", "histogram": {"aggregationTemporality": 2, "dataPoints": [{"timeUnixNano": str(BASE_NS), "count": "0", "bucketCounts": ["0"], "explicitBounds": []}]}},
+        {"name": "hist_zero", "histogram": {"aggregationTemporality": 2, "dataPoints": [{"timeUnixNano": str(BASE_NS), "count": "0", "sum": 0, "min": 0, "max": 0, "bucketCounts": ["0"], "explicitBounds": []}]}},
+        {"name": "large_integer", "gauge": {"dataPoints": [{"timeUnixNano": str(BASE_NS), "asInt": "9007199254740993"}]}},
+        {"name": "special", "gauge": {"dataPoints": [{"timeUnixNano": str(BASE_NS), "attributes": attrs(kind=kind), "asDouble": value} for kind, value in [("nan", "NaN"), ("positive", "Infinity"), ("negative", "-Infinity")]]}},
+        {"name": "reset_requests", "sum": {"aggregationTemporality": 2, "isMonotonic": True, "dataPoints": [{"timeUnixNano": str(BASE_NS+i*15_000_000_000), "startTimeUnixNano": str(BASE_NS+(30_000_000_000 if i>=2 else 0)), "asInt": str(value)} for i,value in enumerate([10,20,3,13])]}},
+        {"name":"typed_attributes", "gauge":{"dataPoints":[{"timeUnixNano":str(BASE_NS),"asDouble":1,"attributes":[
+            {"key":"bool","value":{"boolValue":True}}, {"key":"int","value":{"intValue":"42"}}, {"key":"double","value":{"doubleValue":1.25}},
+            {"key":"array","value":{"arrayValue":{"values":[{"intValue":"1"},{"stringValue":"two"}]}}},
+            {"key":"map","value":{"kvlistValue":{"values":[{"key":"key","value":{"stringValue":"value"}}]}}}
+        ]}]}}
+    ])
     return {"resourceMetrics": [{"resource": {"attributes": attrs(**{
         "service.name": "fixture", "service.namespace": "tests", "service.instance.id": "one"})},
         "scopeMetrics": [{"scope": {"name": "fixture-generator", "version": "1"}, "metrics": metrics}]}]}

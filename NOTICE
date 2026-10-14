@@ -14,3 +14,6 @@ in vendor/README.md. Its original license is retained in the vendor directory.
 
 The Go reference evaluator under tools/oracle is test tooling only and is not
 part of the adapter executable. Its dependencies retain their own licenses.
+
+OTLP name conversion follows github.com/prometheus/otlptranslator v1.0.0
+Copyright The Prometheus Authors and The OpenTelemetry Authors, Apache-2.0.

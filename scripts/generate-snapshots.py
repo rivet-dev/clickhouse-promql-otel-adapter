@@ -107,7 +107,7 @@ service:
             for table in sorted(names):
                 ddl = query(f"SHOW CREATE TABLE {database}.{table} FORMAT TabSeparatedRaw").replace(database, "{{database}}")
                 schema.append(ddl.strip()+";\n")
-                raw = query(f"SELECT * FROM {database}.{table} FORMAT JSONEachRow")
+                raw = query(f"SELECT * FROM {database}.{table} SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow")
                 records = [json.loads(line) for line in raw.splitlines()]
                 if not records:
                     raise AssertionError(f"Collector produced no rows for {table}")

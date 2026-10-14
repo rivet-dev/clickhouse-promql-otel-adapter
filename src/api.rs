@@ -177,6 +177,7 @@ async fn handle(State(app): State<App>, request: Request) -> Response {
         return (StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed\n").into_response();
     }
     match dispatch(app, request).await {
+        Ok(value) if value.get("data").is_none() => StatusCode::NO_CONTENT.into_response(),
         Ok(value) => Json(value).into_response(),
         Err(error) => error.into_response(),
     }
@@ -251,6 +252,7 @@ async fn dispatch(app: App, request: Request) -> Result<JsonValue> {
             "query" | "query_range" => {
                 query_api(&app, &params, path == "query_range", deadline).await
             }
+            "query_exemplars" => exemplar_api(&app, &params).await,
             "labels" | "series" | "metadata" => discovery_api(&app, &params, &path).await,
             _ if path.starts_with("label/") && path.ends_with("/values") => {
                 discovery_api(&app, &params, &path).await
@@ -393,6 +395,28 @@ async fn query_api(app: &App, p: &Params, range: bool, deadline: Instant) -> Res
     })
     .await
     .map_err(ApiError::exec)?
+}
+async fn exemplar_api(app: &App, p: &Params) -> Result<JsonValue> {
+    let start = p.time("start", 0)?;
+    let end = p.time("end", 4_294_967_295_000)?;
+    if end < start {
+        return Err(ApiError::bad(
+            "end timestamp must not be before start timestamp",
+        ));
+    }
+    let query = p.get("query").unwrap_or("");
+    let expr =
+        Engine::parse(query).map_err(|e| ApiError::bad(parse_error(query, &e.to_string())))?;
+    let (_, _, selectors) = plan(&expr, start, end, 300_000).map_err(ApiError::bad)?;
+    if selectors.is_empty() {
+        return Ok(json!({"status":"success"}));
+    }
+    let result = app
+        .store
+        .exemplars(start, end, &selectors)
+        .await
+        .map_err(ApiError::exec)?;
+    Ok(success(json!(result)))
 }
 async fn discovery_api(app: &App, p: &Params, path: &str) -> Result<JsonValue> {
     let start = p.time("start", 0)?;

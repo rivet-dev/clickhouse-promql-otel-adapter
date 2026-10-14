@@ -1,13 +1,14 @@
 use crate::{
     engine::matches,
     model::{Labels, Point, STALE_BITS, Series, float_string},
+    translation::{label_name, metric_name},
 };
 use anyhow::{Context, Result, bail};
 use promql_parser::parser::{Expr, VectorSelector};
 use serde_json::Value as Json;
 use std::{collections::BTreeMap, time::Duration};
 
-const TABLES: [&str; 5] = [
+pub(crate) const TABLES: [&str; 5] = [
     "gauge",
     "sum",
     "histogram",
@@ -112,18 +113,21 @@ impl Store {
                 }
                 let row: Json =
                     serde_json::from_str(line).context("invalid ClickHouse metric row")?;
-                let name = if prometheus_scope(&row) {
-                    string(&row, "MetricName").to_owned()
-                } else {
-                    metric_name(
-                        string(&row, "MetricName"),
-                        string(&row, "MetricUnit"),
-                        kind,
-                        row["IsMonotonic"].as_bool().unwrap_or(false),
-                    )
-                };
+                let name = row_metric_name(&row, kind)?;
                 let mut labels = row_labels(&row)?;
                 labels.insert("__name__".into(), name.clone());
+                if let Some(info) = target_info(&row)?
+                    && (selectors.is_empty() || selectors.iter().any(|s| matches(s, &info)))
+                {
+                    let points = groups.entry(info).or_default();
+                    if samples && integer(&row["Flags"]).unwrap_or(0) & 1 == 0 {
+                        points.push(Point {
+                            timestamp: integer(&row["_timestamp"])?,
+                            value: 1.0,
+                            ..Default::default()
+                        });
+                    }
+                }
                 let candidates = derived_names(&name, kind);
                 let selected = selectors.is_empty()
                     || candidates.iter().any(|n| {
@@ -209,6 +213,12 @@ impl Store {
                             .unwrap_or(0.0),
                         ..Default::default()
                     };
+                    if !(-4..=20).contains(&h.schema) {
+                        bail!(
+                            "OTLP exponential histogram scale {} cannot be represented as a Prometheus native histogram",
+                            h.schema
+                        );
+                    }
                     for (prefix, buckets) in
                         [("Positive", &mut h.positive), ("Negative", &mut h.negative)]
                     {
@@ -221,6 +231,9 @@ impl Store {
                         {
                             buckets.insert(offset + i as i32 + 1, number(v)?);
                         }
+                    }
+                    if h.schema > 8 {
+                        h.reduce(8)?;
                     }
                     if row.get("ZeroThreshold").is_none() {
                         let warning="Collector schema does not store exponential histogram ZeroThreshold; assuming zero".to_owned();
@@ -353,7 +366,7 @@ pub fn validate_identifier(s: &str) -> Result<()> {
 fn string<'a>(row: &'a Json, key: &str) -> &'a str {
     row[key].as_str().unwrap_or("")
 }
-fn number(v: &Json) -> Result<f64> {
+pub(crate) fn number(v: &Json) -> Result<f64> {
     if let Some(n) = v.as_f64() {
         Ok(n)
     } else if let Some(s) = v.as_str() {
@@ -371,18 +384,79 @@ fn integer(v: &Json) -> Result<i64> {
         bail!("missing or invalid integer metric value")
     }
 }
-fn prometheus_scope(row: &Json) -> bool {
+pub(crate) fn row_metric_name(row: &Json, kind: &str) -> Result<String> {
+    if prometheus_scope(row) {
+        Ok(string(row, "MetricName").into())
+    } else {
+        metric_name(
+            string(row, "MetricName"),
+            string(row, "MetricUnit"),
+            kind,
+            row["IsMonotonic"].as_bool().unwrap_or(false),
+        )
+    }
+}
+fn target_info(row: &Json) -> Result<Option<Labels>> {
+    let resource = &row["ResourceAttributes"];
+    let service = resource["service.name"].as_str().unwrap_or("");
+    let instance = resource["service.instance.id"].as_str().unwrap_or("");
+    if service.is_empty() && instance.is_empty() {
+        return Ok(None);
+    }
+    let mut labels = Labels::new();
+    labels.insert("__name__".into(), "target_info".into());
+    if !service.is_empty() {
+        let ns = resource["service.namespace"].as_str().unwrap_or("");
+        labels.insert(
+            "job".into(),
+            if ns.is_empty() {
+                service.into()
+            } else {
+                format!("{ns}/{service}")
+            },
+        );
+    }
+    if !instance.is_empty() {
+        labels.insert("instance".into(), instance.into());
+    }
+    if let Some(attrs) = resource.as_object() {
+        for (key, value) in attrs {
+            if matches!(
+                key.as_str(),
+                "service.name" | "service.namespace" | "service.instance.id"
+            ) {
+                continue;
+            }
+            let key = if prometheus_scope(row) {
+                key.clone()
+            } else {
+                label_name(key)?
+            };
+            let value = value
+                .as_str()
+                .context("resource attribute is not a string")?;
+            if value.is_empty() {
+                continue;
+            }
+            if labels.insert(key.clone(), value.into()).is_some() {
+                bail!("resource attribute normalization collision at {key}");
+            }
+        }
+    }
+    Ok(Some(labels))
+}
+pub(crate) fn prometheus_scope(row: &Json) -> bool {
     string(row, "ScopeName")
         == "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver"
 }
-fn row_labels(row: &Json) -> Result<Labels> {
+pub(crate) fn row_labels(row: &Json) -> Result<Labels> {
     let mut labels = Labels::new();
     if let Some(attrs) = row["Attributes"].as_object() {
         for (k, v) in attrs {
             let key = if prometheus_scope(row) {
                 k.clone()
             } else {
-                label_name(k)
+                label_name(k)?
             };
             let value = v.as_str().context("attribute is not a string")?;
             if !value.is_empty() && labels.insert(key.clone(), value.into()).is_some() {
@@ -408,53 +482,31 @@ fn row_labels(row: &Json) -> Result<Labels> {
     {
         labels.entry("instance".into()).or_insert(instance.into());
     }
-    // Scraped Prometheus labels already live in Attributes. Scope is ingestion
-    // metadata and must not introduce extra labels into those series.
-    Ok(labels)
-}
-fn label_name(name: &str) -> String {
-    let mut result = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
+    if !prometheus_scope(row) {
+        for (field, label) in [
+            ("ScopeName", "otel_scope_name"),
+            ("ScopeVersion", "otel_scope_version"),
+            ("ScopeSchemaUrl", "otel_scope_schema_url"),
+        ] {
+            let value = string(row, field);
+            if !value.is_empty() && labels.insert(label.into(), value.into()).is_some() {
+                bail!("scope attribute collision at {label}");
             }
-        })
-        .collect::<String>();
-    if result.starts_with(|c: char| c.is_ascii_digit()) {
-        result.insert_str(0, "key_");
+        }
+        if let Some(attrs) = row["ScopeAttributes"].as_object() {
+            for (key, value) in attrs {
+                if matches!(key.as_str(), "name" | "version" | "schema_url") {
+                    continue;
+                }
+                let label = label_name(&format!("otel_scope_{key}"))?;
+                let value = value.as_str().context("scope attribute is not a string")?;
+                if !value.is_empty() && labels.insert(label.clone(), value.into()).is_some() {
+                    bail!("scope attribute collision at {label}");
+                }
+            }
+        }
     }
-    result
-}
-fn metric_name(name: &str, unit: &str, kind: &str, monotonic: bool) -> String {
-    let mut tokens = name
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let unit = match unit {
-        "s" => "seconds",
-        "ms" => "milliseconds",
-        "us" => "microseconds",
-        "ns" => "nanoseconds",
-        "By" => "bytes",
-        "1" | "" => "",
-        other => other,
-    };
-    if !unit.is_empty() && !tokens.iter().any(|t| t == unit) {
-        tokens.push(unit.into())
-    }
-    if kind == "sum" && monotonic {
-        tokens.retain(|t| t != "total");
-        tokens.push("total".into());
-    }
-    let mut name = tokens.join("_");
-    if name.starts_with(|c: char| c.is_ascii_digit()) {
-        name.insert(0, '_');
-    }
-    name
+    Ok(labels)
 }
 fn derived_names(name: &str, kind: &str) -> Vec<String> {
     match kind {
