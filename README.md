@@ -1,108 +1,143 @@
 # clickhouse-promql-otel-adapter
 
-A **strictly Rust** PromQL evaluator and Prometheus/Thanos query HTTP adapter over
-the unmodified OpenTelemetry Collector ClickHouse metrics tables. Point Grafana's
-standard Prometheus data source at this server. Ingestion remains with the
-Collector; no Go code runs in the adapter.
+A Prometheus-compatible query API over the metrics tables the OpenTelemetry
+Collector writes to ClickHouse. Point Grafana's standard Prometheus data source
+at it and query your OTel metrics with PromQL.
 
-The pinned Prometheus corpus passes **21,442 executions**, with **1,016 HTTP
-reference cases** and real ClickHouse integration tests. The
-[compatibility checklist](docs/compatibility.md) links upstream sources and test
-suites. Read [the API contract](docs/api-contract.md) and
-[schema findings](docs/schema-findings.md): the default schema loses subsecond
-precision and some histogram/metadata fields, so this is not a claim of lossless
-replacement for every Thanos deployment.
+## Why
 
-## Run
+If your metrics already land in ClickHouse through the Collector's ClickHouse
+exporter, you shouldn't need a second metrics store (Prometheus, Thanos, Mimir)
+just to get PromQL. This adapter reads the existing tables as they are. You don't
+change the schema, add a second ingestion path or make a copy of the data.
 
-Requires Rust and an existing ClickHouse database created by the Collector's
-ClickHouse exporter (all five metric tables). Use the same database/user as the
-exporter:
+### Why PromQL instead of raw ClickHouse SQL?
+
+- **Every tool already speaks it.** Grafana dashboards, Explore, alerting and
+  community dashboards all expect a Prometheus data source.
+- **Counters are hard in SQL.** `rate()`, `increase()` and
+  `histogram_quantile()` need counter-reset handling, extrapolation and lookback.
+  In SQL that means a page of window functions per panel, and each copy can get
+  it subtly wrong.
+- **Queries stay short.** `sum by (service) (rate(http_requests_total[5m]))` is
+  one line. The same query in SQL against the OTel schema joins maps, attributes
+  and temporality by hand.
+- **The queries are portable.** The same PromQL runs against Prometheus or Thanos
+  if you ever move.
+
+## Architecture
+
+```
+apps ──OTLP──▶ OTel Collector ──clickhouse exporter──▶ ClickHouse
+                                                          ▲
+Grafana ──Prometheus HTTP API──▶ clickhouse-promql ───SQL──┘
+```
+
+- The **Collector** owns ingestion and creates the five default
+  `otel_metrics_*` tables (gauge, sum, histogram, exponential histogram,
+  summary). The adapter never writes to them.
+- The **adapter** is a single Rust binary. It parses PromQL, pushes series and
+  time-range selection down to ClickHouse as SQL, and runs evaluation in its own
+  engine (rates, aggregations, histograms, Thanos-style replica dedup).
+  OTel metric and attribute names are converted to Prometheus names the same way
+  `prometheus/otlptranslator` converts them.
+- It's **stateless**: no cache and no local storage. You can run as many replicas
+  as you like.
+
+It is tested against the upstream Prometheus PromQL test corpus (21k+ executions)
+and 1k+ HTTP reference cases. See [compatibility](docs/compatibility.md). The
+default exporter schema loses subsecond timestamps and some histogram and
+metadata fields, so results aren't lossless in every case. See
+[schema findings](docs/schema-findings.md).
+
+## Quickstart
+
+You need a ClickHouse database that the Collector's ClickHouse exporter already
+writes to.
+
+**Docker:**
+
+```sh
+docker run --rm -p 9091:9091 \
+  -e CLICKHOUSE_URL=http://clickhouse:8123 \
+  -e CLICKHOUSE_DATABASE=otel \
+  -e CLICKHOUSE_USER=default \
+  -e CLICKHOUSE_PASSWORD=... \
+  ghcr.io/rivet-dev/clickhouse-promql-otel-adapter:latest
+```
+
+**From source:**
 
 ```sh
 cargo build --locked --release
-export CLICKHOUSE_URL=http://127.0.0.1:8123
-export CLICKHOUSE_DATABASE=otel
-export CLICKHOUSE_USER=default
-# Set CLICKHOUSE_PASSWORD through your environment/secret manager.
-./target/release/clickhouse-promql --host 0.0.0.0 --port 9091
+CLICKHOUSE_URL=http://127.0.0.1:8123 CLICKHOUSE_PASSWORD=... \
+  ./target/release/clickhouse-promql --host 0.0.0.0
 ```
 
-For Thanos HA replicas add `--replica-label replica` (repeat for multiple labels).
-Add `--thanos-default-step 60` to allow omitted range steps using Thanos defaults.
-Without that option, range queries require `step`, as in Prometheus.
+Then in Grafana, add a **Prometheus** data source with the URL
+`http://<adapter-host>:9091`.
 
-[Run the complete local demo](demo/README.md): an OpenMetrics generator, real
-Collector, ClickHouse, Rust adapter and Grafana. The
-[manual verification report](docs/manual-verification.md) includes six actual
-browser screenshots of data source health, Explore, dashboards and error cases.
+To see the whole pipeline running locally (metric generator, Collector,
+ClickHouse, adapter and Grafana), follow the [demo](demo/README.md).
 
-## Test and regenerate snapshots
+## Reference
 
-Requires Docker Compose and Python 3. Start the dedicated test ClickHouse:
+### Configuration
+
+| Flag | Env | Default | Description |
+|---|---|---|---|
+| `--host` | | `127.0.0.1` | Bind address (the container image uses `0.0.0.0`) |
+| `--port` | | `9091` | HTTP port |
+| `--clickhouse-url` | `CLICKHOUSE_URL` | `http://127.0.0.1:18123` | ClickHouse HTTP endpoint |
+| `--database` | `CLICKHOUSE_DATABASE` | `otel` | Database containing the `otel_metrics_*` tables |
+| `--username` | `CLICKHOUSE_USER` | `default` | ClickHouse user |
+| `--password` | `CLICKHOUSE_PASSWORD` | empty | ClickHouse password |
+| `--replica-label <name>` | | none | Label that identifies HA replicas for Thanos dedup. Repeat the flag to set several. |
+| `--thanos-default-step <secs>` | | off | Accept range queries without `step`, using Thanos defaults (usually `60`). By default `step` is required, as in Prometheus. |
+| | `RUST_LOG` | | Log filter, for example `info` or `clickhouse_promql=debug` |
+
+### HTTP endpoints
+
+- `/api/v1/*`: Prometheus query API (`query`, `query_range`, `series`, `labels`,
+  `label/<name>/values`, `metadata`, `query_exemplars`, `format_query`,
+  `parse_query`, `status/buildinfo`), plus Thanos query parameters (`dedup`,
+  `replicaLabels[]`, `partial_response`, `max_source_resolution`, `shard_info`
+  and others).
+- `/-/healthy` checks liveness. `/-/ready` checks readiness and makes a real
+  ClickHouse request.
+- `/metrics` exposes adapter build info.
+
+Not implemented: rules and alerts (use Grafana-managed alerting), remote
+read/write, ingestion, TSDB admin and the Thanos StoreAPI. These routes return 404.
+
+The adapter has **no built-in auth or TLS**. Put it behind your own network
+controls or a reverse proxy.
+
+Full details, including default resource limits and error codes, are in the
+[API contract](docs/api-contract.md).
+
+### Development
 
 ```sh
-docker compose up -d --wait
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
+docker compose up -d --wait        # test ClickHouse on 127.0.0.1:18123
 cargo test --locked
-python3 scripts/conformance.py
-cargo test --manifest-path vendor/promql-parser/Cargo.toml --all-features
-python3 scripts/generate-snapshots.py
-python3 scripts/generate-snapshots.py --precision-schema
+python3 scripts/conformance.py     # Prometheus corpus
 ```
 
-Every ClickHouse integration test creates a unique database and cleans it on
-success or panic. The tests require a real server; they do not silently skip it.
-Compose exposes loopback ports 18123/19000 with local test credentials. Its volume
-persists until `docker compose down -v`.
+Snapshot and reference regeneration (requires Go) is described in the
+[evaluator](docs/evaluator-report.md) and [storage](docs/storage-report.md)
+reports. Pushing a `vX.Y.Z` tag that matches `Cargo.toml` publishes Linux
+amd64/arm64 binaries (glibc 2.39+) and a multi-arch image to GHCR.
 
-The snapshot script runs Collector Contrib 0.162.0, lets the actual exporter
-create all five default tables, sends deterministic OTLP/HTTP data, and snapshots
-SHOW CREATE TABLE plus ingested rows. It cleans its database and Collector
-container. The precision variant precreates `DateTime64(9)` columns before using
-the same unmodified exporter. Normal checks compare; updates are explicit:
+## Maintenance
 
-```sh
-python3 scripts/datasets.py > /tmp/metrics.json
-python3 scripts/generate-snapshots.py --update
-python3 scripts/generate-snapshots.py --precision-schema --update
-python3 scripts/conformance.py --regenerate
-python3 scripts/thanos-conformance.py --regenerate
-```
+We built this for internal use at [Rivet](https://rivet.dev). We appreciate PRs,
+but we probably won't merge them. If you maintain a serious fork, open an issue
+and we'll list it here so others who find this project can use it.
 
-Reference regeneration additionally requires Go and downloads pinned upstream
-sources. Prometheus's actual evaluator assertions and HTTP handlers produce the
-accepted corpus. Thanos reference generation uses seeded replica data and real
-XOR iterators. Go is test tooling only. See [evaluator results](docs/evaluator-report.md),
-[storage results and exclusions](docs/storage-report.md), and
-[independent review corrections](docs/review-report.md).
-
-## Releases
-
-Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`. The tag must match
-`Cargo.toml`. Native Linux amd64 and arm64 jobs run the real ClickHouse tests and
-PromQL corpus, then package the binary, license and notices. Each archive is
-saved as an Actions artifact and attached to the GitHub release with SHA256SUMS.
-The binary remains named `clickhouse-promql`; use `--version` to inspect it.
-Linux binaries require glibc 2.39 or newer (for example Ubuntu 24.04).
-
-The Dockerfile packages those same binaries into a nonroot distroless image.
-The release workflow publishes the two architectures as one container image,
-with version and `latest` tags. To build locally:
-
-```sh
-cargo build --locked --release
-mkdir -p dist/amd64 # use arm64 when building on an arm64 host
-cp target/release/clickhouse-promql dist/amd64/
-docker build -t clickhouse-promql-otel-adapter .
-docker run --rm clickhouse-promql-otel-adapter --version
-```
-
-Set `CLICKHOUSE_URL`, `CLICKHOUSE_DATABASE`, `CLICKHOUSE_USER` and
-`CLICKHOUSE_PASSWORD` when running the container; it listens on port 9091.
+**Forks:** none yet.
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE)
-for third-party attributions.
+[Apache 2.0](LICENSE). See [NOTICE](NOTICE) for third-party attributions
+(Prometheus, Thanos, Greptime `promql-parser`, otlptranslator).
