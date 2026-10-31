@@ -118,6 +118,7 @@ impl Store {
             .map_err(|e| BackendError(format!("{e:#}")).into())
     }
     async fn query_inner(&self, sql: &str, params: &[(&str, String)]) -> Result<String> {
+        let started = Instant::now();
         let mut response = self
             .client
             .post(&self.url)
@@ -131,6 +132,7 @@ impl Store {
             .send()
             .await
             .context("ClickHouse request failed")?;
+        let headers_ms = started.elapsed().as_millis() as u64;
         let status = response.status();
         if response
             .content_length()
@@ -145,6 +147,13 @@ impl Store {
             }
             bytes.extend_from_slice(&chunk);
         }
+        tracing::debug!(
+            headers_ms,
+            total_ms = started.elapsed().as_millis() as u64,
+            bytes = bytes.len(),
+            query = sql.get(..160).unwrap_or(sql),
+            "clickhouse round trip"
+        );
         let text = String::from_utf8(bytes).context("ClickHouse returned invalid UTF-8")?;
         if !status.is_success() {
             bail!(
