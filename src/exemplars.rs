@@ -33,7 +33,8 @@ impl Store {
             } else {
                 ""
             };
-            let (labels_predicate, labels_params) = label_filter(kind, selectors);
+            let (labels_predicate, labels_params) =
+                label_filter(kind, selectors, &self.promoted_resource_attributes);
             let extra = match kind {
                 "sum" => ", IsMonotonic",
                 "histogram" => ", ExplicitBounds",

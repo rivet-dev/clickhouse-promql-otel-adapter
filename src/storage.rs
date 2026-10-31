@@ -240,7 +240,8 @@ impl Store {
             } else {
                 ""
             };
-            let (labels_predicate, labels_params) = label_filter(kind, selectors);
+            let (labels_predicate, labels_params) =
+                label_filter(kind, selectors, &self.promoted_resource_attributes);
             let projection = if samples {
                 // Keep optional schema additions such as ZeroThreshold while
                 // avoiding unused strings and potentially huge exemplar arrays.
@@ -775,6 +776,7 @@ fn retain_matchers(selector: &mut VectorSelector, keep: impl Fn(&str) -> bool) {
 pub(crate) fn label_filter(
     kind: &str,
     selectors: &[VectorSelector],
+    promoted: &[(String, String)],
 ) -> (String, Vec<(String, String)>) {
     let mut params = Vec::new();
     let mut alternatives = Vec::new();
@@ -802,8 +804,12 @@ pub(crate) fn label_filter(
             }
             let mut terms = Vec::new();
             for matcher in branch {
+                // A promoted label that shadows job or instance follows their
+                // precedence in row_labels; filter it in Rust only.
+                let promotion = promoted.iter().find(|(_, label)| *label == matcher.name);
                 if matcher.name == "__name__"
                     || matcher.name.starts_with("otel_scope_")
+                    || (promotion.is_some() && matches!(matcher.name.as_str(), "job" | "instance"))
                     || (kind == "histogram" && matcher.name == "le")
                     || (kind == "summary" && matcher.name == "quantile")
                 {
@@ -847,6 +853,20 @@ pub(crate) fn label_filter(
                     "if(ScopeName = 'github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver', Attributes[{{{key}:String}}], ifNull(arrayFirstOrNull((v, k) -> {normalized} = {{{key}:String}} AND v != '', mapValues(Attributes), mapKeys(Attributes)), ''))"
                 );
                 let expression = match matcher.name.as_str() {
+                    _ if promotion.is_some() => {
+                        let resource = format!("label_resource_{index}");
+                        params.push((
+                            format!("param_{resource}"),
+                            string_param(
+                                &promotion
+                                    .map(|(attribute, _)| attribute.as_str())
+                                    .unwrap_or_default(),
+                            ),
+                        ));
+                        format!(
+                            "if(notEmpty({attribute}), {attribute}, ResourceAttributes[{{{resource}:String}}])"
+                        )
+                    }
                     "job" => format!(
                         "if(notEmpty({attribute}), {attribute}, if(empty(ResourceAttributes['service.name']), '', concat(if(empty(ResourceAttributes['service.namespace']), '', concat(ResourceAttributes['service.namespace'], '/')), ResourceAttributes['service.name'])))"
                     ),

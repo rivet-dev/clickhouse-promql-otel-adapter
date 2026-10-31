@@ -306,6 +306,30 @@ async fn promoted_resource_attribute_separates_targets() {
             .collect::<Vec<_>>();
         pods.sort();
         assert_eq!(pods, ["host-a", "host-b"]);
+
+        // Label pushdown must read a promoted label from the resource attributes.
+        for (query, expected) in [
+            ("heartbeats_total{pod=\"host-b\"}", vec!["host-b"]),
+            (
+                "heartbeats_total{pod=~\"host-a|host-b\"}",
+                vec!["host-a", "host-b"],
+            ),
+            ("heartbeats_total{pod!=\"host-a\"}", vec!["host-b"]),
+        ] {
+            let expr = Engine::parse(query).unwrap();
+            let (a, b, s) = plan(&expr, START, START, 300_000).unwrap();
+            let result = Engine::new(&store.load(a, b, &s).await.unwrap().series, START, START)
+                .instant(query, START)
+                .unwrap()
+                .vector()
+                .unwrap();
+            let mut pods = result
+                .iter()
+                .map(|s| s.labels["pod"].clone())
+                .collect::<Vec<_>>();
+            pods.sort();
+            assert_eq!(pods, expected, "{query}");
+        }
     })
     .await
 }
