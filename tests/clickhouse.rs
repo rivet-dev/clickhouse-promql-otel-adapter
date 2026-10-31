@@ -333,3 +333,56 @@ async fn promoted_resource_attribute_separates_targets() {
     })
     .await
 }
+#[tokio::test]
+async fn label_columns_filter_the_mirrored_column() {
+    common::empty_database_test(false, |mut store| async move {
+        // ServiceName stands in for a sort-key tenant column. The last row
+        // breaks the mirroring contract on purpose, to prove the column
+        // filter is applied in SQL.
+        let rows = [("a", "a"), ("b", "b"), ("a", "other")]
+            .iter()
+            .map(|(tenant, column)| {
+                serde_json::json!({
+                    "MetricName": "requests", "Value": 1,
+                    "TimeUnix": "2023-11-14 22:13:20", "ServiceName": column,
+                    "Attributes": {"tenant": tenant, "column": column},
+                    "ScopeName": "fixture-generator",
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        store
+            .query(
+                &format!(
+                    "INSERT INTO {}.otel_metrics_gauge FORMAT JSONEachRow\n{rows}",
+                    store.database
+                ),
+                &[],
+            )
+            .await
+            .unwrap();
+        store.label_columns = vec![("tenant".into(), "ServiceName".into())];
+        for (query, expected) in [
+            ("requests{tenant=\"a\"}", vec!["a"]),
+            ("requests{tenant=~\"a|b\"}", vec!["a", "b"]),
+            ("requests{tenant!=\"b\"}", vec!["a", "other"]),
+            ("requests{tenant=~\"a.*\"}", vec!["a", "other"]),
+        ] {
+            let expr = Engine::parse(query).unwrap();
+            let (a, b, s) = plan(&expr, START, START, 300_000).unwrap();
+            let result = Engine::new(&store.load(a, b, &s).await.unwrap().series, START, START)
+                .instant(query, START)
+                .unwrap()
+                .vector()
+                .unwrap();
+            let mut columns = result
+                .iter()
+                .map(|s| s.labels["column"].clone())
+                .collect::<Vec<_>>();
+            columns.sort();
+            assert_eq!(columns, expected, "{query}");
+        }
+    })
+    .await
+}
