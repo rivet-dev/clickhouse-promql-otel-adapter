@@ -76,6 +76,8 @@ struct NameCoverage {
     from_ms: i64,
     scanned_at_ms: i64,
     refreshed: Instant,
+    /// When a background forward scan started, if one is running.
+    refreshing: Option<Instant>,
     seen: std::collections::HashSet<String>,
     rows: Dictionary,
 }
@@ -268,10 +270,12 @@ impl Store {
                 from_ms: start,
                 scanned_at_ms: now_ms,
                 refreshed: Instant::now(),
+                refreshing: None,
                 seen: Default::default(),
                 rows: Default::default(),
             };
-            self.scan_names(kind, start, None, &mut coverage).await?;
+            let text = self.fetch_names(kind, start, None).await?;
+            self.merge_names(&text, &mut coverage)?;
             let rows = coverage.rows.clone();
             *cache = if self.metric_cache_ttl.is_zero() {
                 None
@@ -281,29 +285,61 @@ impl Store {
             return Ok(rows);
         }
         let coverage = cache.as_mut().context("metric dictionary missing")?;
+        // An earlier start needs those names for a correct answer, so the
+        // query waits for that scan.
         if start < coverage.from_ms {
             let until = coverage.from_ms;
-            self.scan_names(kind, start, Some(until), coverage).await?;
+            let text = self.fetch_names(kind, start, Some(until)).await?;
+            self.merge_names(&text, coverage)?;
             coverage.from_ms = start;
         }
-        if coverage.refreshed.elapsed() >= self.metric_cache_ttl {
-            let since = coverage.scanned_at_ms.saturating_sub(NAME_LATE_ARRIVAL_MS);
-            self.scan_names(kind, since.max(coverage.from_ms), None, coverage)
-                .await?;
-            coverage.scanned_at_ms = now_ms;
-            coverage.refreshed = Instant::now();
+        // New names may appear up to one TTL late, so expiry serves the cached
+        // names and extends them forward in the background. A scan that never
+        // reports back is retried after two minutes.
+        let stuck = coverage
+            .refreshing
+            .is_some_and(|started| started.elapsed() >= Duration::from_secs(120));
+        if coverage.refreshed.elapsed() >= self.metric_cache_ttl
+            && (coverage.refreshing.is_none() || stuck)
+        {
+            coverage.refreshing = Some(Instant::now());
+            let since = coverage
+                .scanned_at_ms
+                .saturating_sub(NAME_LATE_ARRIVAL_MS)
+                .max(coverage.from_ms);
+            let store = self.clone();
+            tokio::spawn(async move { store.refresh_names(index, since, now_ms).await });
         }
         Ok(coverage.rows.clone())
     }
 
-    /// Adds the distinct names in `[from, until)` to `coverage`.
-    async fn scan_names(
-        &self,
-        kind: &str,
-        from: i64,
-        until: Option<i64>,
-        coverage: &mut NameCoverage,
-    ) -> Result<()> {
+    /// Extends table `index`'s cached names forward from `since`. A failure
+    /// leaves the cache expired, so the next query starts another scan.
+    async fn refresh_names(&self, index: usize, since: i64, now_ms: i64) {
+        let text = self.fetch_names(TABLES[index], since, None).await;
+        let mut cache = self.dictionaries[index].lock().await;
+        let Some(coverage) = cache.as_mut() else {
+            return;
+        };
+        coverage.refreshing = None;
+        let merged = text.and_then(|text| self.merge_names(&text, coverage));
+        match merged {
+            Ok(()) => {
+                coverage.scanned_at_ms = now_ms;
+                coverage.refreshed = Instant::now();
+            }
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    table = TABLES[index],
+                    "metric name refresh failed; retrying on the next query"
+                );
+            }
+        }
+    }
+
+    /// Distinct name metadata rows in `[from, until)`, one JSON object per line.
+    async fn fetch_names(&self, kind: &str, from: i64, until: Option<i64>) -> Result<String> {
         let monotonic = if kind == "sum" { ", IsMonotonic" } else { "" };
         let upper = if until.is_some() {
             " AND TimeUnix < fromUnixTimestamp64Milli({until:Int64})"
@@ -319,24 +355,29 @@ impl Store {
         if let Some(until) = until {
             params.push(("param_until", until.to_string()));
         }
-        let text = self.query(&sql, &params).await?;
+        self.query(&sql, &params).await
+    }
+
+    /// Adds name rows from `fetch_names` that `coverage` has not seen. Nothing
+    /// is recorded unless every new row decodes.
+    fn merge_names(&self, text: &str, coverage: &mut NameCoverage) -> Result<()> {
+        let mut lines = Vec::new();
         let mut rows = coverage.rows.as_ref().clone();
-        for (i, line) in text.lines().enumerate() {
-            if i.is_multiple_of(1024) {
-                tokio::task::yield_now().await;
-            }
-            if coverage.seen.contains(line) {
+        for line in text.lines() {
+            if coverage.seen.contains(line) || lines.contains(&line) {
                 continue;
             }
             if rows.len() >= self.max_rows {
                 bail!("ClickHouse metric dictionary limit exceeded");
             }
             rows.push(serde_json::from_str(line)?);
-            coverage.seen.insert(line.to_owned());
+            lines.push(line);
         }
+        coverage.seen.extend(lines.into_iter().map(str::to_owned));
         coverage.rows = Arc::new(rows);
         Ok(())
     }
+
     /// Fills the metric name cache for rows at or after `start`, so the first
     /// dashboard queries after startup do not each wait for the scans. Errors
     /// are only logged: queries scan on demand as usual.
