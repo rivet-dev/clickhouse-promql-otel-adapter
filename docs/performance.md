@@ -106,6 +106,35 @@ cargo test --release --locked --test review_correctness \
   classic_histogram -- --ignored --nocapture
 ```
 
+## Production measurements — 2026-10-31 (0.0.4)
+
+A replay of 640 real dashboard and alert queries (one-hour range, 15-second
+step, one tenant, sequential) against a multi-tenant ClickHouse holding about
+300 million rows per metric table, from the adapter on a 2-vCPU VM. Every
+result was compared by digest with the previous release: all identical.
+
+| Workload | 0.0.3 | 0.0.4 |
+|---|---:|---:|
+| Metric name lookup after the 60 s cache expiry | 38–57 s per table, blocking | background scan of the last minutes |
+| Queries landing on that expiry | 53–89 s | under 20 ms |
+| All 640 queries, name cache pinned warm on 0.0.3 | 193 s | 51 s |
+| p99 / max, same | 1.6 s / 93 s | 0.6 s / 1.5 s |
+| Largest classic-histogram panel | 5.0 s | 1.5 s |
+| 28-selector `label_replace` panel | 2.3 s | 0.5 s |
+
+What changed:
+
+- Metric names are scanned only for the queried time range, extended
+  backwards on demand, refreshed forward in the background and warmed at
+  startup. A full-table `DISTINCT` read every stored row.
+- Metric tables are queried concurrently.
+- Range queries reuse work across steps: shared label sets with cached hashes,
+  per-series window cursors, group keys, selector matches and `label_replace`
+  results. Label maps were previously copied for every series at every step.
+- Histogram rows send bucket bounds once per group, omit bucket arrays when only
+  `_count`/`_sum` are selected, and receive 64-bit integers unquoted.
+- `--label-column` lets a selective tenant filter use a sort-key column.
+
 ## Operational limits
 
 The final integrated suite passed **88 Rust tests**, with the two manual timing
