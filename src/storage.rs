@@ -32,6 +32,11 @@ pub struct Store {
     pub password: String,
     pub max_rows: usize,
     pub max_bytes: usize,
+    /// Resource attributes copied onto every series as labels, as
+    /// (attribute, label) pairs. This mirrors Prometheus'
+    /// `promote_resource_attributes` for producers that identify a target with
+    /// an attribute other than `service.instance.id`.
+    pub promoted_resource_attributes: Vec<(String, String)>,
 }
 #[derive(Default)]
 pub struct Loaded {
@@ -53,6 +58,7 @@ impl Store {
             password,
             max_rows: 1_000_000,
             max_bytes: 64 * 1024 * 1024,
+            promoted_resource_attributes: Vec::new(),
         })
     }
     pub async fn query(&self, sql: &str, params: &[(&str, String)]) -> Result<String> {
@@ -229,7 +235,7 @@ impl Store {
                         continue;
                     }
                 };
-                let mut labels = row_labels(&row)?;
+                let mut labels = row_labels(&row, &self.promoted_resource_attributes)?;
                 labels.insert("__name__".into(), name.clone());
                 if let Some(info) = target_info(&row)?
                     && (selectors.is_empty() || selectors.iter().any(|s| matches(s, &info)))
@@ -575,7 +581,7 @@ pub(crate) fn prometheus_scope(row: &Json) -> bool {
     string(row, "ScopeName")
         == "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver"
 }
-pub(crate) fn row_labels(row: &Json) -> Result<Labels> {
+pub(crate) fn row_labels(row: &Json, promoted: &[(String, String)]) -> Result<Labels> {
     let mut labels = Labels::new();
     if let Some(attrs) = row["Attributes"].as_object() {
         for (k, v) in attrs {
@@ -607,6 +613,14 @@ pub(crate) fn row_labels(row: &Json) -> Result<Labels> {
         .filter(|s| !s.is_empty())
     {
         labels.entry("instance".into()).or_insert(instance.into());
+    }
+    for (attribute, label) in promoted {
+        if let Some(value) = resource[attribute.as_str()]
+            .as_str()
+            .filter(|s| !s.is_empty())
+        {
+            labels.entry(label.clone()).or_insert(value.into());
+        }
     }
     if !prometheus_scope(row) {
         for (field, label) in [

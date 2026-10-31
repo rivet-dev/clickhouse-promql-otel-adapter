@@ -304,6 +304,7 @@ Add a **Prometheus** data source in Grafana: `http://<host>:9091`. Full local st
 | `--username` | `CLICKHOUSE_USER` | `default` | |
 | `--password` | `CLICKHOUSE_PASSWORD` | | |
 | `--replica-label` | | | HA replica label for dedup (repeatable) |
+| `--promote-resource-attribute` | | | Copy a resource attribute onto every series as `ATTR` or `ATTR=LABEL` (repeatable), like Prometheus `promote_resource_attributes` |
 | `--thanos-default-step` | | off | Seconds; allows range queries without `step` |
 | | `RUST_LOG` | | Log filter |
 

@@ -7,3 +7,4 @@ pub mod model;
 mod numeric;
 pub mod storage;
 mod translation;
+pub use translation::label_name;

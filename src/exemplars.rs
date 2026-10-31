@@ -56,7 +56,7 @@ impl Store {
                 }
                 let row: Value = serde_json::from_str(line)?;
                 let name = row_metric_name(&row, kind)?;
-                let base = row_labels(&row)?;
+                let base = row_labels(&row, &self.promoted_resource_attributes)?;
                 for (i, t) in row["_times"]
                     .as_array()
                     .context("missing exemplar timestamps")?

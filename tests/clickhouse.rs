@@ -252,3 +252,60 @@ async fn collector_histograms_without_optional_buckets() {
     })
     .await;
 }
+#[tokio::test]
+async fn promoted_resource_attribute_separates_targets() {
+    common::empty_database_test(false, |mut store| async move {
+        // Two hosts report one series and differ only in a resource attribute
+        // that is not service.instance.id.
+        let rows = ["host-a", "host-b"]
+            .iter()
+            .enumerate()
+            .map(|(i, host)| {
+                serde_json::json!({
+                    "MetricName": "heartbeats_total", "Value": i as f64 + 1.0,
+                    "TimeUnix": "2023-11-14 22:13:20", "StartTimeUnix": "2023-11-14 22:00:00",
+                    "IsMonotonic": true, "AggregationTemporality": 2,
+                    "ResourceAttributes": {"service.name": "engine", "rivet.instance_id": host},
+                    "ScopeName": "fixture-generator",
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        store
+            .query(
+                &format!(
+                    "INSERT INTO {}.otel_metrics_sum FORMAT JSONEachRow\n{rows}",
+                    store.database
+                ),
+                &[],
+            )
+            .await
+            .unwrap();
+        let query = "heartbeats_total";
+        let expr = Engine::parse(query).unwrap();
+        let (a, b, s) = plan(&expr, START, START, 300_000).unwrap();
+        let collision = store.load(a, b, &s).await;
+        assert!(
+            collision
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("conflicting samples")
+        );
+
+        store.promoted_resource_attributes = vec![("rivet.instance_id".into(), "pod".into())];
+        let result = Engine::new(&store.load(a, b, &s).await.unwrap().series, START, START)
+            .instant(query, START)
+            .unwrap()
+            .vector()
+            .unwrap();
+        let mut pods = result
+            .iter()
+            .map(|s| s.labels["pod"].clone())
+            .collect::<Vec<_>>();
+        pods.sort();
+        assert_eq!(pods, ["host-a", "host-b"]);
+    })
+    .await
+}
