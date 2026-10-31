@@ -1,6 +1,7 @@
 use clap::Parser;
 use clickhouse_promql::{
     api::{App, router},
+    label_name,
     storage::Store,
 };
 #[derive(Parser)]
@@ -21,6 +22,11 @@ struct Config {
     /// Labels identifying HA replicas; may be repeated.
     #[arg(long = "replica-label")]
     replica_labels: Vec<String>,
+    /// Copy a resource attribute onto every series as a label, as ATTRIBUTE or
+    /// ATTRIBUTE=LABEL; may be repeated. Without a LABEL the attribute name is
+    /// normalized like any other label.
+    #[arg(long = "promote-resource-attribute", value_parser = parse_promotion)]
+    promoted_resource_attributes: Vec<(String, String)>,
     /// Enable Thanos defaults for omitted range step (seconds, usually 60).
     #[arg(long, value_parser=clap::value_parser!(u64).range(1..))]
     thanos_default_step: Option<u64>,
@@ -31,7 +37,8 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let c = Config::parse();
-    let store = Store::new(c.clickhouse_url, c.database, c.username, c.password)?;
+    let mut store = Store::new(c.clickhouse_url, c.database, c.username, c.password)?;
+    store.promoted_resource_attributes = c.promoted_resource_attributes;
     let address = format!("{}:{}", c.host, c.port);
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(%address,"listening");
@@ -44,4 +51,18 @@ async fn main() -> anyhow::Result<()> {
         })
         .await?;
     Ok(())
+}
+
+fn parse_promotion(value: &str) -> anyhow::Result<(String, String)> {
+    let (attribute, label) = match value.split_once('=') {
+        Some((attribute, label)) => (attribute, label.to_owned()),
+        None => (value, label_name(value)?),
+    };
+    if attribute.is_empty() {
+        anyhow::bail!("resource attribute name is empty");
+    }
+    if label_name(&label)? != label {
+        anyhow::bail!("invalid label name {label:?}");
+    }
+    Ok((attribute.to_owned(), label))
 }
