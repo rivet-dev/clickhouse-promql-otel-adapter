@@ -446,10 +446,8 @@ impl Engine<'_> {
                 continue;
             }
             let mut drop_name = points.iter().any(|p| p.drop_name);
-            let metric = labels
-                .get("__name__")
-                .map(String::as_str)
-                .unwrap_or_default();
+            // Only warnings use the name; look it up when one is formatted.
+            let metric = MetricName(&labels);
             if matches!(name, "rate" | "increase" | "irate" | "resets")
                 && points.windows(2).any(|p| {
                     p[1].start_timestamp != 0
@@ -1172,5 +1170,20 @@ impl Engine<'_> {
             s.timestamp = t;
         }
         Ok(Value::Vector(v))
+    }
+}
+
+/// Formats a series' metric name like `{:?}` of the name string, reading the
+/// labels only when formatted.
+struct MetricName<'a>(&'a crate::model::Labels);
+
+impl std::fmt::Debug for MetricName<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = self
+            .0
+            .get("__name__")
+            .map(String::as_str)
+            .unwrap_or_default();
+        std::fmt::Debug::fmt(name, f)
     }
 }
