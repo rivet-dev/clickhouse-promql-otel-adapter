@@ -17,7 +17,24 @@ use std::{
 use tokio::sync::Mutex;
 
 type Dictionary = Arc<Vec<Json>>;
-type DictionaryEntry = Option<(Instant, String, Dictionary)>;
+type DictionaryEntry = Option<NameCoverage>;
+
+/// Late or clock-skewed samples older than this when the dictionary was last
+/// extended forward are rescanned by the next forward extension.
+const NAME_LATE_ARRIVAL_MS: i64 = 10 * 60 * 1000;
+
+/// Distinct metric names seen in `[from_ms, scanned_at_ms)` plus anything newer
+/// that the last forward scan returned. Queries starting at or after `from_ms`
+/// reuse it; earlier starts extend it backwards, and expiry extends it forward.
+/// Names are only ever added, so an extension never hides a name.
+struct NameCoverage {
+    identity: String,
+    from_ms: i64,
+    scanned_at_ms: i64,
+    refreshed: Instant,
+    seen: std::collections::HashSet<String>,
+    rows: Dictionary,
+}
 
 pub(crate) const TABLES: [&str; 5] = [
     "gauge",
@@ -132,6 +149,7 @@ impl Store {
     pub(crate) async fn metric_filter(
         &self,
         kind: &str,
+        start: i64,
         selectors: &[VectorSelector],
     ) -> Result<Option<Vec<String>>> {
         let name_selectors = selectors
@@ -149,13 +167,7 @@ impl Store {
         if selectors.is_empty() || accepts("target_info") {
             return Ok(None);
         }
-        let monotonic = if kind == "sum" { ", IsMonotonic" } else { "" };
-        let sql = format!(
-            "SELECT DISTINCT MetricName, MetricUnit, ScopeName{monotonic} FROM {}.otel_metrics_{kind} LIMIT {} FORMAT JSONEachRow",
-            self.database,
-            self.max_rows.saturating_add(1)
-        );
-        let rows = self.metric_dictionary(kind, &sql).await?;
+        let rows = self.metric_dictionary(kind, start).await?;
         let mut names = std::collections::BTreeSet::new();
         for (index, row) in rows.iter().enumerate() {
             if index.is_multiple_of(1024) {
@@ -170,42 +182,101 @@ impl Store {
         }
         Ok(Some(names.into_iter().collect()))
     }
-    async fn metric_dictionary(&self, kind: &str, sql: &str) -> Result<Dictionary> {
+    /// Distinct name metadata for rows at or after `start` (milliseconds).
+    /// Only the uncovered part of the time range is scanned: a full-table
+    /// DISTINCT reads every stored row and takes tens of seconds at scale.
+    async fn metric_dictionary(&self, kind: &str, start: i64) -> Result<Dictionary> {
         let index = TABLES
             .iter()
             .position(|table| *table == kind)
             .context("unknown metric table")?;
-        // Hold the per-table lock during refresh so concurrent panels share one
-        // scan. Samples are never cached. Failed/cancelled refreshes remain retryable.
+        // Hold the per-table lock during a scan so concurrent panels share it.
+        // Samples are never cached. Failed/cancelled scans remain retryable.
         let mut cache = self.dictionaries[index].lock().await;
         let identity = format!(
-            "{}\n{}\n{}\n{}",
-            self.url, self.username, self.max_bytes, sql
+            "{}\n{}\n{}\n{kind}",
+            self.url, self.username, self.max_bytes
         );
-        if let Some((at, key, rows)) = cache.as_ref()
-            && key == &identity
-            && at.elapsed() < self.metric_cache_ttl
-        {
-            return Ok(rows.clone());
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or_default();
+        let reusable = !self.metric_cache_ttl.is_zero()
+            && cache.as_ref().is_some_and(|c| c.identity == identity);
+        if !reusable {
+            let mut coverage = NameCoverage {
+                identity,
+                from_ms: start,
+                scanned_at_ms: now_ms,
+                refreshed: Instant::now(),
+                seen: Default::default(),
+                rows: Default::default(),
+            };
+            self.scan_names(kind, start, None, &mut coverage).await?;
+            let rows = coverage.rows.clone();
+            *cache = if self.metric_cache_ttl.is_zero() {
+                None
+            } else {
+                Some(coverage)
+            };
+            return Ok(rows);
         }
-        let text = self.query(sql, &[]).await?;
-        let mut rows = Vec::new();
+        let coverage = cache.as_mut().context("metric dictionary missing")?;
+        if start < coverage.from_ms {
+            let until = coverage.from_ms;
+            self.scan_names(kind, start, Some(until), coverage).await?;
+            coverage.from_ms = start;
+        }
+        if coverage.refreshed.elapsed() >= self.metric_cache_ttl {
+            let since = coverage.scanned_at_ms.saturating_sub(NAME_LATE_ARRIVAL_MS);
+            self.scan_names(kind, since.max(coverage.from_ms), None, coverage)
+                .await?;
+            coverage.scanned_at_ms = now_ms;
+            coverage.refreshed = Instant::now();
+        }
+        Ok(coverage.rows.clone())
+    }
+
+    /// Adds the distinct names in `[from, until)` to `coverage`.
+    async fn scan_names(
+        &self,
+        kind: &str,
+        from: i64,
+        until: Option<i64>,
+        coverage: &mut NameCoverage,
+    ) -> Result<()> {
+        let monotonic = if kind == "sum" { ", IsMonotonic" } else { "" };
+        let upper = if until.is_some() {
+            " AND TimeUnix < fromUnixTimestamp64Milli({until:Int64})"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT DISTINCT MetricName, MetricUnit, ScopeName{monotonic} FROM {}.otel_metrics_{kind} WHERE TimeUnix >= fromUnixTimestamp64Milli({{from:Int64}}){upper} LIMIT {} FORMAT JSONEachRow",
+            self.database,
+            self.max_rows.saturating_add(1)
+        );
+        let mut params = vec![("param_from", from.to_string())];
+        if let Some(until) = until {
+            params.push(("param_until", until.to_string()));
+        }
+        let text = self.query(&sql, &params).await?;
+        let mut rows = coverage.rows.as_ref().clone();
         for (i, line) in text.lines().enumerate() {
             if i.is_multiple_of(1024) {
                 tokio::task::yield_now().await;
             }
-            if i >= self.max_rows {
+            if coverage.seen.contains(line) {
+                continue;
+            }
+            if rows.len() >= self.max_rows {
                 bail!("ClickHouse metric dictionary limit exceeded");
             }
             rows.push(serde_json::from_str(line)?);
+            coverage.seen.insert(line.to_owned());
         }
-        let rows = Arc::new(rows);
-        *cache = if self.metric_cache_ttl.is_zero() {
-            None
-        } else {
-            Some((Instant::now(), identity, rows.clone()))
-        };
-        Ok(rows)
+        coverage.rows = Arc::new(rows);
+        Ok(())
     }
     pub async fn load(&self, start: i64, end: i64, selectors: &[VectorSelector]) -> Result<Loaded> {
         self.load_inner(start, end, selectors, true).await
@@ -231,7 +302,7 @@ impl Store {
         let mut bytes_read = 0usize;
         let mut retained = 0usize;
         for kind in TABLES {
-            let filter = self.metric_filter(kind, selectors).await?;
+            let filter = self.metric_filter(kind, start, selectors).await?;
             if filter.as_ref().is_some_and(|v| v.is_empty()) {
                 continue;
             }

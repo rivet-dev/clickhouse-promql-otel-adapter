@@ -81,3 +81,64 @@ async fn concurrent_panels_share_refresh_and_failed_refresh_is_retried() {
     );
     server.abort();
 }
+
+#[derive(Default)]
+struct Recorder {
+    ranges: std::sync::Mutex<Vec<(String, Option<String>)>>,
+}
+async fn recorded(
+    State(state): State<Arc<Recorder>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> &'static str {
+    state.ranges.lock().unwrap().push((
+        params.get("param_from").cloned().unwrap_or_default(),
+        params.get("param_until").cloned(),
+    ));
+    ""
+}
+
+#[tokio::test]
+async fn name_scans_cover_only_the_missing_time_range() {
+    let backend = Arc::new(Recorder::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = Router::new()
+        .route("/", post(recorded))
+        .with_state(backend.clone());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let mut store = Store::new(url, "otel".into(), "reader".into(), "".into()).unwrap();
+    store.metric_cache_ttl = Duration::from_secs(60);
+    let Expr::VectorSelector(selector) = parser::parse("missing_metric").unwrap() else {
+        panic!()
+    };
+    let scans = |backend: &Recorder| backend.ranges.lock().unwrap().drain(..).collect::<Vec<_>>();
+
+    store
+        .load(1_000, 2_000, std::slice::from_ref(&selector))
+        .await
+        .unwrap();
+    assert_eq!(
+        scans(&backend),
+        vec![("1000".into(), None); 5],
+        "one bounded scan per table"
+    );
+
+    store
+        .load(1_500, 2_000, std::slice::from_ref(&selector))
+        .await
+        .unwrap();
+    assert!(scans(&backend).is_empty(), "a covered range reuses names");
+
+    store
+        .load(400, 2_000, std::slice::from_ref(&selector))
+        .await
+        .unwrap();
+    assert_eq!(
+        scans(&backend),
+        vec![("400".into(), Some("1000".into())); 5],
+        "an earlier start scans only the uncovered range"
+    );
+    server.abort();
+}

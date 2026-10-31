@@ -24,7 +24,7 @@ impl Store {
         let mut bytes_read = 0usize;
         let mut retained = 0usize;
         for kind in TABLES.into_iter().filter(|k| *k != "summary") {
-            let filter = self.metric_filter(kind, selectors).await?;
+            let filter = self.metric_filter(kind, start, selectors).await?;
             if filter.as_ref().is_some_and(|v| v.is_empty()) {
                 continue;
             }
