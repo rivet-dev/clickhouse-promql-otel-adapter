@@ -506,7 +506,14 @@ impl Store {
                 if matches!(kind, "histogram" | "exponential_histogram") {
                     excluded.extend(["Min", "Max"]);
                 }
-                let columns = format!("* EXCEPT ({})", excluded.join(", "));
+                // Selecting only _count/_sum still reads histogram rows; empty
+                // buckets decode as a lone +Inf bucket that no selector reads.
+                let mut placeholders = "";
+                if kind == "histogram" && !reads_buckets(selectors) {
+                    excluded.extend(["BucketCounts", "ExplicitBounds"]);
+                    placeholders = ", emptyArrayUInt64() AS BucketCounts, emptyArrayFloat64() AS ExplicitBounds";
+                }
+                let columns = format!("* EXCEPT ({}){placeholders}", excluded.join(", "));
                 format!(
                     "{columns}, toUnixTimestamp64Milli(toDateTime64(TimeUnix, 3)) AS _timestamp, toUnixTimestamp64Milli(toDateTime64(StartTimeUnix, 3)) AS _start_timestamp"
                 )
@@ -1162,6 +1169,32 @@ pub(crate) fn label_filter(
     } else {
         (format!(" AND ({})", alternatives.join(" OR ")), params)
     }
+}
+
+/// Whether any selector could select a classic histogram `_bucket` series.
+/// Only selectors that name their metric exactly can rule buckets out.
+fn reads_buckets(selectors: &[VectorSelector]) -> bool {
+    selectors.is_empty()
+        || selectors.iter().any(|selector| {
+            let branches = if selector.matchers.or_matchers.is_empty() {
+                vec![selector.matchers.matchers.as_slice()]
+            } else {
+                selector
+                    .matchers
+                    .or_matchers
+                    .iter()
+                    .map(Vec::as_slice)
+                    .collect()
+            };
+            branches.into_iter().any(|branch| {
+                let exact = branch
+                    .iter()
+                    .find(|m| m.name == "__name__" && matches!(m.op, MatchOp::Equal))
+                    .map(|m| m.value.as_str())
+                    .or(selector.name.as_deref());
+                exact.is_none_or(|name| name.ends_with("_bucket"))
+            })
+        })
 }
 
 /// Restricts a configured column to the values a positive matcher accepts.
