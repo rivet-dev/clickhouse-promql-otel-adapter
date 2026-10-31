@@ -1,0 +1,4 @@
+# Labels caches its content hash in a OnceLock. The cache is derived from the
+# immutable label map and reset by every mutation, so it never changes a key's
+# hash or ordering while the key is in a map.
+ignore-interior-mutability = ["clickhouse_promql::model::Labels"]

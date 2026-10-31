@@ -446,7 +446,10 @@ impl Engine<'_> {
                 continue;
             }
             let mut drop_name = points.iter().any(|p| p.drop_name);
-            let metric = labels.get("__name__").cloned().unwrap_or_default();
+            let metric = labels
+                .get("__name__")
+                .map(String::as_str)
+                .unwrap_or_default();
             if matches!(name, "rate" | "increase" | "irate" | "resets")
                 && points.windows(2).any(|p| {
                     p[1].start_timestamp != 0

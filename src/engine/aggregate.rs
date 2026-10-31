@@ -2,7 +2,7 @@ use super::Engine;
 use crate::model::{Labels, Sample, Value, float_string};
 use anyhow::{Result, bail};
 use promql_parser::parser::{AggregateExpr, LabelModifier};
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 pub(super) fn grouping(labels: &Labels, modifier: &Option<LabelModifier>) -> Labels {
     match modifier {
@@ -59,6 +59,30 @@ pub(super) fn variance(values: &[f64]) -> f64 {
     sum / values.len() as f64
 }
 impl Engine<'_> {
+    /// Group key for `labels` under `a`, computed once per input label set
+    /// and shared across evaluation steps and across inputs in one group.
+    fn group_key(&mut self, a: &AggregateExpr, labels: &Labels) -> Labels {
+        const MAX_CACHED_KEYS: usize = 1 << 20;
+        let id = (std::ptr::from_ref(a) as usize, labels.identity());
+        if let Some((_, key)) = self.group_keys.get(&id) {
+            return key.clone();
+        }
+        let key = grouping(labels, &a.modifier);
+        let key = match self.interned_keys.get(&key) {
+            Some(existing) => existing.clone(),
+            None => {
+                if self.interned_keys.len() < MAX_CACHED_KEYS {
+                    self.interned_keys.insert(key.clone());
+                }
+                key
+            }
+        };
+        if self.group_keys.len() < MAX_CACHED_KEYS {
+            self.group_keys.insert(id, (labels.clone(), key.clone()));
+        }
+        key
+    }
+
     pub(super) fn aggregate(&mut self, a: &AggregateExpr, t: i64) -> Result<Value> {
         let vector = self.eval(&a.expr, t)?.vector()?;
         let parameter = match &a.param {
@@ -110,7 +134,9 @@ impl Engine<'_> {
                 bail!("invalid label name {quoted}")
             }
         }
-        let mut groups: BTreeMap<Labels, Vec<Sample>> = BTreeMap::new();
+        // Hash grouping uses each key's cached hash; sorting the (far fewer)
+        // groups afterwards keeps the label order a BTreeMap would produce.
+        let mut groups: HashMap<Labels, Vec<Sample>> = HashMap::new();
         for mut s in vector {
             if op == "count_values" {
                 let name = parameter.as_ref().unwrap().string()?;
@@ -121,13 +147,19 @@ impl Engine<'_> {
                         .map_or_else(|| float_string(s.value), ToString::to_string),
                 );
             }
-            let mut key = grouping(&s.labels, &a.modifier);
+            let mut key = if op == "count_values" {
+                grouping(&s.labels, &a.modifier)
+            } else {
+                self.group_key(a, &s.labels)
+            };
             if op == "count_values" {
                 let name = parameter.as_ref().unwrap().string()?;
                 key.insert(name.into(), s.labels[name].clone());
             }
             groups.entry(key).or_default().push(s);
         }
+        let mut groups = groups.into_iter().collect::<Vec<_>>();
+        groups.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         let mut result = Vec::new();
         'groups: for (labels, mut samples) in groups {
             let drop_name = samples.iter().any(|s| s.drop_name);
