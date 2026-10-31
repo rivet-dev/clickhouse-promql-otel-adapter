@@ -27,6 +27,15 @@ const NAME_LATE_ARRIVAL_MS: i64 = 5 * 60 * 1000;
 /// that the last forward scan returned. Queries starting at or after `from_ms`
 /// reuse it; earlier starts extend it backwards, and expiry extends it forward.
 /// Names are only ever added, so an extension never hides a name.
+/// A sample's field from its grouped tuple, or from the group row for fields
+/// shared by every sample in the group.
+fn sample_field<'a>(row: &'a Json, values: &'a [Json], fields: &[&str], name: &str) -> &'a Json {
+    match fields.iter().position(|field| *field == name) {
+        Some(index) if index < values.len() => &values[index],
+        _ => &row[name],
+    }
+}
+
 /// Hashes the per-group output cache's small keys (a static suffix and a
 /// float's bits) without SipHash. The cache lives for one request and its
 /// keys are not attacker-chosen, so collision resistance is not needed.
@@ -643,6 +652,9 @@ impl Store {
                     if sample_index.is_multiple_of(1024) {
                         tokio::task::yield_now().await;
                     }
+                    // Sample fields are read from the tuple by position; writing
+                    // them into the row allocated a key per field per sample.
+                    let mut tuple_values = Vec::new();
                     if grouped {
                         let Json::Array(values) = tuple else {
                             bail!("invalid grouped metric sample")
@@ -650,10 +662,10 @@ impl Store {
                         if values.len() != sample_fields.len() {
                             bail!("invalid grouped metric sample length")
                         }
-                        for (field, value) in sample_fields.iter().copied().zip(values) {
-                            row[field] = value;
-                        }
+                        tuple_values = values;
                     }
+                    let sample =
+                        |name: &str| sample_field(&row, &tuple_values, sample_fields, name);
                     if let Some(info) = &info {
                         if !samples && !groups.contains_key(info) {
                             charge_samples(&mut retained, 1, self.max_samples)?;
@@ -661,10 +673,10 @@ impl Store {
                         if !samples {
                             groups.entry(info.clone()).or_default();
                         }
-                        if samples && integer(&row["Flags"]).unwrap_or(0) & 1 == 0 {
+                        if samples && integer(sample("Flags")).unwrap_or(0) & 1 == 0 {
                             charge_samples(&mut retained, 1, self.max_samples)?;
                             info_points.push(Point {
-                                timestamp: integer(&row["_timestamp"])?,
+                                timestamp: integer(sample("_timestamp"))?,
                                 value: 1.0,
                                 ..Default::default()
                             });
@@ -681,7 +693,7 @@ impl Store {
                                 dyn Iterator<Item = Result<Option<(&str, String)>>> + Send + '_,
                             > = if n.ends_with("_bucket") && kind == "histogram" {
                                 Box::new(
-                                    row["ExplicitBounds"]
+                                    sample("ExplicitBounds")
                                         .as_array()
                                         .context("missing bounds")?
                                         .iter()
@@ -690,7 +702,7 @@ impl Store {
                                 )
                             } else if n == &name && kind == "summary" {
                                 Box::new(
-                                    row["ValueAtQuantiles.Quantile"]
+                                    sample("ValueAtQuantiles.Quantile")
                                         .as_array()
                                         .context("missing quantiles")?
                                         .iter()
@@ -721,21 +733,21 @@ impl Store {
                         continue;
                     }
                     if matches!(kind, "sum" | "histogram" | "exponential_histogram")
-                        && integer(&row["AggregationTemporality"])? == 1
+                        && integer(sample("AggregationTemporality"))? == 1
                     {
                         bail!(
                             "delta temporality for {name} requires cumulative conversion; configure the collector deltatocumulative processor"
                         )
                     }
-                    let timestamp = integer(&row["_timestamp"])?;
-                    let stale = integer(&row["Flags"]).unwrap_or(0) & 1 != 0;
-                    let start_timestamp = integer(&row["_start_timestamp"])?;
+                    let timestamp = integer(sample("_timestamp"))?;
+                    let stale = integer(sample("Flags")).unwrap_or(0) & 1 != 0;
+                    let start_timestamp = integer(sample("_start_timestamp"))?;
                     if kind == "exponential_histogram" {
                         charge_samples(&mut retained, 1, self.max_samples)?;
                         for field in ["PositiveBucketCounts", "NegativeBucketCounts"] {
                             charge_samples(
                                 &mut retained,
-                                row[field]
+                                sample(field)
                                     .as_array()
                                     .context("missing native bucket counts")?
                                     .len(),
@@ -743,10 +755,10 @@ impl Store {
                             )?;
                         }
                         let mut h = crate::histogram::Histogram {
-                            schema: integer(&row["Scale"])? as i32,
-                            count: number(&row["Count"])?,
-                            sum: number(&row["Sum"])?,
-                            zero_count: number(&row["ZeroCount"])?,
+                            schema: integer(sample("Scale"))? as i32,
+                            count: number(sample("Count"))?,
+                            sum: number(sample("Sum"))?,
+                            zero_count: number(sample("ZeroCount"))?,
                             zero_threshold: row
                                 .get("ZeroThreshold")
                                 .map(number)
@@ -763,8 +775,8 @@ impl Store {
                         for (prefix, buckets) in
                             [("Positive", &mut h.positive), ("Negative", &mut h.negative)]
                         {
-                            let offset = integer(&row[format!("{prefix}Offset")])? as i32;
-                            for (i, v) in row[format!("{prefix}BucketCounts")]
+                            let offset = integer(sample(&format!("{prefix}Offset")))? as i32;
+                            for (i, v) in sample(&format!("{prefix}BucketCounts"))
                                 .as_array()
                                 .context("missing native bucket counts")?
                                 .iter()
@@ -845,12 +857,12 @@ impl Store {
                         Ok(())
                     };
                     match kind {
-                        "gauge" | "sum" => push("", None, number(&row["Value"])?)?,
+                        "gauge" | "sum" => push("", None, number(sample("Value"))?)?,
                         "histogram" => {
-                            let counts = row["BucketCounts"]
+                            let counts = sample("BucketCounts")
                                 .as_array()
                                 .context("missing BucketCounts")?;
-                            let bounds = row["ExplicitBounds"]
+                            let bounds = sample("ExplicitBounds")
                                 .as_array()
                                 .context("missing ExplicitBounds")?;
                             if (counts.is_empty() && !bounds.is_empty())
@@ -862,7 +874,7 @@ impl Store {
                                 push(
                                     "_bucket",
                                     Some(("le", f64::INFINITY)),
-                                    number(&row["Count"])?,
+                                    number(sample("Count"))?,
                                 )?;
                             }
                             let mut cumulative = 0.0;
@@ -878,14 +890,14 @@ impl Store {
                                 };
                                 push("_bucket", Some(("le", bound)), cumulative)?;
                             }
-                            push("_sum", None, number(&row["Sum"])?)?;
-                            push("_count", None, number(&row["Count"])?)?;
+                            push("_sum", None, number(sample("Sum"))?)?;
+                            push("_count", None, number(sample("Count"))?)?;
                         }
                         "summary" => {
-                            let quantiles = row["ValueAtQuantiles.Quantile"]
+                            let quantiles = sample("ValueAtQuantiles.Quantile")
                                 .as_array()
                                 .context("missing quantiles")?;
-                            let values = row["ValueAtQuantiles.Value"]
+                            let values = sample("ValueAtQuantiles.Value")
                                 .as_array()
                                 .context("missing quantile values")?;
                             if quantiles.len() != values.len() {
@@ -897,8 +909,8 @@ impl Store {
                                 }
                                 push("", Some(("quantile", number(q)?)), number(v)?)?;
                             }
-                            push("_sum", None, number(&row["Sum"])?)?;
-                            push("_count", None, number(&row["Count"])?)?;
+                            push("_sum", None, number(sample("Sum"))?)?;
+                            push("_count", None, number(sample("Count"))?)?;
                         }
                         _ => unreachable!(),
                     }
