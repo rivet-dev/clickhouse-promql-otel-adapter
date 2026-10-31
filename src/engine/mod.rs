@@ -11,7 +11,7 @@ use crate::model::{Labels, Point, Sample, Series, Value};
 use anyhow::{Result, bail};
 use promql_parser::parser::{AtModifier, Expr, Offset, VectorSelector};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     time::{Duration, Instant, UNIX_EPOCH},
 };
 
@@ -38,12 +38,20 @@ pub struct Engine<'a> {
     pub query_step: i64,
     invariant_cache: BTreeMap<String, Value>,
     // Match labels once per query, not once per evaluation timestamp.
-    selector_cache: BTreeMap<String, Vec<&'a Series>>,
+    // Keyed by the selector's address, which is stable for one evaluation;
+    // a hit is confirmed by structural equality, since temporary selectors
+    // can reuse an address.
+    selector_cache: HashMap<usize, Vec<(VectorSelector, Vec<&'a Series>)>>,
     selector_cache_entries: usize,
     overlaps: BTreeMap<String, usize>,
     monotonic: BTreeMap<String, (i64, i64, f64, f64, f64, i64)>,
     histogram_stats: bool,
     histogram_stats_blocked: bool,
+    /// Group key per (aggregation node, input label set), reused across steps.
+    /// The input labels are retained so their identity stays unique.
+    group_keys: HashMap<(usize, usize), (Labels, Labels)>,
+    /// One shared allocation per distinct group key.
+    interned_keys: HashSet<Labels>,
 }
 impl<'a> Engine<'a> {
     pub fn new(series: &'a [Series], start: i64, end: i64) -> Self {
@@ -69,12 +77,14 @@ impl<'a> Engine<'a> {
             is_range: false,
             query_step: 0,
             invariant_cache: BTreeMap::new(),
-            selector_cache: BTreeMap::new(),
+            selector_cache: HashMap::new(),
             selector_cache_entries: 0,
             overlaps: BTreeMap::new(),
             monotonic: BTreeMap::new(),
             histogram_stats: false,
             histogram_stats_blocked: false,
+            group_keys: HashMap::new(),
+            interned_keys: HashSet::new(),
         }
     }
     pub fn evaluate(&mut self, expr: &Expr, t: i64) -> Result<Value> {
@@ -398,8 +408,15 @@ impl<'a> Engine<'a> {
         result
     }
     fn selected(&mut self, v: &VectorSelector) -> Result<Vec<std::borrow::Cow<'a, Series>>> {
-        let key = v.to_string();
-        if !self.selector_cache.contains_key(&key) {
+        let key = std::ptr::from_ref(v) as usize;
+        let cached = self
+            .selector_cache
+            .get(&key)
+            .and_then(|entries| entries.iter().position(|(selector, _)| selector == v));
+        if let Some(index) = cached {
+            return Ok(self.select_replicas(&self.selector_cache[&key][index].1));
+        }
+        {
             let mut selected = Vec::new();
             for (index, series) in self.series.iter().enumerate() {
                 if index % 1024 == 0 {
@@ -415,9 +432,13 @@ impl<'a> Engine<'a> {
                 return Ok(self.select_replicas(&selected));
             }
             self.selector_cache_entries += selected.len();
-            self.selector_cache.insert(key.clone(), selected);
+            let result = self.select_replicas(&selected);
+            self.selector_cache
+                .entry(key)
+                .or_default()
+                .push((v.clone(), selected));
+            Ok(result)
         }
-        Ok(self.select_replicas(&self.selector_cache[&key]))
     }
     fn select_replicas(&self, selected: &[&'a Series]) -> Vec<std::borrow::Cow<'a, Series>> {
         if self.replica_labels.is_empty() {

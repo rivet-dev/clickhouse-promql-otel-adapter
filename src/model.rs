@@ -1,7 +1,163 @@
 use serde_json::{Value as Json, json};
 use std::collections::BTreeMap;
 
-pub type Labels = BTreeMap<String, String>;
+/// A series label set. Clones share one allocation, so passing labels from
+/// series to samples at every evaluation step costs a reference count instead
+/// of copying every key and value. Mutation copies only a shared set. The
+/// content hash is computed once per set and reset by any mutation.
+#[derive(Clone, Default)]
+pub struct Labels(std::sync::Arc<LabelSet>);
+
+#[derive(Default)]
+pub struct LabelSet {
+    map: BTreeMap<String, String>,
+    hash: std::sync::OnceLock<u64>,
+}
+
+impl Clone for LabelSet {
+    fn clone(&self) -> Self {
+        Self {
+            map: self.map.clone(),
+            hash: self.hash.clone(),
+        }
+    }
+}
+
+impl Labels {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Takes ownership of the map, copying it only if it is shared.
+    pub fn into_map(self) -> BTreeMap<String, String> {
+        std::sync::Arc::unwrap_or_clone(self.0).map
+    }
+
+    /// Identifies this shared allocation. Equal identities imply equal labels;
+    /// the converse does not hold. Callers that key a cache by identity must
+    /// keep a clone alive so the allocation cannot be reused.
+    pub fn identity(&self) -> usize {
+        std::sync::Arc::as_ptr(&self.0) as usize
+    }
+
+    fn content_hash(&self) -> u64 {
+        *self.0.hash.get_or_init(|| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::hash::DefaultHasher::new();
+            self.0.map.hash(&mut hasher);
+            hasher.finish()
+        })
+    }
+}
+
+impl std::ops::Deref for Labels {
+    type Target = BTreeMap<String, String>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0.map
+    }
+}
+
+impl std::ops::DerefMut for Labels {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        let set = std::sync::Arc::make_mut(&mut self.0);
+        set.hash = std::sync::OnceLock::new();
+        &mut set.map
+    }
+}
+
+impl PartialEq for Labels {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+            || (self.content_hash() == other.content_hash() && self.0.map == other.0.map)
+    }
+}
+
+impl Eq for Labels {}
+
+impl PartialOrd for Labels {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Labels {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if std::sync::Arc::ptr_eq(&self.0, &other.0) {
+            return std::cmp::Ordering::Equal;
+        }
+        self.0.map.cmp(&other.0.map)
+    }
+}
+
+impl std::hash::Hash for Labels {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.content_hash())
+    }
+}
+
+impl serde::Serialize for Labels {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.map.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Labels {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        BTreeMap::deserialize(deserializer).map(Self::from)
+    }
+}
+
+impl std::fmt::Debug for Labels {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.map.fmt(f)
+    }
+}
+
+impl From<BTreeMap<String, String>> for Labels {
+    fn from(map: BTreeMap<String, String>) -> Self {
+        Self(std::sync::Arc::new(LabelSet {
+            map,
+            hash: std::sync::OnceLock::new(),
+        }))
+    }
+}
+
+impl<const N: usize> From<[(String, String); N]> for Labels {
+    fn from(pairs: [(String, String); N]) -> Self {
+        Self::from(BTreeMap::from(pairs))
+    }
+}
+
+impl FromIterator<(String, String)> for Labels {
+    fn from_iter<I: IntoIterator<Item = (String, String)>>(iter: I) -> Self {
+        Self::from(BTreeMap::from_iter(iter))
+    }
+}
+
+impl Extend<(String, String)> for Labels {
+    fn extend<I: IntoIterator<Item = (String, String)>>(&mut self, iter: I) {
+        std::ops::DerefMut::deref_mut(self).extend(iter)
+    }
+}
+
+impl IntoIterator for Labels {
+    type Item = (String, String);
+    type IntoIter = std::collections::btree_map::IntoIter<String, String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.into_map().into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Labels {
+    type Item = (&'a String, &'a String);
+    type IntoIter = std::collections::btree_map::Iter<'a, String, String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.map.iter()
+    }
+}
 pub const STALE_BITS: u64 = 0x7ff0000000000002;
 
 #[derive(Clone, Debug, Default)]
