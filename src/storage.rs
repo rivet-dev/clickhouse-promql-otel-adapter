@@ -27,6 +27,32 @@ const NAME_LATE_ARRIVAL_MS: i64 = 5 * 60 * 1000;
 /// that the last forward scan returned. Queries starting at or after `from_ms`
 /// reuse it; earlier starts extend it backwards, and expiry extends it forward.
 /// Names are only ever added, so an extension never hides a name.
+/// Hashes the per-group output cache's small keys (a static suffix and a
+/// float's bits) without SipHash. The cache lives for one request and its
+/// keys are not attacker-chosen, so collision resistance is not needed.
+type KeyHasher = std::hash::BuildHasherDefault<FnvHasher>;
+
+#[derive(Default)]
+struct FnvHasher(u64);
+
+impl std::hash::Hasher for FnvHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut hash = if self.0 == 0 {
+            0xcbf29ce484222325
+        } else {
+            self.0
+        };
+        for byte in bytes {
+            hash = (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3);
+        }
+        self.0 = hash;
+    }
+}
+
 /// One table's sample or discovery query, prepared before any are sent.
 struct TableQuery {
     kind: &'static str,
@@ -424,7 +450,9 @@ impl Store {
             let mut sample_fields = vec!["_timestamp", "_start_timestamp", "Flags"];
             sample_fields.extend(match kind {
                 "gauge" | "sum" => vec!["Value"],
-                "histogram" => vec!["Count", "Sum", "BucketCounts", "ExplicitBounds"],
+                // Bucket bounds rarely change within a series, so they stay in
+                // the grouping key and are sent once per group, not per sample.
+                "histogram" => vec!["Count", "Sum", "BucketCounts"],
                 "summary" => vec![
                     "Count",
                     "Sum",
@@ -582,7 +610,8 @@ impl Store {
                 // hot point loop neither clones nor compares full label maps.
                 type OutputKey = (&'static str, Option<(&'static str, u64)>);
                 let mut outputs: Vec<(Labels, Vec<Point>)> = Vec::new();
-                let mut output_cache: HashMap<OutputKey, Option<usize>> = HashMap::new();
+                let mut output_cache: HashMap<OutputKey, Option<usize>, KeyHasher> =
+                    HashMap::default();
                 let mut info_points = Vec::new();
                 let mut native_points = Vec::new();
                 for (sample_index, tuple) in tuples.into_iter().enumerate() {
