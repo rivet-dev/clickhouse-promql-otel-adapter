@@ -66,17 +66,21 @@ async fn concurrent_panels_share_refresh_and_failed_refresh_is_retried() {
             .await
             .is_err()
     );
+    // Tables refresh concurrently, so how many succeeded before the failure
+    // varies; the failed table must be scanned again.
+    let after_failure = backend.requests.load(Ordering::SeqCst);
     store
         .load(0, 1, std::slice::from_ref(&selector))
         .await
         .unwrap();
-    assert_eq!(backend.requests.load(Ordering::SeqCst), 11);
+    assert!(backend.requests.load(Ordering::SeqCst) > after_failure);
 
     store.metric_cache_ttl = Duration::ZERO;
+    let before = backend.requests.load(Ordering::SeqCst);
     store.load(0, 1, &[selector]).await.unwrap();
     assert_eq!(
-        backend.requests.load(Ordering::SeqCst),
-        16,
+        backend.requests.load(Ordering::SeqCst) - before,
+        5,
         "zero TTL disables reuse"
     );
     server.abort();

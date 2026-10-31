@@ -27,6 +27,15 @@ const NAME_LATE_ARRIVAL_MS: i64 = 10 * 60 * 1000;
 /// that the last forward scan returned. Queries starting at or after `from_ms`
 /// reuse it; earlier starts extend it backwards, and expiry extends it forward.
 /// Names are only ever added, so an extension never hides a name.
+/// One table's sample or discovery query, prepared before any are sent.
+struct TableQuery {
+    kind: &'static str,
+    grouped: bool,
+    sample_fields: Vec<&'static str>,
+    sql: String,
+    params: Vec<(String, String)>,
+}
+
 struct NameCoverage {
     identity: String,
     from_ms: i64,
@@ -278,6 +287,47 @@ impl Store {
         coverage.rows = Arc::new(rows);
         Ok(())
     }
+    /// Resolves every table's metric-name filter concurrently.
+    pub(crate) async fn metric_filters(
+        &self,
+        start: i64,
+        selectors: &[VectorSelector],
+    ) -> Result<[Option<Vec<String>>; 5]> {
+        let filter = |kind| self.metric_filter(kind, start, selectors);
+        let (gauge, sum, histogram, summary, exponential) = tokio::try_join!(
+            filter(TABLES[0]),
+            filter(TABLES[1]),
+            filter(TABLES[2]),
+            filter(TABLES[3]),
+            filter(TABLES[4]),
+        )?;
+        Ok([gauge, sum, histogram, summary, exponential])
+    }
+
+    /// Sends the per-table queries concurrently and returns their responses in
+    /// request order. Each response is individually bounded by `max_bytes`.
+    async fn fetch_concurrently(&self, requests: &[TableQuery]) -> Result<Vec<String>> {
+        let mut tasks = tokio::task::JoinSet::new();
+        for (index, request) in requests.iter().enumerate() {
+            let store = self.clone();
+            let sql = request.sql.clone();
+            let params = request.params.clone();
+            tasks.spawn(async move {
+                let params = params
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.clone()))
+                    .collect::<Vec<_>>();
+                (index, store.query(&sql, &params).await)
+            });
+        }
+        let mut texts = vec![String::new(); requests.len()];
+        while let Some(joined) = tasks.join_next().await {
+            let (index, text) = joined.context("ClickHouse query task failed")?;
+            texts[index] = text?;
+        }
+        Ok(texts)
+    }
+
     pub async fn load(&self, start: i64, end: i64, selectors: &[VectorSelector]) -> Result<Loaded> {
         self.load_inner(start, end, selectors, true).await
     }
@@ -301,8 +351,9 @@ impl Store {
         let mut total = 0usize;
         let mut bytes_read = 0usize;
         let mut retained = 0usize;
-        for kind in TABLES {
-            let filter = self.metric_filter(kind, start, selectors).await?;
+        let filters = self.metric_filters(start, selectors).await?;
+        let mut requests = Vec::new();
+        for (kind, filter) in TABLES.into_iter().zip(filters) {
             if filter.as_ref().is_some_and(|v| v.is_empty()) {
                 continue;
             }
@@ -373,7 +424,9 @@ impl Store {
                 ],
                 _ => unreachable!(),
             });
-            let row_limit = self.max_rows.saturating_sub(total).saturating_add(1);
+            // Tables are read concurrently, so each may use the whole row
+            // budget; the shared limit is enforced while decoding.
+            let row_limit = self.max_rows.saturating_add(1);
             let source = format!(
                 "{}.otel_metrics_{kind} WHERE TimeUnix >= fromUnixTimestamp64Milli({{start:Int64}}) AND TimeUnix <= fromUnixTimestamp64Milli({{end:Int64}}){predicate}{labels_predicate}",
                 self.database
@@ -399,21 +452,32 @@ impl Store {
                 )
             };
             let mut params = vec![
-                ("param_start", start.to_string()),
-                ("param_end", end.to_string()),
-                ("param_names", string_array(&filter.unwrap_or_default())),
+                ("param_start".to_owned(), start.to_string()),
+                ("param_end".to_owned(), end.to_string()),
+                (
+                    "param_names".to_owned(),
+                    string_array(&filter.unwrap_or_default()),
+                ),
             ];
-            params.extend(
-                labels_params
-                    .iter()
-                    .map(|(key, value)| (key.as_str(), value.clone())),
-            );
-            // The budget is shared across sample/discovery tables, not reset
-            // for each response. Dictionary metadata has its own bounded cache.
-            let mut reader = self.clone();
-            reader.max_bytes = self.max_bytes.saturating_sub(bytes_read);
-            let text = reader.query(&sql, &params).await?;
+            params.extend(labels_params);
+            requests.push(TableQuery {
+                kind,
+                grouped,
+                sample_fields,
+                sql,
+                params,
+            });
+        }
+        let texts = self.fetch_concurrently(&requests).await?;
+        for (request, text) in requests.iter().zip(texts) {
+            let (kind, grouped, sample_fields) =
+                (request.kind, request.grouped, &request.sample_fields);
+            // The byte budget is shared across sample/discovery tables, not
+            // reset for each response. Dictionary metadata has its own cache.
             bytes_read += text.len();
+            if bytes_read > self.max_bytes {
+                bail!("ClickHouse response byte limit exceeded");
+            }
             for (group_index, line) in text.lines().enumerate() {
                 if group_index.is_multiple_of(1024) {
                     tokio::task::yield_now().await;
@@ -929,7 +993,7 @@ pub(crate) fn label_filter(
                         params.push((
                             format!("param_{resource}"),
                             string_param(
-                                &promotion
+                                promotion
                                     .map(|(attribute, _)| attribute.as_str())
                                     .unwrap_or_default(),
                             ),
