@@ -69,6 +69,14 @@ async fn main() -> anyhow::Result<()> {
     store.metric_cache_ttl = std::time::Duration::from_secs(c.metric_cache_ttl_seconds);
     store.promoted_resource_attributes = c.promoted_resource_attributes;
     store.label_columns = c.label_columns;
+    // Cover the default one-hour dashboard plus the five-minute lookback.
+    let warm_start = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
+        .saturating_sub(65 * 60 * 1000);
+    let warm_store = store.clone();
+    tokio::spawn(async move { warm_store.warm_names(warm_start).await });
     let address = format!("{}:{}", c.host, c.port);
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(%address,"listening");

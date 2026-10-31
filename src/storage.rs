@@ -328,6 +328,31 @@ impl Store {
         coverage.rows = Arc::new(rows);
         Ok(())
     }
+    /// Fills the metric name cache for rows at or after `start`, so the first
+    /// dashboard queries after startup do not each wait for the scans. Errors
+    /// are only logged: queries scan on demand as usual.
+    pub async fn warm_names(&self, start: i64) {
+        if self.metric_cache_ttl.is_zero() {
+            return;
+        }
+        let warm = |kind| self.metric_dictionary(kind, start);
+        let results = tokio::join!(
+            warm(TABLES[0]),
+            warm(TABLES[1]),
+            warm(TABLES[2]),
+            warm(TABLES[3]),
+            warm(TABLES[4]),
+        );
+        for result in [results.0, results.1, results.2, results.3, results.4] {
+            if let Err(error) = result {
+                tracing::warn!(
+                    ?error,
+                    "metric name cache warm-up failed; names load on demand"
+                );
+            }
+        }
+    }
+
     /// Resolves every table's metric-name filter concurrently.
     pub(crate) async fn metric_filters(
         &self,
