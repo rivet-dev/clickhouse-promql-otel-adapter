@@ -52,6 +52,9 @@ pub struct Engine<'a> {
     group_keys: HashMap<(usize, usize), (Labels, Labels)>,
     /// One shared allocation per distinct group key.
     interned_keys: HashSet<Labels>,
+    /// Per selector edge, each selected series' last (bound, index), so steps
+    /// that move forward in time advance instead of binary searching.
+    cursors: HashMap<(usize, u8), Vec<(i64, usize)>>,
 }
 impl<'a> Engine<'a> {
     pub fn new(series: &'a [Series], start: i64, end: i64) -> Self {
@@ -85,6 +88,7 @@ impl<'a> Engine<'a> {
             histogram_stats_blocked: false,
             group_keys: HashMap::new(),
             interned_keys: HashSet::new(),
+            cursors: HashMap::new(),
         }
     }
     pub fn evaluate(&mut self, expr: &Expr, t: i64) -> Result<Value> {
@@ -440,6 +444,14 @@ impl<'a> Engine<'a> {
             Ok(result)
         }
     }
+    /// Cursors for one selector edge, reset if the selection changed size.
+    /// Callers put them back after use; an early error simply drops them.
+    fn take_cursors(&mut self, key: (usize, u8), len: usize) -> Vec<(i64, usize)> {
+        match self.cursors.remove(&key) {
+            Some(cursors) if cursors.len() == len => cursors,
+            _ => vec![(i64::MIN, 0); len],
+        }
+    }
     fn select_replicas(&self, selected: &[&'a Series]) -> Vec<std::borrow::Cow<'a, Series>> {
         if self.replica_labels.is_empty() {
             selected
@@ -517,11 +529,14 @@ impl<'a> Engine<'a> {
                     self.charge(samples.len())?;
                     return Ok(Value::Vector(samples));
                 }
-                for (series_index, s) in self.selected(v)?.into_iter().enumerate() {
+                let selected = self.selected(v)?;
+                let mut cursors =
+                    self.take_cursors((std::ptr::from_ref(v) as usize, 0), selected.len());
+                for (series_index, s) in selected.into_iter().enumerate() {
                     if series_index % 1024 == 0 {
                         self.charge(0)?;
                     }
-                    let index = s.points.partition_point(|p| p.timestamp <= target);
+                    let index = seek(&s.points, &mut cursors[series_index], target);
                     if index > 0 {
                         let p = &s.points[index - 1];
                         if p.timestamp > target.saturating_sub(self.lookback) && !p.stale() {
@@ -542,6 +557,8 @@ impl<'a> Engine<'a> {
                         }
                     }
                 }
+                self.cursors
+                    .insert((std::ptr::from_ref(v) as usize, 0), cursors);
                 self.charge(samples.len())?;
                 Ok(Value::Vector(samples))
             }
@@ -551,12 +568,16 @@ impl<'a> Engine<'a> {
                 let mut result = Vec::new();
                 let resident_before = self.resident_samples;
                 let mut retained = 0usize;
-                for (series_index, s) in self.selected(&m.vs)?.into_iter().enumerate() {
+                let selected = self.selected(&m.vs)?;
+                let key = std::ptr::from_ref(&m.vs) as usize;
+                let mut begins = self.take_cursors((key, 1), selected.len());
+                let mut ends = self.take_cursors((key, 2), selected.len());
+                for (series_index, s) in selected.into_iter().enumerate() {
                     if series_index % 1024 == 0 {
                         self.charge(0)?;
                     }
-                    let mut a = s.points.partition_point(|p| p.timestamp <= begin);
-                    let mut b = s.points.partition_point(|p| p.timestamp <= target);
+                    let mut a = seek(&s.points, &mut begins[series_index], begin);
+                    let mut b = seek(&s.points, &mut ends[series_index], target);
                     if (m.anchored || m.smoothed)
                         && a > 0
                         && s.points[a - 1].timestamp > begin.saturating_sub(self.lookback)
@@ -601,6 +622,8 @@ impl<'a> Engine<'a> {
                         });
                     }
                 }
+                self.cursors.insert((key, 1), begins);
+                self.cursors.insert((key, 2), ends);
                 self.charge(result.iter().map(|s| s.points.len()).sum())?;
                 Ok(Value::Matrix(result))
             }
@@ -690,6 +713,30 @@ impl<'a> Engine<'a> {
     }
 }
 
+/// Number of points with `timestamp <= bound`, like `partition_point` on
+/// sorted points. A cursor from an earlier, smaller bound advances a few
+/// points instead of searching again. The result is verified against its
+/// neighbours, so a stale or foreign cursor costs a binary search, never a
+/// wrong index.
+fn seek(points: &[Point], cursor: &mut (i64, usize), bound: i64) -> usize {
+    const MAX_ADVANCE: usize = 8;
+    let (previous, mut index) = *cursor;
+    let advanced = bound >= previous
+        && index <= points.len()
+        && (index == 0 || points[index - 1].timestamp <= bound)
+        && {
+            let limit = (index + MAX_ADVANCE).min(points.len());
+            while index < limit && points[index].timestamp <= bound {
+                index += 1;
+            }
+            index == points.len() || points[index].timestamp > bound
+        };
+    if !advanced {
+        index = points.partition_point(|p| p.timestamp <= bound);
+    }
+    *cursor = (bound, index);
+    index
+}
 pub fn matches(selector: &VectorSelector, labels: &Labels) -> bool {
     if selector
         .name
