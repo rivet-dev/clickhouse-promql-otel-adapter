@@ -56,24 +56,37 @@ async fn concurrent_panels_share_refresh_and_failed_refresh_is_retried() {
         "one scan per table across all panels"
     );
 
-    // Expire all entries, then show a transient failure doesn't poison the cache.
+    // Expired entries are served while one background scan per table
+    // refreshes them, and a failed refresh is retried by the next query.
     store.metric_cache_ttl = Duration::from_millis(1);
     tokio::time::sleep(Duration::from_millis(10)).await;
     backend.fail.store(true, Ordering::SeqCst);
-    assert!(
-        store
-            .load(0, 1, std::slice::from_ref(&selector))
-            .await
-            .is_err()
-    );
-    // Tables refresh concurrently, so how many succeeded before the failure
-    // varies; the failed table must be scanned again.
-    let after_failure = backend.requests.load(Ordering::SeqCst);
     store
         .load(0, 1, std::slice::from_ref(&selector))
         .await
         .unwrap();
-    assert!(backend.requests.load(Ordering::SeqCst) > after_failure);
+    let requests_after = |count: usize| {
+        let backend = backend.clone();
+        async move {
+            // The refresh runs on a spawned task; wait for it to reach the backend.
+            for _ in 0..200 {
+                if backend.requests.load(Ordering::SeqCst) >= count {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            panic!("background refresh did not run");
+        }
+    };
+    requests_after(10).await;
+    assert!(!backend.fail.load(Ordering::SeqCst), "one refresh failed");
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let before_retry = backend.requests.load(Ordering::SeqCst);
+    store
+        .load(0, 1, std::slice::from_ref(&selector))
+        .await
+        .unwrap();
+    requests_after(before_retry + 5).await;
 
     store.metric_cache_ttl = Duration::ZERO;
     let before = backend.requests.load(Ordering::SeqCst);
