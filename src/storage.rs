@@ -512,6 +512,8 @@ impl Store {
                 "{}.otel_metrics_{kind} WHERE TimeUnix >= fromUnixTimestamp64Milli({{start:Int64}}) AND TimeUnix <= fromUnixTimestamp64Milli({{end:Int64}}){predicate}{labels_predicate}",
                 self.database
             );
+            // Unquoted 64-bit integers parse without a string allocation per
+            // timestamp and bucket count; number() and integer() accept both.
             let sql = if grouped {
                 let fields = sample_fields
                     .iter()
@@ -525,11 +527,11 @@ impl Store {
                 // No values are aggregated away: only repeated labels/metadata
                 // are removed from the transport representation.
                 format!(
-                    "SELECT * EXCEPT ({fields}), groupArray(tuple({fields})) AS _samples FROM (SELECT {projection} FROM {source} LIMIT {row_limit}) GROUP BY ALL SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow"
+                    "SELECT * EXCEPT ({fields}), groupArray(tuple({fields})) AS _samples FROM (SELECT {projection} FROM {source} LIMIT {row_limit}) GROUP BY ALL SETTINGS output_format_json_quote_denormals=1, output_format_json_quote_64bit_integers=0 FORMAT JSONEachRow"
                 )
             } else {
                 format!(
-                    "SELECT {projection} FROM {source} LIMIT {row_limit} SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow"
+                    "SELECT {projection} FROM {source} LIMIT {row_limit} SETTINGS output_format_json_quote_denormals=1, output_format_json_quote_64bit_integers=0 FORMAT JSONEachRow"
                 )
             };
             let mut params = vec![
