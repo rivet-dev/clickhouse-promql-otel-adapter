@@ -386,3 +386,38 @@ async fn label_columns_filter_the_mirrored_column() {
     })
     .await
 }
+#[tokio::test]
+async fn histogram_count_and_sum_match_without_reading_buckets() {
+    common::database_test(|store| async move {
+        let value = |query: &'static str| {
+            let store = store.clone();
+            async move {
+                let expr = Engine::parse(query).unwrap();
+                let (a, b, s) = plan(&expr, START, START, 300_000).unwrap();
+                let data = store.load(a, b, &s).await.unwrap();
+                let mut values = Engine::new(&data.series, START, START)
+                    .instant(query, START)
+                    .unwrap()
+                    .vector()
+                    .unwrap()
+                    .into_iter()
+                    .map(|s| s.value)
+                    .collect::<Vec<_>>();
+                values.sort_by(f64::total_cmp);
+                values
+            }
+        };
+        // The first query names only _count, so its rows omit bucket arrays.
+        let count = value("latency_count").await;
+        assert!(!count.is_empty());
+        assert_eq!(count, value("latency_bucket{le=\"+Inf\"}").await);
+        // Naming a _bucket series alongside makes the same rows carry buckets.
+        let sum = value("latency_sum").await;
+        assert!(!sum.is_empty());
+        assert_eq!(
+            sum,
+            value("latency_sum or latency_bucket{le=\"absent\"}").await
+        );
+    })
+    .await
+}
