@@ -2,7 +2,7 @@ use clap::Parser;
 use clickhouse_promql::{
     api::{App, router},
     label_name,
-    storage::Store,
+    storage::{Store, validate_identifier},
 };
 #[derive(Parser)]
 #[command(version)]
@@ -47,6 +47,11 @@ struct Config {
     /// normalized like any other label.
     #[arg(long = "promote-resource-attribute", value_parser = parse_promotion)]
     promoted_resource_attributes: Vec<(String, String)>,
+    /// Also filter a label on a table column holding the same value, as
+    /// LABEL=COLUMN; may be repeated. Use it for labels mirrored in a sort-key
+    /// column, such as a tenant ID, so selective queries skip other tenants.
+    #[arg(long = "label-column", value_parser = parse_label_column)]
+    label_columns: Vec<(String, String)>,
     /// Enable Thanos defaults for omitted range step (seconds, usually 60).
     #[arg(long, value_parser=clap::value_parser!(u64).range(1..))]
     thanos_default_step: Option<u64>,
@@ -63,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
     store.max_bytes = c.max_bytes as usize;
     store.metric_cache_ttl = std::time::Duration::from_secs(c.metric_cache_ttl_seconds);
     store.promoted_resource_attributes = c.promoted_resource_attributes;
+    store.label_columns = c.label_columns;
     let address = format!("{}:{}", c.host, c.port);
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(%address,"listening");
@@ -94,4 +100,15 @@ fn parse_promotion(value: &str) -> anyhow::Result<(String, String)> {
         anyhow::bail!("invalid label name {label:?}");
     }
     Ok((attribute.to_owned(), label))
+}
+
+fn parse_label_column(value: &str) -> anyhow::Result<(String, String)> {
+    let (label, column) = value
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("expected LABEL=COLUMN"))?;
+    if label_name(label)? != label {
+        anyhow::bail!("invalid label name {label:?}");
+    }
+    validate_identifier(column)?;
+    Ok((label.to_owned(), column.to_owned()))
 }

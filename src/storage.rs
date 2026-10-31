@@ -21,7 +21,7 @@ type DictionaryEntry = Option<NameCoverage>;
 
 /// Late or clock-skewed samples older than this when the dictionary was last
 /// extended forward are rescanned by the next forward extension.
-const NAME_LATE_ARRIVAL_MS: i64 = 10 * 60 * 1000;
+const NAME_LATE_ARRIVAL_MS: i64 = 5 * 60 * 1000;
 
 /// Distinct metric names seen in `[from_ms, scanned_at_ms)` plus anything newer
 /// that the last forward scan returned. Queries starting at or after `from_ms`
@@ -78,6 +78,11 @@ pub struct Store {
     /// `promote_resource_attributes` for producers that identify a target with
     /// an attribute other than `service.instance.id`.
     pub promoted_resource_attributes: Vec<(String, String)>,
+    /// Labels whose value is also stored in a table column, as (label,
+    /// column) pairs. Positive matchers on such a label also filter the
+    /// column, so a sort-key column skips other values' rows. The operator
+    /// asserts that any row carrying the label has the same value in the column.
+    pub label_columns: Vec<(String, String)>,
     dictionaries: Arc<[Mutex<DictionaryEntry>; 5]>,
 }
 #[derive(Default)]
@@ -101,6 +106,7 @@ impl Store {
             max_rows: 1_000_000,
             max_bytes: 64 * 1024 * 1024,
             promoted_resource_attributes: Vec::new(),
+            label_columns: Vec::new(),
             max_samples: 5_000_000,
             metric_cache_ttl: Duration::ZERO,
             dictionaries: Arc::new(std::array::from_fn(|_| Mutex::new(None))),
@@ -362,8 +368,12 @@ impl Store {
             } else {
                 ""
             };
-            let (labels_predicate, labels_params) =
-                label_filter(kind, selectors, &self.promoted_resource_attributes);
+            let (labels_predicate, labels_params) = label_filter(
+                kind,
+                selectors,
+                &self.promoted_resource_attributes,
+                &self.label_columns,
+            );
             let projection = if samples {
                 // Keep optional schema additions such as ZeroThreshold while
                 // avoiding unused strings and potentially huge exemplar arrays.
@@ -912,6 +922,7 @@ pub(crate) fn label_filter(
     kind: &str,
     selectors: &[VectorSelector],
     promoted: &[(String, String)],
+    columns: &[(String, String)],
 ) -> (String, Vec<(String, String)>) {
     let mut params = Vec::new();
     let mut alternatives = Vec::new();
@@ -939,6 +950,9 @@ pub(crate) fn label_filter(
             }
             let mut terms = Vec::new();
             for matcher in branch {
+                if let Some(term) = column_term(matcher, columns, &mut params) {
+                    terms.push(term);
+                }
                 // A promoted label that shadows job or instance follows their
                 // precedence in row_labels; filter it in Rust only.
                 let promotion = promoted.iter().find(|(_, label)| *label == matcher.name);
@@ -1030,6 +1044,29 @@ pub(crate) fn label_filter(
     } else {
         (format!(" AND ({})", alternatives.join(" OR ")), params)
     }
+}
+
+/// Restricts a configured column to the values a positive matcher accepts.
+/// Matchers that can select rows without the label (an empty value, negation
+/// or a general regex) are left to the attribute filter alone.
+fn column_term(
+    matcher: &promql_parser::label::Matcher,
+    columns: &[(String, String)],
+    params: &mut Vec<(String, String)>,
+) -> Option<String> {
+    let (_, column) = columns.iter().find(|(label, _)| *label == matcher.name)?;
+    let literal = !matcher.value.chars().any(|c| ".*+?()[]{}\\^$".contains(c));
+    let values = match &matcher.op {
+        MatchOp::Equal => vec![matcher.value.clone()],
+        MatchOp::Re(_) if literal => matcher.value.split('|').map(str::to_owned).collect(),
+        MatchOp::Re(_) | MatchOp::NotEqual | MatchOp::NotRe(_) => return None,
+    };
+    if values.iter().any(String::is_empty) {
+        return None;
+    }
+    let key = format!("label_column_{}", params.len());
+    params.push((format!("param_{key}"), string_array(&values)));
+    Some(format!("({column} IN {{{key}:Array(String)}})"))
 }
 
 // ClickHouse HTTP String parameters use escaped text; URL encoding alone does
