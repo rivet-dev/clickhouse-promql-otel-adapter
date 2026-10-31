@@ -60,6 +60,7 @@ pub struct Engine<'a> {
     /// label_replace/label_join output per (call site, input label set). The
     /// input labels are retained so their identity stays unique.
     relabeled: HashMap<(usize, usize), (Labels, Labels, bool)>,
+    charges: u32,
 }
 impl<'a> Engine<'a> {
     pub fn new(series: &'a [Series], start: i64, end: i64) -> Self {
@@ -96,6 +97,7 @@ impl<'a> Engine<'a> {
             cursors: HashMap::new(),
             regexes: HashMap::new(),
             relabeled: HashMap::new(),
+            charges: 0,
         }
     }
     pub fn evaluate(&mut self, expr: &Expr, t: i64) -> Result<Value> {
@@ -304,6 +306,14 @@ impl<'a> Engine<'a> {
     }
     fn charge(&mut self, count: usize) -> Result<()> {
         self.samples_read = self.samples_read.saturating_add(count);
+        // Reading the clock per sample was a measurable share of evaluation;
+        // a timeout or cancellation is noticed on the first charge and then
+        // within every 256 charges.
+        let check = self.charges.is_multiple_of(256);
+        self.charges = self.charges.wrapping_add(1);
+        if !check {
+            return Ok(());
+        }
         if Instant::now() > self.deadline
             || self
                 .cancelled
