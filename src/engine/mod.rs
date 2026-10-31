@@ -55,6 +55,11 @@ pub struct Engine<'a> {
     /// Per selector edge, each selected series' last (bound, index), so steps
     /// that move forward in time advance instead of binary searching.
     cursors: HashMap<(usize, u8), Vec<(i64, usize)>>,
+    /// Compiled label_replace patterns.
+    regexes: HashMap<String, regex::Regex>,
+    /// label_replace/label_join output per (call site, input label set). The
+    /// input labels are retained so their identity stays unique.
+    relabeled: HashMap<(usize, usize), (Labels, Labels, bool)>,
 }
 impl<'a> Engine<'a> {
     pub fn new(series: &'a [Series], start: i64, end: i64) -> Self {
@@ -89,6 +94,8 @@ impl<'a> Engine<'a> {
             group_keys: HashMap::new(),
             interned_keys: HashSet::new(),
             cursors: HashMap::new(),
+            regexes: HashMap::new(),
+            relabeled: HashMap::new(),
         }
     }
     pub fn evaluate(&mut self, expr: &Expr, t: i64) -> Result<Value> {

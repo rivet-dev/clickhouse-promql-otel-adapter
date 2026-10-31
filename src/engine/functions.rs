@@ -197,7 +197,7 @@ impl Engine<'_> {
                     vec![]
                 }));
             }
-            "label_replace" | "label_join" => return label_function(name, args, t),
+            "label_replace" | "label_join" => return self.label_function(c, name, args, t),
             "histogram_quantile" => {
                 return super::distributions::quantile(
                     self,
@@ -921,65 +921,6 @@ fn absent_labels(expr: &Expr) -> Labels {
     }
     labels
 }
-fn label_function(name: &str, mut args: Vec<Value>, t: i64) -> Result<Value> {
-    let mut v = args.remove(0).vector()?;
-    let dest = args[0].string()?;
-    if !valid_label(dest) {
-        bail!("invalid destination label name in {name}(): {dest}")
-    }
-    if name == "label_replace" {
-        let replacement = args[1].string()?;
-        let source = args[2].string()?;
-        let pattern = args[3].string()?;
-        let re = promql_parser::label::compile_regex(pattern).map_err(|_| {
-            anyhow::anyhow!("invalid regular expression in label_replace(): {pattern}")
-        })?;
-        for s in &mut v {
-            let input = s.labels.get(source).map(String::as_str).unwrap_or("");
-            if re.is_match(input) {
-                if dest == "__name__" {
-                    s.drop_name = false;
-                }
-                let value = promql_parser::label::expand_regex(&re, input, replacement).unwrap();
-                if value.is_empty() {
-                    s.labels.remove(dest);
-                } else {
-                    s.labels.insert(dest.into(), value);
-                }
-            }
-        }
-    } else {
-        let separator = args[1].string()?;
-        let sources = args[2..]
-            .iter()
-            .map(Value::string)
-            .collect::<Result<Vec<_>>>()?;
-        for source in &sources {
-            if !valid_label(source) {
-                bail!("invalid source label name {source}")
-            }
-        }
-        for s in &mut v {
-            if dest == "__name__" {
-                s.drop_name = false;
-            }
-            let value = sources
-                .iter()
-                .map(|k| s.labels.get(*k).map(String::as_str).unwrap_or(""))
-                .collect::<Vec<_>>()
-                .join(separator);
-            if value.is_empty() {
-                s.labels.remove(dest);
-            } else {
-                s.labels.insert(dest.into(), value);
-            }
-        }
-    }
-    for s in &mut v {
-        s.timestamp = t;
-    }
-    Ok(Value::Vector(v))
-}
 fn calendar_value(name: &str, value: f64) -> f64 {
     if !value.is_finite() || value < i64::MIN as f64 || value > i64::MAX as f64 {
         return f64::NAN;
@@ -1130,4 +1071,106 @@ pub(super) fn start_reset(a: &crate::model::Point, b: &crate::model::Point) -> b
         return true;
     }
     a.start_timestamp <= a.timestamp && a.start_timestamp != 0 && a.start_timestamp != a.timestamp
+}
+
+impl Engine<'_> {
+    /// label_replace and label_join. Their arguments are literals, so each
+    /// call site maps an input label set to the same output at every step;
+    /// the output is cached per input set and keeps one shared allocation.
+    fn label_function(
+        &mut self,
+        c: &Call,
+        name: &str,
+        mut args: Vec<Value>,
+        t: i64,
+    ) -> Result<Value> {
+        const MAX_CACHED_LABELS: usize = 1 << 20;
+        let mut v = args.remove(0).vector()?;
+        let dest = args[0].string()?;
+        if !valid_label(dest) {
+            bail!("invalid destination label name in {name}(): {dest}")
+        }
+        let site = std::ptr::from_ref(c) as usize;
+        if name == "label_replace" {
+            let replacement = args[1].string()?;
+            let source = args[2].string()?;
+            let pattern = args[3].string()?;
+            if !self.regexes.contains_key(pattern) {
+                let re = promql_parser::label::compile_regex(pattern).map_err(|_| {
+                    anyhow::anyhow!("invalid regular expression in label_replace(): {pattern}")
+                })?;
+                self.regexes.insert(pattern.to_owned(), re);
+            }
+            for s in &mut v {
+                let id = (site, s.labels.identity());
+                if let Some((_, labels, keeps_name)) = self.relabeled.get(&id) {
+                    s.labels = labels.clone();
+                    if *keeps_name {
+                        s.drop_name = false;
+                    }
+                    continue;
+                }
+                let input = s.labels.clone();
+                let re = &self.regexes[pattern];
+                let source_value = input.get(source).map(String::as_str).unwrap_or("");
+                let mut keeps_name = false;
+                if re.is_match(source_value) {
+                    keeps_name = dest == "__name__";
+                    let value =
+                        promql_parser::label::expand_regex(re, source_value, replacement).unwrap();
+                    if value.is_empty() {
+                        s.labels.remove(dest);
+                    } else {
+                        s.labels.insert(dest.into(), value);
+                    }
+                }
+                if keeps_name {
+                    s.drop_name = false;
+                }
+                if self.relabeled.len() < MAX_CACHED_LABELS {
+                    self.relabeled
+                        .insert(id, (input, s.labels.clone(), keeps_name));
+                }
+            }
+        } else {
+            let separator = args[1].string()?;
+            let sources = args[2..]
+                .iter()
+                .map(Value::string)
+                .collect::<Result<Vec<_>>>()?;
+            for source in &sources {
+                if !valid_label(source) {
+                    bail!("invalid source label name {source}")
+                }
+            }
+            for s in &mut v {
+                if dest == "__name__" {
+                    s.drop_name = false;
+                }
+                let id = (site, s.labels.identity());
+                if let Some((_, labels, _)) = self.relabeled.get(&id) {
+                    s.labels = labels.clone();
+                    continue;
+                }
+                let input = s.labels.clone();
+                let value = sources
+                    .iter()
+                    .map(|k| s.labels.get(*k).map(String::as_str).unwrap_or(""))
+                    .collect::<Vec<_>>()
+                    .join(separator);
+                if value.is_empty() {
+                    s.labels.remove(dest);
+                } else {
+                    s.labels.insert(dest.into(), value);
+                }
+                if self.relabeled.len() < MAX_CACHED_LABELS {
+                    self.relabeled.insert(id, (input, s.labels.clone(), false));
+                }
+            }
+        }
+        for s in &mut v {
+            s.timestamp = t;
+        }
+        Ok(Value::Vector(v))
+    }
 }
