@@ -710,13 +710,14 @@ impl Engine<'_> {
                 }
                 continue;
             }
-            let points = if matches!(
-                name,
-                "count_over_time"
-                    | "present_over_time"
-                    | "ts_of_last_over_time"
-                    | "ts_of_first_over_time"
-            ) {
+            let points = if hist_count == 0
+                || matches!(
+                    name,
+                    "count_over_time"
+                        | "present_over_time"
+                        | "ts_of_last_over_time"
+                        | "ts_of_first_over_time"
+                ) {
                 points
             } else {
                 points
@@ -724,10 +725,18 @@ impl Engine<'_> {
                     .filter(|p| p.histogram.is_none())
                     .collect::<Vec<_>>()
             };
-            let values = points.iter().map(|p| p.value).collect::<Vec<_>>();
-            if values.is_empty() {
+            if points.is_empty() {
                 continue;
             }
+            // These functions read the points directly; skip copying values.
+            let values = if matches!(
+                name,
+                "rate" | "increase" | "delta" | "irate" | "idelta" | "deriv" | "predict_linear"
+            ) {
+                Vec::new()
+            } else {
+                points.iter().map(|p| p.value).collect::<Vec<_>>()
+            };
             let mut omit = false;
             let value = match name {
                 "sum_over_time" => super::aggregate::compensated_sum(&values),
@@ -869,7 +878,11 @@ impl Engine<'_> {
         if matches!(name, "rate" | "increase") {
             for sample in &result {
                 if sample.histogram.is_none() {
-                    let metric = sample.labels.get("__name__").cloned().unwrap_or_default();
+                    let metric = sample
+                        .labels
+                        .get("__name__")
+                        .map(String::as_str)
+                        .unwrap_or_default();
                     if !metric.is_empty()
                         && !["_total", "_sum", "_count", "_bucket"]
                             .iter()
