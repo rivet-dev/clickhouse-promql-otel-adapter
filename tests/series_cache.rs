@@ -155,6 +155,29 @@ async fn identical_loads_in_flight_share_one_fetch_and_failures_are_retried() {
 }
 
 #[tokio::test]
+async fn keys_ignore_selectors_the_table_cannot_serve_and_their_order() {
+    let (backend, store, server) = backend().await;
+    let load = |store: Store, queries: &'static [&'static str]| async move {
+        let selectors = queries.iter().map(|q| selector(q)).collect::<Vec<_>>();
+        store.load(T, T, &selectors).await.unwrap().series.len()
+    };
+    assert_eq!(load(store.clone(), &["requests", "missing"]).await, 1);
+    assert_eq!(load(store.clone(), &["requests"]).await, 1);
+    assert_eq!(load(store.clone(), &["missing", "requests"]).await, 1);
+    assert_eq!(backend.sample_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        load(store.clone(), &["requests{tenant=\"a\"}", "requests"]).await,
+        1
+    );
+    assert_eq!(
+        load(store.clone(), &["requests", "requests{tenant=\"a\"}"]).await,
+        1
+    );
+    assert_eq!(backend.sample_requests.load(Ordering::SeqCst), 2);
+    server.abort();
+}
+
+#[tokio::test]
 async fn entries_expire_after_the_ttl_and_respect_the_byte_budget() {
     let (backend, mut store, server) = backend().await;
     let selectors = [selector("requests")];

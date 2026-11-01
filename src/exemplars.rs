@@ -23,11 +23,11 @@ impl Store {
         let mut bytes_read = 0usize;
         let mut retained = 0usize;
         for kind in TABLES.into_iter().filter(|k| *k != "summary") {
-            let Some((predicate, filter_params)) =
-                self.table_filter(kind, start, selectors).await?
-            else {
+            let Some(filter) = self.table_filter(kind, start, selectors).await? else {
                 continue;
             };
+            let predicate = filter.predicate;
+            let filter_params = filter.params;
             let extra = match kind {
                 "sum" => ", IsMonotonic",
                 "histogram" => ", ExplicitBounds",

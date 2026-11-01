@@ -40,6 +40,8 @@ struct TableQuery {
     /// The statement without its output format.
     sql: String,
     params: Vec<(String, String)>,
+    /// The selectors that can match the table's rows, applied while decoding.
+    selectors: Vec<VectorSelector>,
 }
 
 #[derive(Clone, Copy)]
@@ -637,7 +639,7 @@ impl Store {
         kind: &str,
         start: i64,
         selectors: &[VectorSelector],
-    ) -> Result<Option<Predicate>> {
+    ) -> Result<Option<TableFilter>> {
         let names = self.metric_names(kind, start, selectors).await?;
         Ok(selector_filter(
             kind,
@@ -812,7 +814,7 @@ impl Store {
         &self,
         start: i64,
         selectors: &[VectorSelector],
-    ) -> Result<[Option<Predicate>; 5]> {
+    ) -> Result<[Option<TableFilter>; 5]> {
         let filter = |kind| self.table_filter(kind, start, selectors);
         let (gauge, sum, histogram, summary, exponential) = tokio::try_join!(
             filter(TABLES[0]),
@@ -827,17 +829,12 @@ impl Store {
     /// Loads the per-table queries concurrently and returns their decoded
     /// results in request order. Each response is individually bounded by
     /// `max_bytes`; the request-wide budgets are checked when merging.
-    async fn load_tables(
-        &self,
-        requests: &[TableQuery],
-        selectors: &[VectorSelector],
-    ) -> Result<Vec<Arc<TableResult>>> {
+    async fn load_tables(&self, requests: &[TableQuery]) -> Result<Vec<Arc<TableResult>>> {
         let mut tasks = tokio::task::JoinSet::new();
         for (index, request) in requests.iter().enumerate() {
             let store = self.clone();
             let request = request.clone();
-            let selectors = selectors.to_vec();
-            tasks.spawn(async move { (index, store.table_result(&request, &selectors).await) });
+            tasks.spawn(async move { (index, store.table_result(&request).await) });
         }
         let mut results: Vec<Option<Arc<TableResult>>> =
             (0..requests.len()).map(|_| None).collect();
@@ -855,19 +852,16 @@ impl Store {
     /// queries: identical loads in flight share one fetch and decode, and a
     /// finished one serves identical requests for `series_cache_ttl`.
     /// Discovery rows are never cached.
-    async fn table_result(
-        &self,
-        request: &TableQuery,
-        selectors: &[VectorSelector],
-    ) -> Result<Arc<TableResult>> {
+    async fn table_result(&self, request: &TableQuery) -> Result<Arc<TableResult>> {
         if self.series_cache_ttl.is_zero() || !request.grouped {
-            return self.load_table(request, selectors).await.map(Arc::new);
+            return self.load_table(request).await.map(Arc::new);
         }
         let key = CacheKey {
             kind: request.kind,
             sql: request.sql.clone(),
             params: request.params.clone(),
-            selectors: selectors
+            selectors: request
+                .selectors
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
@@ -903,7 +897,7 @@ impl Store {
                 }
                 if receiver.changed().await.is_err() {
                     // The leader was cancelled before finishing. Load alone.
-                    return self.load_table(request, selectors).await.map(Arc::new);
+                    return self.load_table(request).await.map(Arc::new);
                 }
             }
         }
@@ -918,7 +912,7 @@ impl Store {
             entries.insert(key.clone(), CacheSlot::Loading(receiver));
         }
         tracing::debug!(table = request.kind, "series cache miss");
-        let result = self.load_table(request, selectors).await.map(Arc::new);
+        let result = self.load_table(request).await.map(Arc::new);
         lead.armed = false;
         let outcome = match &result {
             Ok(value) => Ok(value.clone()),
@@ -951,13 +945,9 @@ impl Store {
     }
 
     /// Fetches and decodes one table.
-    async fn load_table(
-        &self,
-        request: &TableQuery,
-        selectors: &[VectorSelector],
-    ) -> Result<TableResult> {
+    async fn load_table(&self, request: &TableQuery) -> Result<TableResult> {
         let payload = self.fetch_table(request).await?;
-        let mut decoder = Decoder::new(self, selectors);
+        let mut decoder = Decoder::new(self, &request.selectors);
         match payload {
             TablePayload::RowBinary {
                 bytes,
@@ -1059,9 +1049,9 @@ impl Store {
             let Some(filter) = filter else {
                 continue;
             };
-            requests.push(self.table_query(kind, filter, start, end, selectors, samples));
+            requests.push(self.table_query(kind, filter, start, end, samples));
         }
-        let results = self.load_tables(&requests, selectors).await?;
+        let results = self.load_tables(&requests).await?;
         self.merge(results).await
     }
 
@@ -1123,12 +1113,16 @@ impl Store {
     fn table_query(
         &self,
         kind: &'static str,
-        (predicate, filter_params): Predicate,
+        filter: TableFilter,
         start: i64,
         end: i64,
-        selectors: &[VectorSelector],
         samples: bool,
     ) -> TableQuery {
+        let TableFilter {
+            predicate,
+            params: filter_params,
+            selectors,
+        } = filter;
         let projection = if samples {
             // Keep optional schema additions such as ZeroThreshold while
             // avoiding unused strings and potentially huge exemplar arrays.
@@ -1154,7 +1148,7 @@ impl Store {
             // Selecting only _count/_sum still reads histogram rows; empty
             // buckets decode as a lone +Inf bucket that no selector reads.
             let mut placeholders = "";
-            if kind == "histogram" && !reads_buckets(selectors) {
+            if kind == "histogram" && !reads_buckets(&selectors) {
                 excluded.extend(["BucketCounts", "ExplicitBounds"]);
                 placeholders =
                     ", emptyArrayUInt64() AS BucketCounts, emptyArrayFloat64() AS ExplicitBounds";
@@ -1235,6 +1229,7 @@ impl Store {
             sample_fields,
             sql,
             params,
+            selectors,
         }
     }
 }
@@ -1893,9 +1888,18 @@ fn retain_matchers(selector: &mut VectorSelector, keep: impl Fn(&str) -> bool) {
     }
 }
 
-/// A SQL `WHERE` fragment starting with ` AND`, or empty to admit every row,
-/// with its bound parameters.
-pub(crate) type Predicate = (String, Vec<(String, String)>);
+/// The rows of one table a request can match.
+pub(crate) struct TableFilter {
+    /// A SQL `WHERE` fragment starting with ` AND`, or empty to admit every
+    /// row.
+    pub(crate) predicate: String,
+    pub(crate) params: Vec<(String, String)>,
+    /// The selectors whose names resolved to metrics stored in the table, or
+    /// could not be narrowed by name, in canonical order without duplicates.
+    /// The other selectors cannot match a row the predicate admits, so
+    /// decoding and caching consider only these.
+    pub(crate) selectors: Vec<VectorSelector>,
+}
 
 /// Conservative SQL prefilter for one table. Rust remains the authority for
 /// final matching. Each selector admits the rows whose metric name it can
@@ -1912,22 +1916,29 @@ pub(crate) fn selector_filter(
     names: &[Option<Vec<String>>],
     promoted: &[(String, String)],
     columns: &[(String, String)],
-) -> Option<Predicate> {
-    if selectors.is_empty() {
-        return Some((String::new(), Vec::new()));
+) -> Option<TableFilter> {
+    let mut relevant = selectors
+        .iter()
+        .zip(names)
+        .filter(|(_, names)| names.as_ref().is_none_or(|names| !names.is_empty()))
+        .map(|(selector, names)| (selector.clone(), names))
+        .collect::<Vec<_>>();
+    if relevant.is_empty() && !selectors.is_empty() {
+        return None;
     }
+    // Selectors apply as a set, so a canonical order gives identical sets
+    // identical statements and cache keys.
+    relevant.sort_by_cached_key(|(selector, _)| selector.to_string());
+    relevant.dedup_by_key(|(selector, _)| selector.to_string());
     let mut params = Vec::new();
     let mut alternatives = Vec::new();
-    for (selector, names) in selectors.iter().zip(names) {
-        let name_term = match names {
-            Some(names) if names.is_empty() => continue,
-            Some(names) => {
-                let key = format!("names_{}", params.len());
-                params.push((format!("param_{key}"), string_array(names)));
-                Some(format!("MetricName IN {{{key}:Array(String)}}"))
-            }
-            None => None,
-        };
+    let mut admit_all = false;
+    for (selector, names) in &relevant {
+        let name_term = names.as_ref().map(|names| {
+            let key = format!("names_{}", params.len());
+            params.push((format!("param_{key}"), string_array(names)));
+            format!("MetricName IN {{{key}:Array(String)}}")
+        });
         let before = params.len();
         let label_term = label_term(kind, selector, promoted, columns, &mut params);
         if label_term.is_none() {
@@ -1938,14 +1949,26 @@ pub(crate) fn selector_filter(
             (Some(name), None) => format!("({name})"),
             (None, Some(labels)) => labels,
             // Nothing narrows this selector, so nothing narrows the table.
-            (None, None) => return Some((String::new(), Vec::new())),
+            (None, None) => {
+                admit_all = true;
+                break;
+            }
         };
         alternatives.push(alternative);
     }
-    if alternatives.is_empty() {
-        return None;
+    let selectors = relevant.into_iter().map(|(selector, _)| selector).collect();
+    if admit_all || alternatives.is_empty() {
+        return Some(TableFilter {
+            predicate: String::new(),
+            params: Vec::new(),
+            selectors,
+        });
     }
-    Some((format!(" AND ({})", alternatives.join(" OR ")), params))
+    Some(TableFilter {
+        predicate: format!(" AND ({})", alternatives.join(" OR ")),
+        params,
+        selectors,
+    })
 }
 
 /// The label part of one selector's filter, its OR branches' terms, or none
