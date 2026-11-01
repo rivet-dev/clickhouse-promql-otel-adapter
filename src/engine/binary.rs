@@ -2,7 +2,7 @@ use super::Engine;
 use crate::model::{Labels, Sample, Value, drop_name};
 use anyhow::{Result, bail};
 use promql_parser::parser::{BinaryExpr, LabelModifier, VectorMatchCardinality};
-use std::collections::BTreeMap;
+use std::collections::{HashMap, HashSet};
 
 fn operation(op: &str, a: f64, b: f64) -> Result<(f64, bool)> {
     Ok(match op {
@@ -42,6 +42,17 @@ fn key(labels: &Labels, modifier: &Option<LabelModifier>) -> Labels {
     }
 }
 impl Engine<'_> {
+    /// Match signature of `labels` at binary node `site`, cached per input
+    /// label set and interned like aggregation group keys.
+    fn match_key(
+        &mut self,
+        site: usize,
+        labels: &Labels,
+        modifier: &Option<LabelModifier>,
+    ) -> Labels {
+        self.node_key(site, labels, |labels| key(labels, modifier))
+    }
+
     fn incompatible(&mut self, b: &BinaryExpr, left: bool, right: bool) {
         let lhs = if left { "histogram" } else { "float" };
         let rhs = if right { "histogram" } else { "float" };
@@ -85,14 +96,20 @@ impl Engine<'_> {
                 scalar_vector(v, s, true, &op, comparison, modifier.return_bool, t)
             }
             (Value::Vector(mut left), Value::Vector(mut right)) => {
-                let left_keys = left
-                    .iter()
-                    .map(|s| key(&s.labels, &modifier.matching))
-                    .collect::<std::collections::BTreeSet<_>>();
-                let right_keys = right
-                    .iter()
-                    .map(|s| key(&s.labels, &modifier.matching))
-                    .collect::<std::collections::BTreeSet<_>>();
+                // Match signatures are derived once per input label set and
+                // shared, so every lookup below hashes a cached value and
+                // compares by pointer.
+                let site = std::ptr::from_ref(b) as usize;
+                let mut left_keys = Vec::with_capacity(left.len());
+                for s in &left {
+                    left_keys.push(self.match_key(site, &s.labels, &modifier.matching));
+                }
+                let mut right_keys = Vec::with_capacity(right.len());
+                for s in &right {
+                    right_keys.push(self.match_key(site, &s.labels, &modifier.matching));
+                }
+                let left_present = left_keys.iter().cloned().collect::<HashSet<_>>();
+                let right_present = right_keys.iter().cloned().collect::<HashSet<_>>();
                 if let Some(value) =
                     if matches!(modifier.card, VectorMatchCardinality::OneToMany(_)) {
                         modifier.fill_values.rhs
@@ -100,17 +117,16 @@ impl Engine<'_> {
                         modifier.fill_values.lhs
                     }
                 {
-                    let mut added = std::collections::BTreeSet::new();
-                    for s in &right {
-                        let signature = key(&s.labels, &modifier.matching);
-                        if !left_keys.contains(&signature) && added.insert(signature) {
-                            let labels = key(&s.labels, &modifier.matching);
+                    let mut added = HashSet::new();
+                    for signature in &right_keys {
+                        if !left_present.contains(signature) && added.insert(signature.clone()) {
                             left.push(Sample {
-                                labels,
+                                labels: signature.clone(),
                                 value,
                                 timestamp: t,
                                 ..Default::default()
                             });
+                            left_keys.push(signature.clone());
                         }
                     }
                 }
@@ -121,44 +137,39 @@ impl Engine<'_> {
                         modifier.fill_values.rhs
                     }
                 {
-                    let mut added = std::collections::BTreeSet::new();
-                    for s in &left {
-                        let signature = key(&s.labels, &modifier.matching);
-                        if !right_keys.contains(&signature) && added.insert(signature) {
-                            let labels = key(&s.labels, &modifier.matching);
+                    let mut added = HashSet::new();
+                    for signature in &left_keys {
+                        if !right_present.contains(signature) && added.insert(signature.clone()) {
                             right.push(Sample {
-                                labels,
+                                labels: signature.clone(),
                                 value,
                                 timestamp: t,
                                 ..Default::default()
                             });
+                            right_keys.push(signature.clone());
                         }
                     }
                 }
 
-                let mut rhs: BTreeMap<Labels, Vec<&Sample>> = BTreeMap::new();
-                let mut lhs: BTreeMap<Labels, Vec<&Sample>> = BTreeMap::new();
-                for s in &right {
-                    rhs.entry(key(&s.labels, &modifier.matching))
-                        .or_default()
-                        .push(s);
+                let mut rhs: HashMap<Labels, Vec<&Sample>> = HashMap::new();
+                let mut lhs: HashMap<Labels, Vec<&Sample>> = HashMap::new();
+                for (s, signature) in right.iter().zip(&right_keys) {
+                    rhs.entry(signature.clone()).or_default().push(s);
                 }
-                for s in &left {
-                    lhs.entry(key(&s.labels, &modifier.matching))
-                        .or_default()
-                        .push(s);
+                for (s, signature) in left.iter().zip(&left_keys) {
+                    lhs.entry(signature.clone()).or_default().push(s);
                 }
                 if matches!(op.as_str(), "and" | "or" | "unless") {
                     let mut result = Vec::new();
-                    for s in &left {
-                        let present = rhs.contains_key(&key(&s.labels, &modifier.matching));
+                    for (s, signature) in left.iter().zip(&left_keys) {
+                        let present = rhs.contains_key(signature);
                         if op == "or" || (op == "and" && present) || (op == "unless" && !present) {
                             result.push(s.clone())
                         }
                     }
                     if op == "or" {
-                        for s in &right {
-                            if !lhs.contains_key(&key(&s.labels, &modifier.matching)) {
+                        for (s, signature) in right.iter().zip(&right_keys) {
+                            if !lhs.contains_key(signature) {
                                 result.push(s.clone())
                             }
                         }
@@ -166,15 +177,20 @@ impl Engine<'_> {
                     return Ok(Value::Vector(result));
                 }
                 let one_to_many = matches!(modifier.card, VectorMatchCardinality::OneToMany(_));
-                let (many, one) = if one_to_many {
-                    (&right, &lhs)
+                let (many, many_keys, one) = if one_to_many {
+                    (&right, &right_keys, &lhs)
                 } else {
-                    (&left, &rhs)
+                    (&left, &left_keys, &rhs)
                 };
                 if many.is_empty() || one.is_empty() {
                     return Ok(Value::Vector(vec![]));
                 }
-                if let Some((group, values)) = one.iter().find(|(_, v)| v.len() > 1) {
+                // Report the first duplicate group in label order.
+                if let Some((group, values)) = one
+                    .iter()
+                    .filter(|(_, v)| v.len() > 1)
+                    .min_by(|a, b| a.0.cmp(b.0))
+                {
                     let mut duplicates = values
                         .iter()
                         .map(|s| crate::model::labels_string(&s.labels))
@@ -188,15 +204,14 @@ impl Engine<'_> {
                         duplicates[1]
                     );
                 }
-                let mut matched = BTreeMap::<Labels, usize>::new();
+                let mut matched = HashMap::<Labels, usize>::new();
                 let mut result = Vec::new();
-                for m in many {
-                    let signature = key(&m.labels, &modifier.matching);
-                    let Some(matches) = one.get(&signature) else {
+                for (m, signature) in many.iter().zip(many_keys) {
+                    let Some(matches) = one.get(signature) else {
                         continue;
                     };
                     let o = matches[0];
-                    let count = matched.entry(signature).or_default();
+                    let count = matched.entry(signature.clone()).or_default();
                     *count += 1;
                     if *count > 1 && matches!(modifier.card, VectorMatchCardinality::OneToOne) {
                         bail!(

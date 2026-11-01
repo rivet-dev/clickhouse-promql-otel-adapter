@@ -62,12 +62,25 @@ impl Engine<'_> {
     /// Group key for `labels` under `a`, computed once per input label set
     /// and shared across evaluation steps and across inputs in one group.
     pub(super) fn group_key(&mut self, a: &AggregateExpr, labels: &Labels) -> Labels {
+        self.node_key(std::ptr::from_ref(a) as usize, labels, |labels| {
+            grouping(labels, &a.modifier)
+        })
+    }
+
+    /// Key derived from `labels` at `node` by `derive`, computed once per
+    /// input label set and interned so equal keys share one allocation.
+    pub(super) fn node_key(
+        &mut self,
+        node: usize,
+        labels: &Labels,
+        derive: impl FnOnce(&Labels) -> Labels,
+    ) -> Labels {
         const MAX_CACHED_KEYS: usize = 1 << 20;
-        let id = (std::ptr::from_ref(a) as usize, labels.identity());
-        if let Some((_, key)) = self.group_keys.get(&id) {
+        let id = (node, labels.identity());
+        if let Some((_, key)) = self.node_keys.get(&id) {
             return key.clone();
         }
-        let key = grouping(labels, &a.modifier);
+        let key = derive(labels);
         let key = match self.interned_keys.get(&key) {
             Some(existing) => existing.clone(),
             None => {
@@ -77,8 +90,8 @@ impl Engine<'_> {
                 key
             }
         };
-        if self.group_keys.len() < MAX_CACHED_KEYS {
-            self.group_keys.insert(id, (labels.clone(), key.clone()));
+        if self.node_keys.len() < MAX_CACHED_KEYS {
+            self.node_keys.insert(id, (labels.clone(), key.clone()));
         }
         key
     }

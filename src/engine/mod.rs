@@ -48,10 +48,12 @@ pub struct Engine<'a> {
     monotonic: BTreeMap<String, (i64, i64, f64, f64, f64, i64)>,
     histogram_stats: bool,
     histogram_stats_blocked: bool,
-    /// Group key per (aggregation node, input label set), reused across steps.
-    /// The input labels are retained so their identity stays unique.
-    group_keys: HashMap<(usize, usize), (Labels, Labels)>,
-    /// One shared allocation per distinct group key.
+    /// Group or match key per (aggregation or binary node, input label set),
+    /// reused across steps. The input labels are retained so their identity
+    /// stays unique.
+    node_keys: HashMap<(usize, usize), (Labels, Labels)>,
+    /// One shared allocation per distinct group or match key, so equal keys
+    /// compare by pointer.
     interned_keys: HashSet<Labels>,
     /// Per selector edge, each selected series' last (bound, index), so steps
     /// that move forward in time advance instead of binary searching.
@@ -102,7 +104,7 @@ impl<'a> Engine<'a> {
             monotonic: BTreeMap::new(),
             histogram_stats: false,
             histogram_stats_blocked: false,
-            group_keys: HashMap::new(),
+            node_keys: HashMap::new(),
             interned_keys: HashSet::new(),
             cursors: HashMap::new(),
             regexes: HashMap::new(),
@@ -155,7 +157,12 @@ impl<'a> Engine<'a> {
         self.bucket_sites.clear();
         self.step_times = step_grid(self.start, self.end, step);
         self.precompute(expr)?;
-        let mut result: BTreeMap<Labels, Vec<Point>> = BTreeMap::new();
+        // Result series are indexed by label hash while steps are appended and
+        // sorted by labels once at the end, the order a BTreeMap would give.
+        // Steps that reuse an output's label allocation hit the index by
+        // pointer equality, without comparing label content.
+        let mut index: HashMap<Labels, usize> = HashMap::new();
+        let mut result: Vec<(Labels, Vec<Point>)> = Vec::new();
         let mut retained = 0usize;
         for step_index in 0..self.step_times.len() {
             let timestamp = self.step_times[step_index];
@@ -163,14 +170,18 @@ impl<'a> Engine<'a> {
             let value = self.eval(expr, timestamp)?;
             retained = retained.saturating_add(value_samples(&value));
             match value {
-                Value::Scalar(value) => result.entry(Labels::new()).or_default().push(Point {
-                    timestamp,
-                    value,
-                    ..Default::default()
-                }),
+                Value::Scalar(value) => {
+                    let slot = result_slot(&mut index, &mut result, Labels::new());
+                    result[slot].1.push(Point {
+                        timestamp,
+                        value,
+                        ..Default::default()
+                    })
+                }
                 Value::Vector(samples) => {
                     for s in samples {
-                        result.entry(s.labels).or_default().push(Point {
+                        let slot = result_slot(&mut index, &mut result, s.labels);
+                        result[slot].1.push(Point {
                             timestamp,
                             value: s.value,
                             histogram: s.histogram.map(Box::new),
@@ -185,6 +196,7 @@ impl<'a> Engine<'a> {
             }
             self.account(retained)?;
         }
+        result.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(Value::Matrix(
             result
                 .into_iter()
@@ -432,7 +444,19 @@ impl<'a> Engine<'a> {
                 _ => {}
             }
         }
-        if let Ok(Value::Vector(v)) = &result {
+        // Selectors, range functions and aggregations produce unique label
+        // sets by construction. Only vector matching, relabeling and added
+        // labels can collide, and the root once names are dropped.
+        let may_collide = self.depth == 0
+            || match expr {
+                Expr::Binary(_) => true,
+                Expr::Call(c) => matches!(
+                    c.func.name,
+                    "label_replace" | "label_join" | "histogram_quantiles" | "info"
+                ),
+                _ => false,
+            };
+        if may_collide && let Ok(Value::Vector(v)) = &result {
             // Only membership matters here. Hash complete labelsets once instead
             // of repeatedly comparing their shared prefixes; preserve v's order.
             let mut seen = HashSet::with_capacity(v.len());
@@ -784,6 +808,20 @@ fn step_grid(start: i64, end: i64, step: i64) -> Vec<i64> {
         t = next;
     }
     times
+}
+
+/// Slot of `labels` in `result`, appended on first use.
+fn result_slot(
+    index: &mut HashMap<Labels, usize>,
+    result: &mut Vec<(Labels, Vec<Point>)>,
+    labels: Labels,
+) -> usize {
+    if let Some(&slot) = index.get(&labels) {
+        return slot;
+    }
+    result.push((labels.clone(), Vec::new()));
+    index.insert(labels, result.len() - 1);
+    result.len() - 1
 }
 
 /// Number of points with `timestamp <= bound`, like `partition_point` on
