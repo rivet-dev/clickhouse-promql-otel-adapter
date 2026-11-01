@@ -527,3 +527,53 @@ fn histogram_quantile_groups_by_identity() {
     assert_eq!(points("a"), vec![0, 15_000, 30_000, 45_000]);
     assert_eq!(points("0"), (4..10).map(|i| i * 15_000).collect::<Vec<_>>());
 }
+
+#[test]
+fn vector_matching_with_cached_keys() {
+    let data = [
+        series("a", &[("job", "x"), ("instance", "1")], &ramp(10, 1.0)),
+        series("a", &[("job", "x"), ("instance", "2")], &ramp(10, 2.0)),
+        series("a", &[("job", "y"), ("instance", "1")], &ramp(10, 3.0)[2..]),
+        series("b", &[("job", "x")], &ramp(10, 4.0)),
+        series("b", &[("job", "y")], &ramp(10, 5.0)[..6]),
+        series("b", &[("job", "z")], &ramp(10, 6.0)),
+        series(
+            "a_total",
+            &[("job", "x"), ("instance", "1")],
+            &ramp(10, 1.0),
+        ),
+        series("b_total", &[("job", "x")], &ramp(10, 2.0)),
+        series("x_bucket", &[("q", "0.5"), ("le", "1")], &ramp(10, 1.0)),
+        series("x_bucket", &[("q", "0.5"), ("le", "+Inf")], &ramp(10, 2.0)),
+        series("x_bucket", &[("q", "0.9"), ("le", "1")], &ramp(10, 1.0)),
+        series("x_bucket", &[("q", "0.9"), ("le", "+Inf")], &ramp(10, 2.0)),
+    ];
+    check(
+        &data,
+        &[
+            "a + on (job) group_left b",
+            "a / ignoring (instance) group_left b",
+            "b * on (job) group_right a",
+            "a and on (job) b",
+            "a or b",
+            "a unless on (job) b",
+            "b or a",
+            "a + on (job) group_left fill(0) b",
+            "b + on (job) group_right fill_left(1) a",
+            "a + on (job) group_left fill_right(2) b",
+            "a + on (job, instance) fill(3) b",
+            "sum by (job) (a) + sum by (job) (b)",
+            "sum by (job) (a) > bool sum by (job) (b)",
+            "rate(a_total[1m]) + on (job) rate(b_total[1m])",
+            "sum(rate(a_total[1m])) / sum(rate(b_total[1m]))",
+            "a * on (job) b",
+            "label_replace(a, \"instance\", \"x\", \"\", \"\")",
+            "label_join(a, \"instance\", \"\", \"job\")",
+            "histogram_quantiles(x_bucket, \"q\", 0.5)",
+            "histogram_quantiles(x_bucket, \"q\", 0.5, 0.9)",
+        ],
+        0,
+        150_000,
+        15_000,
+    );
+}

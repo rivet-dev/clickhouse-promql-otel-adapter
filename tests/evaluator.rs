@@ -218,3 +218,25 @@ fn byte_escapes_match_prometheus_string_and_validation_semantics() {
     );
     assert_eq!(Engine::parse(r#""\xff""#).unwrap().to_string(), r#""\xff""#);
 }
+
+#[test]
+fn many_to_many_error_names_the_first_duplicate_group_in_label_order() {
+    let d = [
+        series("x", &[("job", "b")], &[(0, 1.0)]),
+        series("x", &[("job", "a")], &[(0, 2.0)]),
+        series("y", &[("job", "b"), ("instance", "1")], &[(0, 1.0)]),
+        series("y", &[("job", "b"), ("instance", "2")], &[(0, 1.0)]),
+        series("y", &[("job", "a"), ("instance", "1")], &[(0, 1.0)]),
+        series("y", &[("job", "a"), ("instance", "2")], &[(0, 1.0)]),
+    ];
+    let error = Engine::new(&d, 0, 0)
+        .instant("x * on(job) y", 0)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.starts_with(
+            "found duplicate series for the match group {job=\"a\"} on the right hand-side of the operation: [{__name__=\"y\", instance=\"1\", job=\"a\"}, {__name__=\"y\", instance=\"2\", job=\"a\"}]"
+        ),
+        "{error}"
+    );
+}
