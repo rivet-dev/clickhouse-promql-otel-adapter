@@ -1,5 +1,6 @@
 mod aggregate;
 mod binary;
+mod columnar;
 mod distributions;
 mod extended;
 mod frontend;
@@ -61,6 +62,12 @@ pub struct Engine<'a> {
     /// input labels are retained so their identity stays unique.
     relabeled: HashMap<(usize, usize), (Labels, Labels, bool)>,
     charges: u32,
+    /// Subtrees evaluated for every step before the step loop, by node
+    /// address. Addresses are stable for one evaluation; the map is cleared
+    /// when a new expression is evaluated.
+    precomputed: HashMap<usize, columnar::Columnar>,
+    /// Evaluation timestamps of the current range query, in order.
+    step_times: Vec<i64>,
 }
 impl<'a> Engine<'a> {
     pub fn new(series: &'a [Series], start: i64, end: i64) -> Self {
@@ -98,11 +105,14 @@ impl<'a> Engine<'a> {
             regexes: HashMap::new(),
             relabeled: HashMap::new(),
             charges: 0,
+            precomputed: HashMap::new(),
+            step_times: Vec::new(),
         }
     }
     pub fn evaluate(&mut self, expr: &Expr, t: i64) -> Result<Value> {
         self.selector_cache.clear();
         self.selector_cache_entries = 0;
+        self.precomputed.clear();
         self.eval(expr, t)
     }
     pub fn parse(query: &str) -> Result<Expr> {
@@ -114,6 +124,7 @@ impl<'a> Engine<'a> {
     pub fn instant(&mut self, query: &str, timestamp: i64) -> Result<Value> {
         self.selector_cache.clear();
         self.selector_cache_entries = 0;
+        self.precomputed.clear();
         self.source = query.into();
         self.eval(&Self::parse_at(query, self.start, self.end, 0)?, timestamp)
     }
@@ -134,10 +145,13 @@ impl<'a> Engine<'a> {
         if (self.end as i128 - self.start as i128) / step as i128 > 11000 {
             bail!("exceeded maximum resolution of 11,000 points per timeseries")
         }
+        self.precomputed.clear();
+        self.step_times = step_grid(self.start, self.end, step);
+        self.precompute(expr)?;
         let mut result: BTreeMap<Labels, Vec<Point>> = BTreeMap::new();
-        let mut timestamp = self.start;
         let mut retained = 0usize;
-        loop {
+        for step_index in 0..self.step_times.len() {
+            let timestamp = self.step_times[step_index];
             self.resident_samples = retained;
             let value = self.eval(expr, timestamp)?;
             retained = retained.saturating_add(value_samples(&value));
@@ -163,10 +177,6 @@ impl<'a> Engine<'a> {
                 ),
             }
             self.account(retained)?;
-            match timestamp.checked_add(step) {
-                Some(next) if next <= self.end => timestamp = next,
-                _ => break,
-            }
         }
         Ok(Value::Matrix(
             result
@@ -381,6 +391,10 @@ impl<'a> Engine<'a> {
                 }
             }
             Ok(value)
+        } else if let Some(step) = self.step_index(timestamp)
+            && let Some(columnar) = self.precomputed.get(&(std::ptr::from_ref(expr) as usize))
+        {
+            Ok(columnar.materialize(step, timestamp))
         } else {
             let result = self.eval_inner(expr, timestamp);
             if let (Some(key), Ok(value)) = (cache_key, &result) {
@@ -720,14 +734,49 @@ impl<'a> Engine<'a> {
             },
             None => timestamp,
         };
-        let delta = match offset {
-            Some(Offset::Pos(d)) => i64::try_from(d.as_millis())?,
-            Some(Offset::Neg(d)) => -i64::try_from(d.as_millis())?,
-            None => 0,
-        };
-        t.checked_sub(delta)
+        t.checked_sub(offset_millis(offset)?)
             .ok_or_else(|| anyhow::anyhow!("timestamp overflow"))
     }
+    /// Index of `timestamp` on the current range query's step grid, if it is
+    /// an evaluation step. Subquery steps and instant queries are not.
+    fn step_index(&self, timestamp: i64) -> Option<usize> {
+        if self.query_step <= 0 {
+            return None;
+        }
+        let elapsed = timestamp.checked_sub(self.start)?;
+        if elapsed < 0 || elapsed % self.query_step != 0 {
+            return None;
+        }
+        let index = usize::try_from(elapsed / self.query_step).ok()?;
+        if index < self.step_times.len() {
+            Some(index)
+        } else {
+            None
+        }
+    }
+}
+
+/// Milliseconds an `offset` modifier moves the evaluation time back.
+fn offset_millis(offset: &Option<Offset>) -> Result<i64> {
+    Ok(match offset {
+        Some(Offset::Pos(d)) => i64::try_from(d.as_millis())?,
+        Some(Offset::Neg(d)) => -i64::try_from(d.as_millis())?,
+        None => 0,
+    })
+}
+
+/// Evaluation timestamps of a range query: `start` and every following step
+/// up to `end`. Bounded by the resolution limit checked before use.
+fn step_grid(start: i64, end: i64, step: i64) -> Vec<i64> {
+    let mut times = vec![start];
+    let mut t = start;
+    while let Some(next) = t.checked_add(step)
+        && next <= end
+    {
+        times.push(next);
+        t = next;
+    }
+    times
 }
 
 /// Number of points with `timestamp <= bound`, like `partition_point` on

@@ -61,7 +61,7 @@ pub(super) fn variance(values: &[f64]) -> f64 {
 impl Engine<'_> {
     /// Group key for `labels` under `a`, computed once per input label set
     /// and shared across evaluation steps and across inputs in one group.
-    fn group_key(&mut self, a: &AggregateExpr, labels: &Labels) -> Labels {
+    pub(super) fn group_key(&mut self, a: &AggregateExpr, labels: &Labels) -> Labels {
         const MAX_CACHED_KEYS: usize = 1 << 20;
         let id = (std::ptr::from_ref(a) as usize, labels.identity());
         if let Some((_, key)) = self.group_keys.get(&id) {

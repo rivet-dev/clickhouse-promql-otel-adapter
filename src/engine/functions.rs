@@ -455,23 +455,7 @@ impl Engine<'_> {
                         && p[1].start_timestamp != p[0].start_timestamp
                 })
             {
-                let base = format!(
-                    "sample has start time that overlaps with previous sample timestamp for metric {metric:?}"
-                );
-                let count = self.overlaps.entry(base.clone()).or_default();
-                *count += 1;
-                let count = *count;
-                self.warnings
-                    .retain(|s| !s.starts_with(&format!("PromQL warning: {base}")));
-                self.annotation(
-                    true,
-                    if count > 1 {
-                        format!("{base} ({count} occurrences)")
-                    } else {
-                        base
-                    },
-                    &c.args.args[mi],
-                );
+                self.overlap_annotation(&labels, &c.args.args[mi]);
             }
             let points = if matches!(name, "irate" | "idelta") {
                 points[points.len().saturating_sub(2)..].to_vec()
@@ -876,29 +860,56 @@ impl Engine<'_> {
             }
         }
         if matches!(name, "rate" | "increase") {
+            let annotation_expr = if matches!(&*c.args.args[mi], Expr::Subquery(_)) {
+                Expr::Call(c.clone())
+            } else {
+                (*c.args.args[mi]).clone()
+            };
             for sample in &result {
                 if sample.histogram.is_none() {
-                    let metric = sample
-                        .labels
-                        .get("__name__")
-                        .map(String::as_str)
-                        .unwrap_or_default();
-                    if !metric.is_empty()
-                        && !["_total", "_sum", "_count", "_bucket"]
-                            .iter()
-                            .any(|s| metric.ends_with(s))
-                    {
-                        let annotation_expr = if matches!(&*c.args.args[mi], Expr::Subquery(_)) {
-                            Expr::Call(c.clone())
-                        } else {
-                            (*c.args.args[mi]).clone()
-                        };
-                        self.annotation(false,format!("metric might not be a counter, name does not end in _total/_sum/_count/_bucket: {metric:?}"),&annotation_expr);
-                    }
+                    self.counter_name_annotation(&sample.labels, &annotation_expr);
                 }
             }
         }
         Ok(Value::Vector(result))
+    }
+    /// Warns once per query that a counter's start timestamps overlap earlier
+    /// samples, counting every window that trips the check.
+    pub(super) fn overlap_annotation(&mut self, labels: &Labels, expr: &Expr) {
+        let metric = MetricName(labels);
+        let base = format!(
+            "sample has start time that overlaps with previous sample timestamp for metric {metric:?}"
+        );
+        let count = self.overlaps.entry(base.clone()).or_default();
+        *count += 1;
+        let count = *count;
+        self.warnings
+            .retain(|s| !s.starts_with(&format!("PromQL warning: {base}")));
+        self.annotation(
+            true,
+            if count > 1 {
+                format!("{base} ({count} occurrences)")
+            } else {
+                base
+            },
+            expr,
+        );
+    }
+    /// Notes that `rate` or `increase` was applied to a metric whose name does
+    /// not look like a counter's.
+    pub(super) fn counter_name_annotation(&mut self, labels: &Labels, expr: &Expr) {
+        let metric = labels
+            .get("__name__")
+            .map(String::as_str)
+            .unwrap_or_default();
+        if metric.is_empty()
+            || ["_total", "_sum", "_count", "_bucket"]
+                .iter()
+                .any(|suffix| metric.ends_with(suffix))
+        {
+            return;
+        }
+        self.annotation(false,format!("metric might not be a counter, name does not end in _total/_sum/_count/_bucket: {metric:?}"),expr);
     }
     fn range_bounds(&self, expr: &Expr, t: i64) -> Result<(i64, i64)> {
         let (end, range) = match expr {
@@ -961,7 +972,7 @@ fn calendar_value(name: &str, value: f64) -> f64 {
         _ => f64::NAN,
     }
 }
-fn extrapolate(
+pub(super) fn extrapolate(
     points: &[crate::model::Point],
     start: i64,
     end: i64,

@@ -1,4 +1,6 @@
 mod common;
+#[path = "common/corpus.rs"]
+mod corpus;
 #[path = "common/reference.rs"]
 mod reference;
 use clickhouse_promql::{
@@ -9,39 +11,9 @@ use clickhouse_promql::{
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::Read,
     sync::{Arc, Mutex},
 };
 
-fn corpus() -> (Vec<Value>, BTreeMap<String, Vec<Series>>) {
-    let gz =
-        flate2::read::GzDecoder::new(include_bytes!("conformance/prometheus.tar.gz").as_slice());
-    let mut datasets = BTreeMap::new();
-    let mut cases = Vec::new();
-    for entry in tar::Archive::new(gz).entries().unwrap() {
-        let mut entry = entry.unwrap();
-        let path = entry.path().unwrap().to_string_lossy().into_owned();
-        let mut content = String::new();
-        entry.read_to_string(&mut content).unwrap();
-        if path == "cases.jsonl" {
-            cases = content
-                .lines()
-                .map(|s| serde_json::from_str(s).unwrap())
-                .collect();
-        } else {
-            let id = path
-                .strip_prefix("datasets/")
-                .unwrap()
-                .strip_suffix(".json")
-                .unwrap();
-            datasets.insert(
-                id.into(),
-                reference::load(&serde_json::from_str(&content).unwrap()).unwrap(),
-            );
-        }
-    }
-    (cases, datasets)
-}
 fn limitations(data: &[Series], precise: bool) -> BTreeSet<&'static str> {
     let mut reasons = BTreeSet::new();
     for s in data {
@@ -141,7 +113,7 @@ async fn upstream_queries_through_precision_preserving_schema() {
     run(true).await;
 }
 async fn run(precise: bool) {
-    let (cases, datasets) = corpus();
+    let (cases, datasets) = corpus::load(|data| reference::load(data).unwrap());
     let total = cases.len();
     let mut grouped: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     for case in cases {
