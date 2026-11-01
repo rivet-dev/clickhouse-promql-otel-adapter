@@ -309,10 +309,14 @@ pub fn float_string(value: f64) -> String {
     }
 }
 
+/// Removes the metric name and its metadata labels. A shared label set is
+/// copied only when one of them is present.
 pub fn drop_name(labels: &mut Labels) {
-    labels.remove("__name__");
-    labels.remove("__type__");
-    labels.remove("__unit__");
+    for name in ["__name__", "__type__", "__unit__"] {
+        if labels.contains_key(name) {
+            labels.remove(name);
+        }
+    }
 }
 
 pub fn labels_string(labels: &Labels) -> String {
