@@ -134,7 +134,7 @@ pub(super) async fn run(
             }
         };
         let mut names = BTreeSet::new();
-        for series in &loaded.series {
+        for series in loaded.series.iter() {
             check()?;
             if endpoint == "label_names" {
                 names.extend(series.labels.keys().cloned());

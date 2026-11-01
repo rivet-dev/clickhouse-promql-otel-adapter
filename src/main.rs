@@ -39,6 +39,15 @@ struct Config {
     /// Metric-name metadata cache lifetime. New metric names appear within this interval.
     #[arg(long, default_value_t = 60)]
     metric_cache_ttl_seconds: u64,
+    /// How long decoded sample rows serve identical requests from other
+    /// panels of a dashboard refresh; 0 disables. A panel can see rows loaded
+    /// this many seconds earlier, so samples ingested in between appear one
+    /// refresh later.
+    #[arg(long, default_value_t = 10)]
+    series_cache_ttl_seconds: u64,
+    /// Approximate bytes of decoded series kept for other panels.
+    #[arg(long, default_value_t = 268_435_456)]
+    series_cache_bytes: u64,
     /// Labels identifying HA replicas; may be repeated.
     #[arg(long = "replica-label")]
     replica_labels: Vec<String>,
@@ -69,6 +78,8 @@ async fn main() -> anyhow::Result<()> {
     store.max_samples = c.max_samples as usize;
     store.max_bytes = c.max_bytes as usize;
     store.metric_cache_ttl = std::time::Duration::from_secs(c.metric_cache_ttl_seconds);
+    store.series_cache_ttl = std::time::Duration::from_secs(c.series_cache_ttl_seconds);
+    store.series_cache_bytes = usize::try_from(c.series_cache_bytes)?;
     store.promoted_resource_attributes = c.promoted_resource_attributes;
     store.label_columns = c.label_columns;
     // Cover the default one-hour dashboard plus the five-minute lookback.

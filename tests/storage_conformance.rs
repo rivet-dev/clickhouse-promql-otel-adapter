@@ -151,7 +151,7 @@ async fn run(precise: bool) {
                 let start=case["start"].as_i64().unwrap();let end=case["end"].as_i64().unwrap();let step=case["step"].as_i64().unwrap();let lookback=case["lookback"].as_i64().unwrap();
                 let expr=Engine::parse_at(case["query"].as_str().unwrap(),start,end,step).unwrap();let (a,b,selectors)=plan(&expr,start,end,lookback).unwrap();
                 let key=format!("{a}/{b}/{}",selectors.iter().map(ToString::to_string).collect::<Vec<_>>().join(";"));
-                if !cache.contains_key(&key) {let value=if selectors.is_empty(){Ok(Vec::new())}else{store.load(a,b,&selectors).await.map(|v|v.series).map_err(|e|e.to_string())};cache.insert(key.clone(),value);}
+                if !cache.contains_key(&key) {let value=if selectors.is_empty(){Ok(Vec::new())}else{store.load(a,b,&selectors).await.map(|v|v.series.to_vec()).map_err(|e|e.to_string())};cache.insert(key.clone(),value);}
                 match reference::compare(case,cache[&key].as_ref()) {Ok(())=>passed+=1,Err(e)=>failures.push(json!({"dataset":id,"query":case["query"],"fixture":case["fixture"],"reason":e}))}
             }
             let mut r=report.lock().unwrap();r["passed"]=json!(r["passed"].as_u64().unwrap()+passed);r["failures"].as_array_mut().unwrap().extend(failures);r["datasets"].as_array_mut().unwrap().push(json!({"id":id,"executions":cases.len(),"passed":passed}));

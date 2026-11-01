@@ -26,9 +26,12 @@ a long window still needs all those raw samples.
 - Sample reads omit exemplar payloads and other unused columns. Row and byte
   budgets span the metric tables, and expanded histogram/sample counts have a
   separate budget before evaluation. The byte budget counts decompressed bytes.
-- Label matching is cached across timestamps within an evaluation. Sample
-  results are never cached. The separate shared metric dictionary cache expires
-  after 60 seconds by default; new metric names may appear after that delay.
+- Label matching is cached across timestamps within an evaluation. Decoded
+  sample rows are cached per exact ClickHouse statement, parameters and
+  selectors for a short TTL (10 s by default), so sibling panels of one
+  dashboard refresh reuse one fetch and decode; identical loads in flight share
+  it. The separate shared metric dictionary cache expires after 60 seconds by
+  default; new metric names may appear after that delay.
 - Evaluation checks sample budgets before copying windows/buckets. Admission,
   pending requests, discovery scoring and serialization are bounded. A timed-out
   blocking task retains its execution permit until it actually exits.

@@ -113,7 +113,7 @@ async fn unsupported_column_types_fall_back_to_json_transport() {
         insert(&store,"histogram",(0..3).map(|i|json!({"MetricName":"latency","ScopeName":PROM,"TimeUnix":T/1000+i,"Attributes":{"pod":"a"},"Count":i+1,"Sum":i,"BucketCounts":[i,1],"ExplicitBounds":[0.5]})).collect()).await;
         let load = |store: Store| async move {
             let loaded = store.load(T, T + 3_000, &[selector("latency_bucket")]).await.unwrap();
-            loaded.series.into_iter().map(|s| (s.labels.into_map(), s.points.iter().map(|p| (p.timestamp, p.value, p.start_timestamp)).collect::<Vec<_>>())).collect::<Vec<_>>()
+            loaded.series.iter().map(|s| (s.labels.clone().into_map(), s.points.iter().map(|p| (p.timestamp, p.value, p.start_timestamp)).collect::<Vec<_>>())).collect::<Vec<_>>()
         };
         let typed = load(store.clone()).await;
         assert_eq!(typed.len(), 2);

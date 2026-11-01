@@ -646,7 +646,7 @@ async fn query_api(
             .map_err(ApiError::storage)?
     };
     if let Some(shard) = options.shard {
-        loaded.series.retain(|s| shard.matches(&s.labels));
+        Arc::make_mut(&mut loaded.series).retain(|s| shard.matches(&s.labels));
     }
     let replica_labels = options.replica_labels;
     let query_source = query.to_owned();
@@ -819,7 +819,7 @@ async fn discovery_api(
             return Ok(success(json!(metadata)));
         }
         if !options.replica_labels.is_empty() {
-            for s in &mut loaded.series {
+            for s in Arc::make_mut(&mut loaded.series) {
                 check()?;
                 for label in &options.replica_labels {
                     s.labels.remove(label);
@@ -828,31 +828,30 @@ async fn discovery_api(
             if path == "series" {
                 let mut seen = BTreeSet::new();
                 let mut unique = Vec::new();
-                for s in loaded.series {
+                for s in Arc::unwrap_or_clone(loaded.series) {
                     check()?;
                     if seen.insert(s.labels.clone()) {
                         unique.push(s);
                     }
                 }
-                loaded.series = unique;
+                loaded.series = Arc::new(unique);
             }
         }
         let mut truncated = false;
         let data = if path == "series" {
             if limit > 0 && loaded.series.len() > limit {
-                loaded.series.truncate(limit);
+                Arc::make_mut(&mut loaded.series).truncate(limit);
                 truncated = true;
             }
             json!(
-                loaded
-                    .series
+                Arc::unwrap_or_clone(loaded.series)
                     .into_iter()
                     .map(|s| s.labels)
                     .collect::<Vec<_>>()
             )
         } else {
             let mut values = BTreeSet::new();
-            for series in &loaded.series {
+            for series in loaded.series.iter() {
                 check()?;
                 if let Some(name) = &label {
                     if let Some(value) = series.labels.get(name) {

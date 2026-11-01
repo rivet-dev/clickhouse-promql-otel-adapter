@@ -78,15 +78,6 @@ enum TablePayload {
     Json(String),
 }
 
-impl TablePayload {
-    fn len(&self) -> usize {
-        match self {
-            TablePayload::RowBinary { bytes, .. } => bytes.len(),
-            TablePayload::Json(text) => text.len(),
-        }
-    }
-}
-
 /// Position and element types of the sample tuple in a RowBinary group row,
 /// checked once per response so per-sample reads cannot hit a type mismatch.
 struct SampleLayout {
@@ -325,13 +316,154 @@ pub struct Store {
     /// that value. Rows that break the second half are still rejected by the
     /// Rust matcher, but are read from ClickHouse first.
     pub label_columns: Vec<(String, String)>,
+    /// How long a table's decoded sample rows serve identical requests from
+    /// other panels; zero disables the cache. A hit can be this much older
+    /// than the request, so samples ingested in between appear one refresh
+    /// later.
+    pub series_cache_ttl: Duration,
+    /// Approximate bytes of decoded series the cache may hold.
+    pub series_cache_bytes: usize,
     dictionaries: Arc<[Mutex<DictionaryEntry>; 5]>,
+    series_cache: Arc<std::sync::Mutex<CacheMap>>,
 }
 #[derive(Default)]
 pub struct Loaded {
-    pub series: Vec<Series>,
+    /// Shared with the series cache: a cache hit hands the same allocation to
+    /// every panel, so mutate through `Arc::make_mut`.
+    pub series: Arc<Vec<Series>>,
     pub metadata: BTreeMap<String, Vec<Json>>,
     pub warnings: Vec<String>,
+}
+
+/// One table's decoded response, cached and shared across requests.
+pub(crate) struct TableResult {
+    series: Arc<Vec<Series>>,
+    metadata: BTreeMap<String, Vec<Json>>,
+    warnings: Vec<String>,
+    /// Raw rows the response held, charged to `max_rows`.
+    rows: usize,
+    /// Points, native buckets or discovered series, charged to `max_samples`.
+    retained: usize,
+    /// Decompressed response bytes, charged to `max_bytes`.
+    bytes: usize,
+}
+
+impl TableResult {
+    /// Approximate heap footprint, for the cache's byte budget.
+    fn footprint(&self) -> usize {
+        self.series
+            .iter()
+            .map(|series| {
+                let labels = series
+                    .labels
+                    .iter()
+                    .map(|(key, value)| key.len() + value.len() + 2 * size_of::<String>())
+                    .sum::<usize>();
+                labels + series.points.len() * size_of::<Point>()
+            })
+            .sum()
+    }
+}
+
+/// Identifies one table's rows and how they decode: the exact statement and
+/// parameters sent plus the selectors applied while decoding, so a hit can
+/// only serve a request that would have fetched and kept the same series.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CacheKey {
+    kind: &'static str,
+    sql: String,
+    params: Vec<(String, String)>,
+    selectors: String,
+}
+
+/// A load failure copied to the requests that waited for it.
+#[derive(Clone)]
+struct SharedError {
+    backend: bool,
+    message: String,
+}
+
+impl SharedError {
+    fn new(error: &anyhow::Error) -> Self {
+        Self {
+            backend: error.is::<BackendError>(),
+            message: error.to_string(),
+        }
+    }
+
+    fn into_error(self) -> anyhow::Error {
+        if self.backend {
+            BackendError(self.message).into()
+        } else {
+            anyhow::Error::msg(self.message)
+        }
+    }
+}
+
+type Outcome = Result<Arc<TableResult>, SharedError>;
+
+enum CacheSlot {
+    /// A load in flight; identical requests wait for its outcome.
+    Loading(tokio::sync::watch::Receiver<Option<Outcome>>),
+    Ready {
+        value: Arc<TableResult>,
+        footprint: usize,
+        loaded_at: Instant,
+        last_used: Instant,
+    },
+}
+
+type CacheMap = HashMap<CacheKey, CacheSlot>;
+
+/// Removes the in-flight slot of a load whose leader was cancelled, so the
+/// next identical request leads instead of waiting forever.
+struct Lead {
+    cache: Arc<std::sync::Mutex<CacheMap>>,
+    key: CacheKey,
+    armed: bool,
+}
+
+impl Drop for Lead {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Ok(mut entries) = self.cache.lock()
+            && matches!(entries.get(&self.key), Some(CacheSlot::Loading(_)))
+        {
+            entries.remove(&self.key);
+        }
+    }
+}
+
+/// Drops the least recently used entries until the cache fits its budget.
+fn evict(entries: &mut CacheMap, max_bytes: usize) {
+    loop {
+        let total: usize = entries
+            .values()
+            .map(|slot| match slot {
+                CacheSlot::Ready { footprint, .. } => *footprint,
+                CacheSlot::Loading(_) => 0,
+            })
+            .sum();
+        if total <= max_bytes {
+            return;
+        }
+        let oldest = entries
+            .iter()
+            .filter_map(|(key, slot)| match slot {
+                CacheSlot::Ready { last_used, .. } => Some((*last_used, key.clone())),
+                CacheSlot::Loading(_) => None,
+            })
+            .min_by_key(|(last_used, _)| *last_used)
+            .map(|(_, key)| key);
+        match oldest {
+            Some(key) => {
+                entries.remove(&key);
+            }
+            None => return,
+        }
+    }
 }
 impl Store {
     pub fn new(url: String, database: String, username: String, password: String) -> Result<Self> {
@@ -357,7 +489,10 @@ impl Store {
             label_columns: Vec::new(),
             max_samples: 5_000_000,
             metric_cache_ttl: Duration::ZERO,
+            series_cache_ttl: Duration::ZERO,
+            series_cache_bytes: 256 * 1024 * 1024,
             dictionaries: Arc::new(std::array::from_fn(|_| Mutex::new(None))),
+            series_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         })
     }
     pub async fn query(&self, sql: &str, params: &[(&str, String)]) -> Result<String> {
@@ -689,24 +824,178 @@ impl Store {
         Ok([gauge, sum, histogram, summary, exponential])
     }
 
-    /// Sends the per-table queries concurrently and returns their responses in
-    /// request order. Each response is individually bounded by `max_bytes`.
-    async fn fetch_concurrently(&self, requests: &[TableQuery]) -> Result<Vec<TablePayload>> {
+    /// Loads the per-table queries concurrently and returns their decoded
+    /// results in request order. Each response is individually bounded by
+    /// `max_bytes`; the request-wide budgets are checked when merging.
+    async fn load_tables(
+        &self,
+        requests: &[TableQuery],
+        selectors: &[VectorSelector],
+    ) -> Result<Vec<Arc<TableResult>>> {
         let mut tasks = tokio::task::JoinSet::new();
         for (index, request) in requests.iter().enumerate() {
             let store = self.clone();
             let request = request.clone();
-            tasks.spawn(async move { (index, store.fetch_table(&request).await) });
+            let selectors = selectors.to_vec();
+            tasks.spawn(async move { (index, store.table_result(&request, &selectors).await) });
         }
-        let mut payloads: Vec<Option<TablePayload>> = (0..requests.len()).map(|_| None).collect();
+        let mut results: Vec<Option<Arc<TableResult>>> =
+            (0..requests.len()).map(|_| None).collect();
         while let Some(joined) = tasks.join_next().await {
-            let (index, payload) = joined.context("ClickHouse query task failed")?;
-            payloads[index] = Some(payload?);
+            let (index, result) = joined.context("ClickHouse query task failed")?;
+            results[index] = Some(result?);
         }
-        payloads
+        results
             .into_iter()
-            .map(|payload| payload.context("missing ClickHouse table response"))
+            .map(|result| result.context("missing ClickHouse table response"))
             .collect()
+    }
+
+    /// One table's decoded result, through the series cache for sample
+    /// queries: identical loads in flight share one fetch and decode, and a
+    /// finished one serves identical requests for `series_cache_ttl`.
+    /// Discovery rows are never cached.
+    async fn table_result(
+        &self,
+        request: &TableQuery,
+        selectors: &[VectorSelector],
+    ) -> Result<Arc<TableResult>> {
+        if self.series_cache_ttl.is_zero() || !request.grouped {
+            return self.load_table(request, selectors).await.map(Arc::new);
+        }
+        let key = CacheKey {
+            kind: request.kind,
+            sql: request.sql.clone(),
+            params: request.params.clone(),
+            selectors: selectors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(";"),
+        };
+        let receiver = {
+            let mut entries = self.series_cache.lock().unwrap_or_else(|e| e.into_inner());
+            let now = Instant::now();
+            entries.retain(|_, slot| match slot {
+                CacheSlot::Ready { loaded_at, .. } => {
+                    now.duration_since(*loaded_at) < self.series_cache_ttl
+                }
+                CacheSlot::Loading(_) => true,
+            });
+            match entries.get_mut(&key) {
+                Some(CacheSlot::Ready {
+                    value, last_used, ..
+                }) => {
+                    *last_used = now;
+                    tracing::debug!(table = request.kind, "series cache hit");
+                    return Ok(value.clone());
+                }
+                Some(CacheSlot::Loading(receiver)) => Some(receiver.clone()),
+                None => None,
+            }
+        };
+        if let Some(mut receiver) = receiver {
+            tracing::debug!(table = request.kind, "series cache wait");
+            loop {
+                let outcome = receiver.borrow_and_update().clone();
+                if let Some(outcome) = outcome {
+                    return outcome.map_err(SharedError::into_error);
+                }
+                if receiver.changed().await.is_err() {
+                    // The leader was cancelled before finishing. Load alone.
+                    return self.load_table(request, selectors).await.map(Arc::new);
+                }
+            }
+        }
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        let mut lead = Lead {
+            cache: self.series_cache.clone(),
+            key: key.clone(),
+            armed: true,
+        };
+        {
+            let mut entries = self.series_cache.lock().unwrap_or_else(|e| e.into_inner());
+            entries.insert(key.clone(), CacheSlot::Loading(receiver));
+        }
+        tracing::debug!(table = request.kind, "series cache miss");
+        let result = self.load_table(request, selectors).await.map(Arc::new);
+        lead.armed = false;
+        let outcome = match &result {
+            Ok(value) => Ok(value.clone()),
+            Err(error) => Err(SharedError::new(error)),
+        };
+        {
+            let mut entries = self.series_cache.lock().unwrap_or_else(|e| e.into_inner());
+            entries.remove(&key);
+            if let Ok(value) = &result {
+                let footprint = value.footprint();
+                if footprint <= self.series_cache_bytes {
+                    let now = Instant::now();
+                    entries.insert(
+                        key,
+                        CacheSlot::Ready {
+                            value: value.clone(),
+                            footprint,
+                            loaded_at: now,
+                            last_used: now,
+                        },
+                    );
+                    evict(&mut entries, self.series_cache_bytes);
+                }
+            }
+        }
+        // Waiters that already left hold no receiver; the send then has no
+        // one to reach, which is fine.
+        let _ = sender.send(Some(outcome));
+        result
+    }
+
+    /// Fetches and decodes one table.
+    async fn load_table(
+        &self,
+        request: &TableQuery,
+        selectors: &[VectorSelector],
+    ) -> Result<TableResult> {
+        let payload = self.fetch_table(request).await?;
+        let mut decoder = Decoder::new(self, selectors);
+        match payload {
+            TablePayload::RowBinary {
+                bytes,
+                columns,
+                layout,
+                body,
+            } => {
+                let mut reader = Reader::at(&bytes, body);
+                let mut index = 0usize;
+                while !reader.is_empty() {
+                    if index.is_multiple_of(1024) {
+                        tokio::task::yield_now().await;
+                    }
+                    let (row, group) = read_group(&mut reader, &columns, &layout, request.kind)
+                        .with_context(|| decode_failure(&bytes))?;
+                    decoder.charge_rows(group.len())?;
+                    decoder.sample_group(request.kind, row, group).await?;
+                    index += 1;
+                }
+                decoder.finish(bytes.len()).await
+            }
+            TablePayload::Json(text) => {
+                for (index, line) in text.lines().enumerate() {
+                    if index.is_multiple_of(1024) {
+                        tokio::task::yield_now().await;
+                    }
+                    let mut row: Json =
+                        serde_json::from_str(line).context("invalid ClickHouse metric row")?;
+                    if request.grouped {
+                        let group = decoder.json_group(&mut row, request)?;
+                        decoder.sample_group(request.kind, row, group).await?;
+                    } else {
+                        decoder.discovery_row(request.kind, row).await?;
+                    }
+                }
+                decoder.finish(text.len()).await
+            }
+        }
     }
 
     /// Fetches sample rows as RowBinary, or as JSON when the response holds a
@@ -772,54 +1061,62 @@ impl Store {
             };
             requests.push(self.table_query(kind, filter, start, end, selectors, samples));
         }
-        let payloads = self.fetch_concurrently(&requests).await?;
-        let mut decoder = Decoder::new(self, selectors);
-        let mut bytes_read = 0usize;
-        for (request, payload) in requests.iter().zip(payloads) {
-            // The byte budget is shared across sample/discovery tables, not
-            // reset for each response. Dictionary metadata has its own cache.
-            bytes_read += payload.len();
-            if bytes_read > self.max_bytes {
-                bail!("ClickHouse response byte limit exceeded");
-            }
-            match payload {
-                TablePayload::RowBinary {
-                    bytes,
-                    columns,
-                    layout,
-                    body,
-                } => {
-                    let mut reader = Reader::at(&bytes, body);
-                    let mut index = 0usize;
-                    while !reader.is_empty() {
-                        if index.is_multiple_of(1024) {
-                            tokio::task::yield_now().await;
-                        }
-                        let (row, group) = read_group(&mut reader, &columns, &layout, request.kind)
-                            .with_context(|| decode_failure(&bytes))?;
-                        decoder.charge_rows(group.len())?;
-                        decoder.sample_group(request.kind, row, group).await?;
-                        index += 1;
-                    }
+        let results = self.load_tables(&requests, selectors).await?;
+        self.merge(results).await
+    }
+
+    /// Combines the tables' results into one, enforcing the request-wide
+    /// budgets and merging series the tables share. A single table, the
+    /// common case, hands its shared series over without copying.
+    async fn merge(&self, results: Vec<Arc<TableResult>>) -> Result<Loaded> {
+        let total = |field: fn(&TableResult) -> usize| {
+            results
+                .iter()
+                .try_fold(0usize, |sum, result| sum.checked_add(field(result)))
+        };
+        if total(|result| result.rows).is_none_or(|rows| rows > self.max_rows) {
+            bail!("ClickHouse sample scan limit exceeded");
+        }
+        if total(|result| result.retained).is_none_or(|retained| retained > self.max_samples) {
+            bail!("ClickHouse expanded sample limit exceeded");
+        }
+        if total(|result| result.bytes).is_none_or(|bytes| bytes > self.max_bytes) {
+            bail!("ClickHouse response byte limit exceeded");
+        }
+        let mut loaded = Loaded::default();
+        for result in &results {
+            for warning in &result.warnings {
+                if !loaded.warnings.contains(warning) {
+                    loaded.warnings.push(warning.clone());
                 }
-                TablePayload::Json(text) => {
-                    for (index, line) in text.lines().enumerate() {
-                        if index.is_multiple_of(1024) {
-                            tokio::task::yield_now().await;
-                        }
-                        let mut row: Json =
-                            serde_json::from_str(line).context("invalid ClickHouse metric row")?;
-                        if request.grouped {
-                            let group = decoder.json_group(&mut row, request)?;
-                            decoder.sample_group(request.kind, row, group).await?;
-                        } else {
-                            decoder.discovery_row(request.kind, row).await?;
-                        }
+            }
+            for (name, entries) in &result.metadata {
+                let known = loaded.metadata.entry(name.clone()).or_default();
+                for entry in entries {
+                    if !known.contains(entry) {
+                        known.push(entry.clone());
                     }
                 }
             }
         }
-        decoder.finish().await
+        loaded.series = match results.as_slice() {
+            [] => Arc::new(Vec::new()),
+            [single] => single.series.clone(),
+            many => {
+                // Tables can hold the same metric; their points join one series.
+                let mut groups: BTreeMap<Labels, Vec<Point>> = BTreeMap::new();
+                for result in many {
+                    for series in result.series.iter() {
+                        groups
+                            .entry(series.labels.clone())
+                            .or_default()
+                            .extend(series.points.iter().cloned());
+                    }
+                }
+                Arc::new(build_series(groups).await?)
+            }
+        };
+        Ok(loaded)
     }
 
     /// Builds the query for one table.
@@ -1525,44 +1822,53 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
-    /// Orders every series' points, rejecting rows that disagree about a
-    /// timestamp, and builds the loaded result.
-    async fn finish(self) -> Result<Loaded> {
-        let mut loaded = Loaded {
-            series: Vec::with_capacity(self.groups.len()),
+    /// Builds the table's result from the decoded groups; `bytes` is the
+    /// response size charged to the byte budget.
+    async fn finish(self, bytes: usize) -> Result<TableResult> {
+        Ok(TableResult {
+            series: Arc::new(build_series(self.groups).await?),
             metadata: self.metadata,
             warnings: self.warnings,
-        };
-        for (index, (labels, mut points)) in self.groups.into_iter().enumerate() {
+            rows: self.rows,
+            retained: self.retained,
+            bytes,
+        })
+    }
+}
+
+/// Orders every series' points, rejecting rows that disagree about a
+/// timestamp, and builds the series in label order.
+async fn build_series(groups: BTreeMap<Labels, Vec<Point>>) -> Result<Vec<Series>> {
+    let mut series = Vec::with_capacity(groups.len());
+    for (index, (labels, mut points)) in groups.into_iter().enumerate() {
+        if index.is_multiple_of(1024) {
+            tokio::task::yield_now().await;
+        }
+        points.sort_by_key(|p| p.timestamp);
+        for (index, pair) in points.windows(2).enumerate() {
             if index.is_multiple_of(1024) {
                 tokio::task::yield_now().await;
             }
-            points.sort_by_key(|p| p.timestamp);
-            for (index, pair) in points.windows(2).enumerate() {
-                if index.is_multiple_of(1024) {
-                    tokio::task::yield_now().await;
-                }
-                if pair[0].timestamp == pair[1].timestamp
-                    && (pair[0].value.to_bits() != pair[1].value.to_bits()
-                        || pair[0].histogram != pair[1].histogram
-                        || pair[0].start_timestamp != pair[1].start_timestamp)
-                {
-                    bail!(
-                        "conflicting samples at timestamp {} for {labels:?}; default DateTime columns lose subsecond precision",
-                        pair[0].timestamp
-                    )
-                }
+            if pair[0].timestamp == pair[1].timestamp
+                && (pair[0].value.to_bits() != pair[1].value.to_bits()
+                    || pair[0].histogram != pair[1].histogram
+                    || pair[0].start_timestamp != pair[1].start_timestamp)
+            {
+                bail!(
+                    "conflicting samples at timestamp {} for {labels:?}; default DateTime columns lose subsecond precision",
+                    pair[0].timestamp
+                )
             }
-            points.dedup_by(|a, b| {
-                a.timestamp == b.timestamp
-                    && a.value.to_bits() == b.value.to_bits()
-                    && a.histogram == b.histogram
-                    && a.start_timestamp == b.start_timestamp
-            });
-            loaded.series.push(Series { labels, points });
         }
-        Ok(loaded)
+        points.dedup_by(|a, b| {
+            a.timestamp == b.timestamp
+                && a.value.to_bits() == b.value.to_bits()
+                && a.histogram == b.histogram
+                && a.start_timestamp == b.start_timestamp
+        });
+        series.push(Series { labels, points });
     }
+    Ok(series)
 }
 fn potential_bucket_match(selector: &VectorSelector, labels: &Labels, kind: &str) -> bool {
     if kind != "histogram" && kind != "summary" {

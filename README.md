@@ -309,6 +309,8 @@ Add a **Prometheus** data source in Grafana: `http://<host>:9091`. Full local st
 | `--replica-label` | | | HA replica label for dedup (repeatable) |
 | `--promote-resource-attribute` | | | Copy a resource attribute onto every series as `ATTR` or `ATTR=LABEL` (repeatable), like Prometheus `promote_resource_attributes` |
 | `--label-column` | | | Filter `LABEL=COLUMN` on a column that mirrors the label's value on every row (repeatable), such as a tenant ID in the sort key; positive matchers on the label then use the column alone |
+| `--series-cache-ttl-seconds` | | `10` | How long decoded sample rows serve identical requests from other panels; `0` disables ([details](#series-cache)) |
+| `--series-cache-bytes` | | `268435456` | Approximate bytes of decoded series kept for other panels |
 | `--thanos-default-step` | | off | Seconds; allows range queries without `step` |
 | | `RUST_LOG` | | Log filter |
 
@@ -337,6 +339,23 @@ Built for internal use at [Rivet](https://rivet.dev). PRs welcome, but we'll lik
 The server shares a metric-name dictionary across concurrent requests for each
 OTel table. `--metric-cache-ttl-seconds` defaults to 60; set it to 0 to disable
 reuse. New metric names and unit/scope changes may take up to that interval to
-appear. Sample values are never cached. Failed refreshes are retried, and each
-table has one refresh in flight. This avoids rescanning all retained metric rows
-for every Grafana panel. The library `Store` defaults to zero TTL; servers opt in.
+appear. Failed refreshes are retried, and each table has one refresh in flight.
+This avoids rescanning all retained metric rows for every Grafana panel. The
+library `Store` defaults to zero TTL; servers opt in.
+
+### Series cache
+
+Panels of one dashboard often read the same metric over the same time range,
+for example every `histogram_quantile` over one histogram. The decoded rows of
+each ClickHouse sample query are kept for `--series-cache-ttl-seconds` (default
+10; `0` disables) within `--series-cache-bytes` and handed to any request that
+would send exactly the same statement and parameters and apply the same
+selectors, so a different metric, label matcher or time range never shares an
+entry. Identical requests in flight at the same time share one fetch.
+
+A hit returns the rows ClickHouse held when the first panel loaded them, up to
+the TTL earlier, so a sample ingested in between appears for that panel one
+refresh later; a scrape interval of 15 s and the default TTL bound the delay
+to one scrape, and Grafana's own panels of a refresh arrive within a few
+seconds of each other. Discovery (`/series`, `/labels`, `/metadata`) and
+exemplar reads are never cached. The library `Store` defaults to zero TTL.
