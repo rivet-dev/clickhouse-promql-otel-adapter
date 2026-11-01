@@ -47,9 +47,11 @@ struct Config {
     /// normalized like any other label.
     #[arg(long = "promote-resource-attribute", value_parser = parse_promotion)]
     promoted_resource_attributes: Vec<(String, String)>,
-    /// Also filter a label on a table column holding the same value, as
-    /// LABEL=COLUMN; may be repeated. Use it for labels mirrored in a sort-key
-    /// column, such as a tenant ID, so selective queries skip other tenants.
+    /// Filter a label on a table column that mirrors it, as LABEL=COLUMN;
+    /// may be repeated. Use it for labels copied into a sort-key column, such
+    /// as a tenant ID, so selective queries skip other tenants. Positive
+    /// matchers on the label are decided by the column alone, so every row's
+    /// column must hold exactly its label's value.
     #[arg(long = "label-column", value_parser = parse_label_column)]
     label_columns: Vec<(String, String)>,
     /// Enable Thanos defaults for omitted range step (seconds, usually 60).

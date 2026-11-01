@@ -6,12 +6,12 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use promql_parser::{
-    label::MatchOp,
+    label::{MatchOp, Matcher},
     parser::{Expr, VectorSelector},
 };
 use serde_json::Value as Json;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -317,9 +317,13 @@ pub struct Store {
     /// an attribute other than `service.instance.id`.
     pub promoted_resource_attributes: Vec<(String, String)>,
     /// Labels whose value is also stored in a table column, as (label,
-    /// column) pairs. Positive matchers on such a label also filter the
-    /// column, so a sort-key column skips other values' rows. The operator
-    /// asserts that any row carrying the label has the same value in the column.
+    /// column) pairs. A positive matcher on such a label filters the column
+    /// instead of the attribute maps, so a sort-key column skips other
+    /// values' rows. The operator asserts that the column mirrors the label
+    /// on every row: a row carrying the label has the same value in the
+    /// column, and a row whose column holds a value carries the label with
+    /// that value. Rows that break the second half are still rejected by the
+    /// Rust matcher, but are read from ClickHouse first.
     pub label_columns: Vec<(String, String)>,
     dictionaries: Arc<[Mutex<DictionaryEntry>; 5]>,
 }
@@ -419,15 +423,17 @@ impl Store {
         self.query("SELECT 1", &[]).await?;
         Ok(())
     }
-    // Resolve OTel name/unit normalization from a small distinct-name dictionary
-    // before fetching samples. Filtering raw names directly would drop SDK names
-    // such as http.request.duration (exported as http_request_duration_seconds).
-    pub(crate) async fn metric_filter(
+    /// For each selector, the stored metric names it can match in this
+    /// table, or none when it cannot be narrowed by name. OTel name/unit
+    /// normalization is resolved from a small distinct-name dictionary before
+    /// fetching samples: filtering raw names directly would drop SDK names
+    /// such as http.request.duration (exported as http_request_duration_seconds).
+    async fn metric_names(
         &self,
         kind: &str,
         start: i64,
         selectors: &[VectorSelector],
-    ) -> Result<Option<Vec<String>>> {
+    ) -> Result<Vec<Option<Vec<String>>>> {
         let name_selectors = selectors
             .iter()
             .map(|s| {
@@ -436,15 +442,25 @@ impl Store {
                 s
             })
             .collect::<Vec<_>>();
-        let accepts = |name: &str| {
+        let accepts = |selector: &VectorSelector, name: &str| {
             let labels = Labels::from([("__name__".into(), name.into())]);
-            name_selectors.iter().any(|s| matches(s, &labels))
+            matches(selector, &labels)
         };
-        if selectors.is_empty() || accepts("target_info") {
-            return Ok(None);
+        // A selector that could read target_info reads every row's resource.
+        let mut names: Vec<Option<BTreeSet<String>>> = name_selectors
+            .iter()
+            .map(|selector| {
+                if accepts(selector, "target_info") {
+                    None
+                } else {
+                    Some(BTreeSet::new())
+                }
+            })
+            .collect();
+        if names.iter().all(Option::is_none) {
+            return Ok(vec![None; names.len()]);
         }
         let rows = self.metric_dictionary(kind, start).await?;
-        let mut names = std::collections::BTreeSet::new();
         for (index, row) in rows.iter().enumerate() {
             if index.is_multiple_of(1024) {
                 tokio::task::yield_now().await;
@@ -452,11 +468,37 @@ impl Store {
             let Ok(name) = row_metric_name(row, kind) else {
                 continue;
             };
-            if derived_names(&name, kind).iter().any(|n| accepts(n)) {
-                names.insert(string(row, "MetricName").to_owned());
+            let derived = derived_names(&name, kind);
+            for (selector, names) in name_selectors.iter().zip(&mut names) {
+                if let Some(names) = names
+                    && derived.iter().any(|n| accepts(selector, n))
+                {
+                    names.insert(string(row, "MetricName").to_owned());
+                }
             }
         }
-        Ok(Some(names.into_iter().collect()))
+        Ok(names
+            .into_iter()
+            .map(|names| names.map(|names| names.into_iter().collect()))
+            .collect())
+    }
+
+    /// The predicate selecting the rows of one table the selectors can
+    /// match, or none when no selector can match a metric stored there.
+    pub(crate) async fn table_filter(
+        &self,
+        kind: &str,
+        start: i64,
+        selectors: &[VectorSelector],
+    ) -> Result<Option<Predicate>> {
+        let names = self.metric_names(kind, start, selectors).await?;
+        Ok(selector_filter(
+            kind,
+            selectors,
+            &names,
+            &self.promoted_resource_attributes,
+            &self.label_columns,
+        ))
     }
     /// Distinct name metadata for rows at or after `start` (milliseconds).
     /// Only the uncovered part of the time range is scanned: a full-table
@@ -618,13 +660,13 @@ impl Store {
         }
     }
 
-    /// Resolves every table's metric-name filter concurrently.
-    pub(crate) async fn metric_filters(
+    /// Resolves every table's row filter concurrently.
+    async fn table_filters(
         &self,
         start: i64,
         selectors: &[VectorSelector],
-    ) -> Result<[Option<Vec<String>>; 5]> {
-        let filter = |kind| self.metric_filter(kind, start, selectors);
+    ) -> Result<[Option<Predicate>; 5]> {
+        let filter = |kind| self.table_filter(kind, start, selectors);
         let (gauge, sum, histogram, summary, exponential) = tokio::try_join!(
             filter(TABLES[0]),
             filter(TABLES[1]),
@@ -710,12 +752,13 @@ impl Store {
         selectors: &[VectorSelector],
         samples: bool,
     ) -> Result<Loaded> {
-        let filters = self.metric_filters(start, selectors).await?;
+        let filters = self.table_filters(start, selectors).await?;
         let mut requests = Vec::new();
         for (kind, filter) in TABLES.into_iter().zip(filters) {
-            if let Some(request) = self.table_query(kind, filter, start, end, selectors, samples) {
-                requests.push(request);
-            }
+            let Some(filter) = filter else {
+                continue;
+            };
+            requests.push(self.table_query(kind, filter, start, end, selectors, samples));
         }
         let payloads = self.fetch_concurrently(&requests).await?;
         let mut decoder = Decoder::new(self, selectors);
@@ -767,31 +810,16 @@ impl Store {
         decoder.finish().await
     }
 
-    /// Builds the query for one table, or none when no selector can match a
-    /// metric stored in it.
+    /// Builds the query for one table.
     fn table_query(
         &self,
         kind: &'static str,
-        filter: Option<Vec<String>>,
+        (predicate, filter_params): Predicate,
         start: i64,
         end: i64,
         selectors: &[VectorSelector],
         samples: bool,
-    ) -> Option<TableQuery> {
-        if filter.as_ref().is_some_and(|v| v.is_empty()) {
-            return None;
-        }
-        let predicate = if filter.is_some() {
-            " AND MetricName IN {names:Array(String)}"
-        } else {
-            ""
-        };
-        let (labels_predicate, labels_params) = label_filter(
-            kind,
-            selectors,
-            &self.promoted_resource_attributes,
-            &self.label_columns,
-        );
+    ) -> TableQuery {
         let projection = if samples {
             // Keep optional schema additions such as ZeroThreshold while
             // avoiding unused strings and potentially huge exemplar arrays.
@@ -866,7 +894,7 @@ impl Store {
         // budget; the shared limit is enforced while decoding.
         let row_limit = self.max_rows.saturating_add(1);
         let source = format!(
-            "{}.otel_metrics_{kind} WHERE TimeUnix >= fromUnixTimestamp64Milli({{start:Int64}}) AND TimeUnix <= fromUnixTimestamp64Milli({{end:Int64}}){predicate}{labels_predicate}",
+            "{}.otel_metrics_{kind} WHERE TimeUnix >= fromUnixTimestamp64Milli({{start:Int64}}) AND TimeUnix <= fromUnixTimestamp64Milli({{end:Int64}}){predicate}",
             self.database
         );
         let sql = if grouped {
@@ -890,19 +918,15 @@ impl Store {
         let mut params = vec![
             ("param_start".to_owned(), start.to_string()),
             ("param_end".to_owned(), end.to_string()),
-            (
-                "param_names".to_owned(),
-                string_array(&filter.unwrap_or_default()),
-            ),
         ];
-        params.extend(labels_params);
-        Some(TableQuery {
+        params.extend(filter_params);
+        TableQuery {
             kind,
             grouped,
             sample_fields,
             sql,
             params,
-        })
+        }
     }
 }
 
@@ -1523,136 +1547,211 @@ fn retain_matchers(selector: &mut VectorSelector, keep: impl Fn(&str) -> bool) {
     }
 }
 
-/// Conservative SQL prefilter. Rust remains the authority for final matching.
-/// General regex, generated labels and scope labels stay in Rust to avoid
-/// ClickHouse RE2/normalization differences changing which series are returned.
-/// Each OR branch contributes independently; an unfilterable branch admits all.
-pub(crate) fn label_filter(
+/// A SQL `WHERE` fragment starting with ` AND`, or empty to admit every row,
+/// with its bound parameters.
+pub(crate) type Predicate = (String, Vec<(String, String)>);
+
+/// Conservative SQL prefilter for one table. Rust remains the authority for
+/// final matching. Each selector admits the rows whose metric name it can
+/// match (`names`, resolved per selector) and whose pushable matchers hold,
+/// so a selector without pushable matchers admits only its own metrics, not
+/// every row of the other selectors' metrics. General regex, generated labels
+/// and scope labels stay in Rust to avoid ClickHouse RE2/normalization
+/// differences changing which series are returned. Each OR branch contributes
+/// independently; an unfilterable branch admits its selector's names.
+/// Returns none when no selector can match a metric stored in the table.
+pub(crate) fn selector_filter(
     kind: &str,
     selectors: &[VectorSelector],
+    names: &[Option<Vec<String>>],
     promoted: &[(String, String)],
     columns: &[(String, String)],
-) -> (String, Vec<(String, String)>) {
+) -> Option<Predicate> {
+    if selectors.is_empty() {
+        return Some((String::new(), Vec::new()));
+    }
     let mut params = Vec::new();
     let mut alternatives = Vec::new();
-    for selector in selectors {
-        let branches = if selector.matchers.or_matchers.is_empty() {
-            vec![selector.matchers.matchers.as_slice()]
-        } else {
-            selector
-                .matchers
-                .or_matchers
-                .iter()
-                .map(Vec::as_slice)
-                .collect()
+    for (selector, names) in selectors.iter().zip(names) {
+        let name_term = match names {
+            Some(names) if names.is_empty() => continue,
+            Some(names) => {
+                let key = format!("names_{}", params.len());
+                params.push((format!("param_{key}"), string_array(names)));
+                Some(format!("MetricName IN {{{key}:Array(String)}}"))
+            }
+            None => None,
         };
-        for branch in branches {
-            // target_info has resource attributes, not point attributes. A
-            // branch that could select it cannot use ordinary label pushdown.
-            if selector.name.as_deref().is_none_or(|n| n == "target_info")
-                && branch
-                    .iter()
-                    .filter(|m| m.name == "__name__")
-                    .all(|m| m.is_match("target_info"))
-            {
-                return (String::new(), Vec::new());
-            }
-            let mut terms = Vec::new();
-            for matcher in branch {
-                if let Some(term) = column_term(matcher, columns, &mut params) {
-                    terms.push(term);
-                }
-                // A promoted label that shadows job or instance follows their
-                // precedence in row_labels; filter it in Rust only.
-                let promotion = promoted.iter().find(|(_, label)| *label == matcher.name);
-                if matcher.name == "__name__"
-                    || matcher.name.starts_with("otel_scope_")
-                    || (promotion.is_some() && matches!(matcher.name.as_str(), "job" | "instance"))
-                    || (kind == "histogram" && matcher.name == "le")
-                    || (kind == "summary" && matcher.name == "quantile")
-                {
-                    continue;
-                }
-                let (op, value_type, parameter) = match &matcher.op {
-                    MatchOp::Equal => ("=", "String", string_param(&matcher.value)),
-                    MatchOp::NotEqual => ("!=", "String", string_param(&matcher.value)),
-                    MatchOp::Re(_) | MatchOp::NotRe(_) => {
-                        // Prometheus regexes are fully anchored. Bare literals
-                        // and literal alternatives are exactly an equality set;
-                        // all other regex syntax remains in Rust.
-                        if matcher.value.chars().any(|c| ".*+?()[]{}\\^$".contains(c)) {
-                            continue;
-                        }
-                        let values = matcher
-                            .value
-                            .split('|')
-                            .map(str::to_owned)
-                            .collect::<Vec<_>>();
-                        (
-                            if matches!(matcher.op, MatchOp::Re(_)) {
-                                "IN"
-                            } else {
-                                "NOT IN"
-                            },
-                            "Array(String)",
-                            string_array(&values),
-                        )
-                    }
-                };
-                let index = params.len();
-                let key = format!("label_key_{index}");
-                let value = format!("label_value_{index}");
-                params.push((format!("param_{key}"), string_param(&matcher.name)));
-                params.push((format!("param_{value}"), parameter));
-                // RE2 replaces each Unicode codepoint, matching label_name's
-                // permissive escaping; consecutive punctuation is not collapsed.
-                let normalized = "concat(if(match(k, '^[0-9]'), 'key_', ''), replaceRegexpAll(k, '[^a-zA-Z0-9]', '_'))";
-                let attribute = format!(
-                    "if(ScopeName = 'github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver', Attributes[{{{key}:String}}], ifNull(arrayFirstOrNull((v, k) -> {normalized} = {{{key}:String}} AND v != '', mapValues(Attributes), mapKeys(Attributes)), ''))"
-                );
-                let expression = match matcher.name.as_str() {
-                    _ if promotion.is_some() => {
-                        let resource = format!("label_resource_{index}");
-                        params.push((
-                            format!("param_{resource}"),
-                            string_param(
-                                promotion
-                                    .map(|(attribute, _)| attribute.as_str())
-                                    .unwrap_or_default(),
-                            ),
-                        ));
-                        format!(
-                            "if(notEmpty({attribute}), {attribute}, ResourceAttributes[{{{resource}:String}}])"
-                        )
-                    }
-                    "job" => format!(
-                        "if(notEmpty({attribute}), {attribute}, if(empty(ResourceAttributes['service.name']), '', concat(if(empty(ResourceAttributes['service.namespace']), '', concat(ResourceAttributes['service.namespace'], '/')), ResourceAttributes['service.name'])))"
-                    ),
-                    "instance" => format!(
-                        "if(notEmpty({attribute}), {attribute}, ResourceAttributes['service.instance.id'])"
-                    ),
-                    _ => attribute,
-                };
-                // A normalized-key collision is an error, not a choice between
-                // values. Admit ambiguous rows so row_labels reports that error.
-                let collision = format!(
-                    "(ScopeName != 'github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver' AND arrayCount((v, k) -> {normalized} = {{{key}:String}} AND v != '', mapValues(Attributes), mapKeys(Attributes)) > 1)"
-                );
-                terms.push(format!(
-                    "(({expression} {op} {{{value}:{value_type}}}) OR {collision})"
-                ));
-            }
-            if terms.is_empty() {
-                return (String::new(), Vec::new());
-            }
-            alternatives.push(format!("({})", terms.join(" AND ")));
+        let before = params.len();
+        let label_term = label_term(kind, selector, promoted, columns, &mut params);
+        if label_term.is_none() {
+            params.truncate(before);
         }
+        let alternative = match (name_term, label_term) {
+            (Some(name), Some(labels)) => format!("({name} AND {labels})"),
+            (Some(name), None) => format!("({name})"),
+            (None, Some(labels)) => labels,
+            // Nothing narrows this selector, so nothing narrows the table.
+            (None, None) => return Some((String::new(), Vec::new())),
+        };
+        alternatives.push(alternative);
     }
     if alternatives.is_empty() {
-        (String::new(), Vec::new())
-    } else {
-        (format!(" AND ({})", alternatives.join(" OR ")), params)
+        return None;
     }
+    Some((format!(" AND ({})", alternatives.join(" OR ")), params))
+}
+
+/// The label part of one selector's filter, its OR branches' terms, or none
+/// when some branch admits every row.
+fn label_term(
+    kind: &str,
+    selector: &VectorSelector,
+    promoted: &[(String, String)],
+    columns: &[(String, String)],
+    params: &mut Vec<(String, String)>,
+) -> Option<String> {
+    let branches = if selector.matchers.or_matchers.is_empty() {
+        vec![selector.matchers.matchers.as_slice()]
+    } else {
+        selector
+            .matchers
+            .or_matchers
+            .iter()
+            .map(Vec::as_slice)
+            .collect()
+    };
+    let mut terms = Vec::new();
+    for branch in branches {
+        let branch_terms = branch_terms(kind, selector, branch, promoted, columns, params)?;
+        terms.push(format!("({})", branch_terms.join(" AND ")));
+    }
+    Some(format!("({})", terms.join(" OR ")))
+}
+
+/// The terms of one OR branch, or none when the branch admits every row.
+fn branch_terms(
+    kind: &str,
+    selector: &VectorSelector,
+    branch: &[Matcher],
+    promoted: &[(String, String)],
+    columns: &[(String, String)],
+    params: &mut Vec<(String, String)>,
+) -> Option<Vec<String>> {
+    // target_info has resource attributes, not point attributes. A
+    // branch that could select it cannot use ordinary label pushdown.
+    if selector.name.as_deref().is_none_or(|n| n == "target_info")
+        && branch
+            .iter()
+            .filter(|m| m.name == "__name__")
+            .all(|m| m.is_match("target_info"))
+    {
+        return None;
+    }
+    let mut terms = Vec::new();
+    for matcher in branch {
+        if let Some(term) = column_term(matcher, columns, params) {
+            // The column mirrors the label, so it decides a positive matcher
+            // by itself; an attribute term would repeat the check on the
+            // slower map column.
+            terms.push(term);
+            continue;
+        }
+        if let Some(term) = attribute_term(kind, matcher, promoted, params) {
+            terms.push(term);
+        }
+    }
+    if terms.is_empty() { None } else { Some(terms) }
+}
+
+/// Filters one matcher on the attribute maps, or none for matchers that
+/// stay in Rust.
+fn attribute_term(
+    kind: &str,
+    matcher: &Matcher,
+    promoted: &[(String, String)],
+    params: &mut Vec<(String, String)>,
+) -> Option<String> {
+    // A promoted label that shadows job or instance follows their
+    // precedence in row_labels; filter it in Rust only.
+    let promotion = promoted.iter().find(|(_, label)| *label == matcher.name);
+    if matcher.name == "__name__"
+        || matcher.name.starts_with("otel_scope_")
+        || (promotion.is_some() && matches!(matcher.name.as_str(), "job" | "instance"))
+        || (kind == "histogram" && matcher.name == "le")
+        || (kind == "summary" && matcher.name == "quantile")
+    {
+        return None;
+    }
+    let (op, value_type, parameter) = match &matcher.op {
+        MatchOp::Equal => ("=", "String", string_param(&matcher.value)),
+        MatchOp::NotEqual => ("!=", "String", string_param(&matcher.value)),
+        MatchOp::Re(_) | MatchOp::NotRe(_) => {
+            // Prometheus regexes are fully anchored. Bare literals
+            // and literal alternatives are exactly an equality set;
+            // all other regex syntax remains in Rust.
+            if matcher.value.chars().any(|c| ".*+?()[]{}\\^$".contains(c)) {
+                return None;
+            }
+            let values = matcher
+                .value
+                .split('|')
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            (
+                if matches!(matcher.op, MatchOp::Re(_)) {
+                    "IN"
+                } else {
+                    "NOT IN"
+                },
+                "Array(String)",
+                string_array(&values),
+            )
+        }
+    };
+    let index = params.len();
+    let key = format!("label_key_{index}");
+    let value = format!("label_value_{index}");
+    params.push((format!("param_{key}"), string_param(&matcher.name)));
+    params.push((format!("param_{value}"), parameter));
+    // RE2 replaces each Unicode codepoint, matching label_name's
+    // permissive escaping; consecutive punctuation is not collapsed.
+    let normalized =
+        "concat(if(match(k, '^[0-9]'), 'key_', ''), replaceRegexpAll(k, '[^a-zA-Z0-9]', '_'))";
+    let attribute = format!(
+        "if(ScopeName = 'github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver', Attributes[{{{key}:String}}], ifNull(arrayFirstOrNull((v, k) -> {normalized} = {{{key}:String}} AND v != '', mapValues(Attributes), mapKeys(Attributes)), ''))"
+    );
+    let expression = match matcher.name.as_str() {
+        _ if promotion.is_some() => {
+            let resource = format!("label_resource_{index}");
+            params.push((
+                format!("param_{resource}"),
+                string_param(
+                    promotion
+                        .map(|(attribute, _)| attribute.as_str())
+                        .unwrap_or_default(),
+                ),
+            ));
+            format!(
+                "if(notEmpty({attribute}), {attribute}, ResourceAttributes[{{{resource}:String}}])"
+            )
+        }
+        "job" => format!(
+            "if(notEmpty({attribute}), {attribute}, if(empty(ResourceAttributes['service.name']), '', concat(if(empty(ResourceAttributes['service.namespace']), '', concat(ResourceAttributes['service.namespace'], '/')), ResourceAttributes['service.name'])))"
+        ),
+        "instance" => format!(
+            "if(notEmpty({attribute}), {attribute}, ResourceAttributes['service.instance.id'])"
+        ),
+        _ => attribute,
+    };
+    // A normalized-key collision is an error, not a choice between
+    // values. Admit ambiguous rows so row_labels reports that error.
+    let collision = format!(
+        "(ScopeName != 'github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver' AND arrayCount((v, k) -> {normalized} = {{{key}:String}} AND v != '', mapValues(Attributes), mapKeys(Attributes)) > 1)"
+    );
+    Some(format!(
+        "(({expression} {op} {{{value}:{value_type}}}) OR {collision})"
+    ))
 }
 
 /// Whether any selector could select a classic histogram `_bucket` series.
@@ -1685,7 +1784,7 @@ fn reads_buckets(selectors: &[VectorSelector]) -> bool {
 /// Matchers that can select rows without the label (an empty value, negation
 /// or a general regex) are left to the attribute filter alone.
 fn column_term(
-    matcher: &promql_parser::label::Matcher,
+    matcher: &Matcher,
     columns: &[(String, String)],
     params: &mut Vec<(String, String)>,
 ) -> Option<String> {
@@ -2006,3 +2105,7 @@ pub(crate) fn string_array(values: &[String]) -> String {
             .join(",")
     )
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/storage.rs"]
+mod tests;
