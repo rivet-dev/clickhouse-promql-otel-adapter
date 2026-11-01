@@ -61,6 +61,10 @@ struct Backend {
 
 async fn serve(State(state): State<Arc<Backend>>, sql: Bytes) -> (StatusCode, Vec<u8>) {
     let sql = String::from_utf8(sql.to_vec()).unwrap();
+    if sql == "SELECT 1" {
+        // The adapter's one-time use_statistics probe.
+        return (StatusCode::OK, b"1\n".to_vec());
+    }
     if sql.starts_with("SELECT DISTINCT MetricName, MetricUnit") {
         // Only the gauge table stores the metric.
         let body = if sql.contains("otel_metrics_gauge") {
