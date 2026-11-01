@@ -106,3 +106,20 @@ async fn output_cache_keeps_changing_bounds_and_quantiles_distinct() {
         assert_eq!(selected.series[0].points[0].value,9.0);
     }).await;
 }
+
+#[tokio::test]
+async fn unsupported_column_types_fall_back_to_json_transport() {
+    common::empty_database_test(false, |store| async move {
+        insert(&store,"histogram",(0..3).map(|i|json!({"MetricName":"latency","ScopeName":PROM,"TimeUnix":T/1000+i,"Attributes":{"pod":"a"},"Count":i+1,"Sum":i,"BucketCounts":[i,1],"ExplicitBounds":[0.5]})).collect()).await;
+        let load = |store: Store| async move {
+            let loaded = store.load(T, T + 3_000, &[selector("latency_bucket")]).await.unwrap();
+            loaded.series.into_iter().map(|s| (s.labels.into_map(), s.points.iter().map(|p| (p.timestamp, p.value, p.start_timestamp)).collect::<Vec<_>>())).collect::<Vec<_>>()
+        };
+        let typed = load(store.clone()).await;
+        assert_eq!(typed.len(), 2);
+        assert_eq!(typed[0].1.len(), 3);
+        // Geometry has no RowBinary reader, so the same rows arrive as JSON.
+        store.query(&format!("ALTER TABLE {}.otel_metrics_histogram ADD COLUMN geo Point DEFAULT (1, 2)", store.database), &[]).await.unwrap();
+        assert_eq!(load(store.clone()).await, typed);
+    }).await;
+}

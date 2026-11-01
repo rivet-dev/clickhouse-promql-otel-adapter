@@ -58,7 +58,8 @@ gRPC and object-store management are not implemented.
 Default limits: 16 admitted requests, 128 pending requests, 120-second request/query/ClickHouse timeout,
 1 MiB form body, 65,536 query bytes, 2,048 parser tokens, 128 evaluation depth,
 5 million retained sample slots, 11,000 intervals per range series, 1 million
-fetched rows and 64 MiB of sample/discovery/exemplar responses across tables per request.
+fetched rows and 64 MiB of decompressed sample/discovery/exemplar responses
+across tables per request.
 Metric dictionaries have a separate 64 MiB response limit per table and a shared
 60-second cache in the CLI (library caching is opt-in). The 5-million-sample
 budget also bounds storage expansion before evaluation, including classic

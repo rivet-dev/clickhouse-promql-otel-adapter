@@ -1,6 +1,7 @@
 use crate::{
     engine::matches,
     model::{Labels, Point, STALE_BITS, Series, float_string},
+    rowbinary::{Column, Reader, Ty, Unsupported, trailing_exception},
     translation::{label_name, metric_name},
 };
 use anyhow::{Context, Result, bail};
@@ -23,52 +24,251 @@ type DictionaryEntry = Option<NameCoverage>;
 /// extended forward are rescanned by the next forward extension.
 const NAME_LATE_ARRIVAL_MS: i64 = 5 * 60 * 1000;
 
-/// Distinct metric names seen in `[from_ms, scanned_at_ms)` plus anything newer
-/// that the last forward scan returned. Queries starting at or after `from_ms`
-/// reuse it; earlier starts extend it backwards, and expiry extends it forward.
-/// Names are only ever added, so an extension never hides a name.
-/// A sample's field from its grouped tuple, or from the group row for fields
-/// shared by every sample in the group.
-fn sample_field<'a>(row: &'a Json, values: &'a [Json], fields: &[&str], name: &str) -> &'a Json {
-    match fields.iter().position(|field| *field == name) {
-        Some(index) if index < values.len() => &values[index],
-        _ => &row[name],
-    }
-}
-
-/// Hashes the per-group output cache's small keys (a static suffix and a
-/// float's bits) without SipHash. The cache lives for one request and its
-/// keys are not attacker-chosen, so collision resistance is not needed.
-type KeyHasher = std::hash::BuildHasherDefault<FnvHasher>;
-
-#[derive(Default)]
-struct FnvHasher(u64);
-
-impl std::hash::Hasher for FnvHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        let mut hash = if self.0 == 0 {
-            0xcbf29ce484222325
-        } else {
-            self.0
-        };
-        for byte in bytes {
-            hash = (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3);
-        }
-        self.0 = hash;
-    }
-}
+/// Logged once per process: the same schema produces the same fallback on
+/// every query.
+static ROWBINARY_FALLBACK_WARNING: std::sync::Once = std::sync::Once::new();
 
 /// One table's sample or discovery query, prepared before any are sent.
+#[derive(Clone)]
 struct TableQuery {
     kind: &'static str,
+    /// Sample queries return one row per label set with its samples as an
+    /// array of tuples in `sample_fields` order; discovery rows are distinct
+    /// label sets without samples.
     grouped: bool,
     sample_fields: Vec<&'static str>,
+    /// The statement without its output format.
     sql: String,
     params: Vec<(String, String)>,
+}
+
+#[derive(Clone, Copy)]
+enum Format {
+    RowBinary,
+    Json,
+}
+
+impl TableQuery {
+    fn statement(&self, format: Format) -> String {
+        match format {
+            Format::RowBinary => format!("{} FORMAT RowBinaryWithNamesAndTypes", self.sql),
+            // Unquoted 64-bit integers parse without a string allocation per
+            // timestamp and bucket count; number() and integer() accept both.
+            Format::Json => format!(
+                "{} SETTINGS output_format_json_quote_denormals=1, output_format_json_quote_64bit_integers=0 FORMAT JSONEachRow",
+                self.sql
+            ),
+        }
+    }
+}
+
+/// A table's response, ready to decode.
+enum TablePayload {
+    /// Grouped sample rows, with the header parsed and the sample tuple
+    /// layout checked.
+    RowBinary {
+        bytes: Vec<u8>,
+        columns: Vec<Column>,
+        layout: SampleLayout,
+        /// Offset of the first row.
+        body: usize,
+    },
+    /// One JSON object per line: discovery rows, or grouped sample rows when
+    /// the RowBinary header names a column type the reader does not support.
+    Json(String),
+}
+
+impl TablePayload {
+    fn len(&self) -> usize {
+        match self {
+            TablePayload::RowBinary { bytes, .. } => bytes.len(),
+            TablePayload::Json(text) => text.len(),
+        }
+    }
+}
+
+/// Position and element types of the sample tuple in a RowBinary group row,
+/// checked once per response so per-sample reads cannot hit a type mismatch.
+struct SampleLayout {
+    column: usize,
+    elements: Vec<Ty>,
+}
+
+impl SampleLayout {
+    fn new(columns: &[Column], fields: &[&str]) -> Result<Self> {
+        let column = columns
+            .iter()
+            .position(|column| column.name == "_samples")
+            .context("missing grouped metric samples")?;
+        let elements = match &columns[column].ty {
+            Ty::Array(tuple) => match tuple.as_ref() {
+                Ty::Tuple(elements) => elements.clone(),
+                _ => bail!("invalid grouped metric sample"),
+            },
+            _ => bail!("invalid grouped metric samples"),
+        };
+        if elements.len() != fields.len() {
+            bail!("invalid grouped metric sample length");
+        }
+        for (field, ty) in fields.iter().zip(&elements) {
+            let readable = match *field {
+                "_timestamp" | "_start_timestamp" | "Flags" | "Scale" | "PositiveOffset"
+                | "NegativeOffset" => ty.is_integer(),
+                "Value" | "Count" | "Sum" | "ZeroCount" => ty.is_number(),
+                _ => ty.is_number_array(),
+            };
+            if !readable {
+                return Err(Unsupported(format!("{ty:?} for sample field {field}")).into());
+            }
+        }
+        Ok(Self { column, elements })
+    }
+}
+
+/// One sample of a grouped row, decoded by column type.
+struct Sample {
+    timestamp: i64,
+    start_timestamp: i64,
+    flags: i64,
+    measurement: Measurement,
+}
+
+impl Sample {
+    fn stale(&self) -> bool {
+        self.flags & 1 != 0
+    }
+
+    /// Reads the next tuple of a RowBinary sample array.
+    fn read(reader: &mut Reader, layout: &SampleLayout, kind: &str) -> Result<Self> {
+        let ty = |index: usize| &layout.elements[index];
+        let timestamp = reader.integer(ty(0))?;
+        let start_timestamp = reader.integer(ty(1))?;
+        let flags = reader.integer(ty(2))?;
+        let measurement = match kind {
+            "gauge" | "sum" => Measurement::Float(reader.float(ty(3))?),
+            "histogram" => {
+                let count = reader.float(ty(3))?;
+                let sum = reader.float(ty(4))?;
+                let mut bucket_counts = Vec::new();
+                reader.floats(ty(5), &mut bucket_counts)?;
+                Measurement::Histogram {
+                    count,
+                    sum,
+                    bucket_counts,
+                }
+            }
+            "summary" => {
+                let count = reader.float(ty(3))?;
+                let sum = reader.float(ty(4))?;
+                let mut quantiles = Vec::new();
+                reader.floats(ty(5), &mut quantiles)?;
+                let mut values = Vec::new();
+                reader.floats(ty(6), &mut values)?;
+                Measurement::Summary {
+                    count,
+                    sum,
+                    quantiles,
+                    values,
+                }
+            }
+            "exponential_histogram" => {
+                let count = reader.float(ty(3))?;
+                let sum = reader.float(ty(4))?;
+                let scale = reader.integer(ty(5))?;
+                let zero_count = reader.float(ty(6))?;
+                let positive_offset = reader.integer(ty(7))?;
+                let mut positive = Vec::new();
+                reader.floats(ty(8), &mut positive)?;
+                let negative_offset = reader.integer(ty(9))?;
+                let mut negative = Vec::new();
+                reader.floats(ty(10), &mut negative)?;
+                Measurement::Exponential(Box::new(Exponential {
+                    count,
+                    sum,
+                    scale,
+                    zero_count,
+                    positive_offset,
+                    positive,
+                    negative_offset,
+                    negative,
+                }))
+            }
+            _ => unreachable!(),
+        };
+        Ok(Self {
+            timestamp,
+            start_timestamp,
+            flags,
+            measurement,
+        })
+    }
+
+    /// Decodes one tuple of a JSON `_samples` array, in `fields` order.
+    fn from_json(values: &[Json], fields: &[&str], kind: &str) -> Result<Self> {
+        if values.len() != fields.len() {
+            bail!("invalid grouped metric sample length")
+        }
+        let measurement = match kind {
+            "gauge" | "sum" => Measurement::Float(number(&values[3])?),
+            "histogram" => Measurement::Histogram {
+                count: number(&values[3])?,
+                sum: number(&values[4])?,
+                bucket_counts: numbers(&values[5]).context("missing BucketCounts")?,
+            },
+            "summary" => Measurement::Summary {
+                count: number(&values[3])?,
+                sum: number(&values[4])?,
+                quantiles: numbers(&values[5]).context("missing quantiles")?,
+                values: numbers(&values[6]).context("missing quantile values")?,
+            },
+            "exponential_histogram" => Measurement::Exponential(Box::new(Exponential {
+                count: number(&values[3])?,
+                sum: number(&values[4])?,
+                scale: integer(&values[5])?,
+                zero_count: number(&values[6])?,
+                positive_offset: integer(&values[7])?,
+                positive: numbers(&values[8]).context("missing native bucket counts")?,
+                negative_offset: integer(&values[9])?,
+                negative: numbers(&values[10]).context("missing native bucket counts")?,
+            })),
+            _ => unreachable!(),
+        };
+        Ok(Self {
+            timestamp: integer(&values[0])?,
+            start_timestamp: integer(&values[1])?,
+            flags: integer(&values[2]).unwrap_or(0),
+            measurement,
+        })
+    }
+}
+
+enum Measurement {
+    /// A gauge or sum `Value`.
+    Float(f64),
+    Histogram {
+        count: f64,
+        sum: f64,
+        /// Per-bound counts, or empty when the row stores no buckets.
+        bucket_counts: Vec<f64>,
+    },
+    Summary {
+        count: f64,
+        sum: f64,
+        quantiles: Vec<f64>,
+        values: Vec<f64>,
+    },
+    Exponential(Box<Exponential>),
+}
+
+struct Exponential {
+    count: f64,
+    sum: f64,
+    scale: i64,
+    zero_count: f64,
+    positive_offset: i64,
+    positive: Vec<f64>,
+    negative_offset: i64,
+    negative: Vec<f64>,
 }
 
 struct NameCoverage {
@@ -105,6 +305,7 @@ pub struct Store {
     pub username: String,
     pub password: String,
     pub max_rows: usize,
+    /// Maximum decompressed response bytes across a request's tables.
     pub max_bytes: usize,
     /// Maximum retained samples, native buckets, or discovered series per read.
     pub max_samples: usize,
@@ -150,11 +351,22 @@ impl Store {
         })
     }
     pub async fn query(&self, sql: &str, params: &[(&str, String)]) -> Result<String> {
+        let bytes = self.query_bytes(sql, params).await?;
+        String::from_utf8(bytes)
+            .map_err(|_| BackendError("ClickHouse returned invalid UTF-8".into()).into())
+    }
+    pub(crate) async fn query_bytes(
+        &self,
+        sql: &str,
+        params: &[(&str, String)],
+    ) -> Result<Vec<u8>> {
         self.query_inner(sql, params)
             .await
             .map_err(|e| BackendError(format!("{e:#}")).into())
     }
-    async fn query_inner(&self, sql: &str, params: &[(&str, String)]) -> Result<String> {
+    /// Sends one statement. Responses are requested zstd-compressed and
+    /// decompressed while streaming, so `max_bytes` bounds decompressed bytes.
+    async fn query_inner(&self, sql: &str, params: &[(&str, String)]) -> Result<Vec<u8>> {
         let started = Instant::now();
         let mut response = self
             .client
@@ -164,6 +376,7 @@ impl Store {
             .query(&[
                 ("cancel_http_readonly_queries_on_client_close", "1"),
                 ("max_execution_time", "120"),
+                ("enable_http_compression", "1"),
             ])
             .body(sql.to_owned())
             .send()
@@ -191,14 +404,16 @@ impl Store {
             query = sql.get(..160).unwrap_or(sql),
             "clickhouse round trip"
         );
-        let text = String::from_utf8(bytes).context("ClickHouse returned invalid UTF-8")?;
         if !status.is_success() {
             bail!(
                 "ClickHouse returned {status}: {}",
-                text.chars().take(500).collect::<String>()
+                String::from_utf8_lossy(&bytes)
+                    .chars()
+                    .take(500)
+                    .collect::<String>()
             )
         }
-        Ok(text)
+        Ok(bytes)
     }
     pub async fn ready(&self) -> Result<()> {
         self.query("SELECT 1", &[]).await?;
@@ -422,26 +637,59 @@ impl Store {
 
     /// Sends the per-table queries concurrently and returns their responses in
     /// request order. Each response is individually bounded by `max_bytes`.
-    async fn fetch_concurrently(&self, requests: &[TableQuery]) -> Result<Vec<String>> {
+    async fn fetch_concurrently(&self, requests: &[TableQuery]) -> Result<Vec<TablePayload>> {
         let mut tasks = tokio::task::JoinSet::new();
         for (index, request) in requests.iter().enumerate() {
             let store = self.clone();
-            let sql = request.sql.clone();
-            let params = request.params.clone();
-            tasks.spawn(async move {
-                let params = params
-                    .iter()
-                    .map(|(key, value)| (key.as_str(), value.clone()))
-                    .collect::<Vec<_>>();
-                (index, store.query(&sql, &params).await)
-            });
+            let request = request.clone();
+            tasks.spawn(async move { (index, store.fetch_table(&request).await) });
         }
-        let mut texts = vec![String::new(); requests.len()];
+        let mut payloads: Vec<Option<TablePayload>> = (0..requests.len()).map(|_| None).collect();
         while let Some(joined) = tasks.join_next().await {
-            let (index, text) = joined.context("ClickHouse query task failed")?;
-            texts[index] = text?;
+            let (index, payload) = joined.context("ClickHouse query task failed")?;
+            payloads[index] = Some(payload?);
         }
-        Ok(texts)
+        payloads
+            .into_iter()
+            .map(|payload| payload.context("missing ClickHouse table response"))
+            .collect()
+    }
+
+    /// Fetches sample rows as RowBinary, or as JSON when the response holds a
+    /// column type the RowBinary reader cannot decode, so an unknown schema
+    /// addition slows queries down instead of failing them.
+    async fn fetch_table(&self, request: &TableQuery) -> Result<TablePayload> {
+        let params = request
+            .params
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.clone()))
+            .collect::<Vec<_>>();
+        if !request.grouped {
+            let text = self
+                .query(&request.statement(Format::Json), &params)
+                .await?;
+            return Ok(TablePayload::Json(text));
+        }
+        let bytes = self
+            .query_bytes(&request.statement(Format::RowBinary), &params)
+            .await?;
+        match prepare_rowbinary(bytes, &request.sample_fields) {
+            Ok(payload) => Ok(payload),
+            Err(error) if error.is::<Unsupported>() => {
+                ROWBINARY_FALLBACK_WARNING.call_once(|| {
+                    tracing::warn!(
+                        ?error,
+                        table = request.kind,
+                        "reading samples as JSON because of an unsupported column type; this is slower"
+                    );
+                });
+                let text = self
+                    .query(&request.statement(Format::Json), &params)
+                    .await?;
+                Ok(TablePayload::Json(text))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn load(&self, start: i64, end: i64, selectors: &[VectorSelector]) -> Result<Loaded> {
@@ -462,530 +710,766 @@ impl Store {
         selectors: &[VectorSelector],
         samples: bool,
     ) -> Result<Loaded> {
-        let mut groups: BTreeMap<Labels, Vec<Point>> = BTreeMap::new();
-        let mut loaded = Loaded::default();
-        let mut total = 0usize;
-        let mut bytes_read = 0usize;
-        let mut retained = 0usize;
         let filters = self.metric_filters(start, selectors).await?;
         let mut requests = Vec::new();
         for (kind, filter) in TABLES.into_iter().zip(filters) {
-            if filter.as_ref().is_some_and(|v| v.is_empty()) {
-                continue;
+            if let Some(request) = self.table_query(kind, filter, start, end, selectors, samples) {
+                requests.push(request);
             }
-            let predicate = if filter.is_some() {
-                " AND MetricName IN {names:Array(String)}"
-            } else {
-                ""
-            };
-            let (labels_predicate, labels_params) = label_filter(
-                kind,
-                selectors,
-                &self.promoted_resource_attributes,
-                &self.label_columns,
-            );
-            let projection = if samples {
-                // Keep optional schema additions such as ZeroThreshold while
-                // avoiding unused strings and potentially huge exemplar arrays.
-                let mut excluded = vec![
-                    "ResourceSchemaUrl",
-                    "ScopeDroppedAttrCount",
-                    "ServiceName",
-                    "TimeUnix",
-                    "StartTimeUnix",
-                ];
-                if kind != "summary" {
-                    excluded.extend([
-                        "`Exemplars.FilteredAttributes`",
-                        "`Exemplars.TimeUnix`",
-                        "`Exemplars.Value`",
-                        "`Exemplars.SpanId`",
-                        "`Exemplars.TraceId`",
-                    ]);
-                }
-                if matches!(kind, "histogram" | "exponential_histogram") {
-                    excluded.extend(["Min", "Max"]);
-                }
-                // Selecting only _count/_sum still reads histogram rows; empty
-                // buckets decode as a lone +Inf bucket that no selector reads.
-                let mut placeholders = "";
-                if kind == "histogram" && !reads_buckets(selectors) {
-                    excluded.extend(["BucketCounts", "ExplicitBounds"]);
-                    placeholders = ", emptyArrayUInt64() AS BucketCounts, emptyArrayFloat64() AS ExplicitBounds";
-                }
-                let columns = format!("* EXCEPT ({}){placeholders}", excluded.join(", "));
-                format!(
-                    "{columns}, toUnixTimestamp64Milli(toDateTime64(TimeUnix, 3)) AS _timestamp, toUnixTimestamp64Milli(toDateTime64(StartTimeUnix, 3)) AS _start_timestamp"
-                )
-            } else {
-                let extra = match kind {
-                    "sum" => ", IsMonotonic",
-                    "histogram" => ", ExplicitBounds",
-                    "summary" => ", `ValueAtQuantiles.Quantile`",
-                    _ => "",
-                };
-                format!(
-                    "DISTINCT MetricName, MetricDescription, MetricUnit, ResourceAttributes, ScopeName, ScopeVersion, ScopeSchemaUrl, ScopeAttributes, Attributes{extra}"
-                )
-            };
-            let grouped = samples;
-            let mut sample_fields = vec!["_timestamp", "_start_timestamp", "Flags"];
-            sample_fields.extend(match kind {
-                "gauge" | "sum" => vec!["Value"],
-                // Bucket bounds rarely change within a series, so they stay in
-                // the grouping key and are sent once per group, not per sample.
-                "histogram" => vec!["Count", "Sum", "BucketCounts"],
-                "summary" => vec![
-                    "Count",
-                    "Sum",
-                    "ValueAtQuantiles.Quantile",
-                    "ValueAtQuantiles.Value",
-                ],
-                "exponential_histogram" => vec![
-                    "Count",
-                    "Sum",
-                    "Scale",
-                    "ZeroCount",
-                    "PositiveOffset",
-                    "PositiveBucketCounts",
-                    "NegativeOffset",
-                    "NegativeBucketCounts",
-                ],
-                _ => unreachable!(),
-            });
-            // Tables are read concurrently, so each may use the whole row
-            // budget; the shared limit is enforced while decoding.
-            let row_limit = self.max_rows.saturating_add(1);
-            let source = format!(
-                "{}.otel_metrics_{kind} WHERE TimeUnix >= fromUnixTimestamp64Milli({{start:Int64}}) AND TimeUnix <= fromUnixTimestamp64Milli({{end:Int64}}){predicate}{labels_predicate}",
-                self.database
-            );
-            // Unquoted 64-bit integers parse without a string allocation per
-            // timestamp and bucket count; number() and integer() accept both.
-            let sql = if grouped {
-                let fields = sample_fields
-                    .iter()
-                    .map(|field| format!("`{field}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                // Bound raw rows BEFORE aggregation. The extra row survives as
-                // a tuple and causes the same scan-limit error during decoding.
-                // Every other projected field remains part of the grouping key,
-                // including optional schema additions such as ZeroThreshold.
-                // No values are aggregated away: only repeated labels/metadata
-                // are removed from the transport representation.
-                format!(
-                    "SELECT * EXCEPT ({fields}), groupArray(tuple({fields})) AS _samples FROM (SELECT {projection} FROM {source} LIMIT {row_limit}) GROUP BY ALL SETTINGS output_format_json_quote_denormals=1, output_format_json_quote_64bit_integers=0 FORMAT JSONEachRow"
-                )
-            } else {
-                format!(
-                    "SELECT {projection} FROM {source} LIMIT {row_limit} SETTINGS output_format_json_quote_denormals=1, output_format_json_quote_64bit_integers=0 FORMAT JSONEachRow"
-                )
-            };
-            let mut params = vec![
-                ("param_start".to_owned(), start.to_string()),
-                ("param_end".to_owned(), end.to_string()),
-                (
-                    "param_names".to_owned(),
-                    string_array(&filter.unwrap_or_default()),
-                ),
-            ];
-            params.extend(labels_params);
-            requests.push(TableQuery {
-                kind,
-                grouped,
-                sample_fields,
-                sql,
-                params,
-            });
         }
-        let texts = self.fetch_concurrently(&requests).await?;
-        for (request, text) in requests.iter().zip(texts) {
-            let (kind, grouped, sample_fields) =
-                (request.kind, request.grouped, &request.sample_fields);
+        let payloads = self.fetch_concurrently(&requests).await?;
+        let mut decoder = Decoder::new(self, selectors);
+        let mut bytes_read = 0usize;
+        for (request, payload) in requests.iter().zip(payloads) {
             // The byte budget is shared across sample/discovery tables, not
             // reset for each response. Dictionary metadata has its own cache.
-            bytes_read += text.len();
+            bytes_read += payload.len();
             if bytes_read > self.max_bytes {
                 bail!("ClickHouse response byte limit exceeded");
             }
-            for (group_index, line) in text.lines().enumerate() {
-                if group_index.is_multiple_of(1024) {
-                    tokio::task::yield_now().await;
-                }
-                let mut row: Json =
-                    serde_json::from_str(line).context("invalid ClickHouse metric row")?;
-                let tuples = if grouped {
-                    match row
-                        .as_object_mut()
-                        .context("invalid grouped metric row")?
-                        .remove("_samples")
-                    {
-                        Some(Json::Array(tuples)) => tuples,
-                        _ => bail!("missing grouped metric samples"),
-                    }
-                } else {
-                    vec![Json::Null]
-                };
-                total = total
-                    .checked_add(tuples.len())
-                    .context("ClickHouse sample scan limit exceeded")?;
-                if total > self.max_rows {
-                    bail!("ClickHouse sample scan limit exceeded");
-                }
-                // Group identity is immutable. Normalize/match labels and
-                // metadata once, then decode only point fields inside the loop.
-                let name = match row_metric_name(&row, kind) {
-                    Ok(name) => name,
-                    Err(e) => {
-                        let warning = format!(
-                            "skipped invalid OTel metric name {:?}: {e}",
-                            string(&row, "MetricName")
-                        );
-                        if !loaded.warnings.contains(&warning) {
-                            loaded.warnings.push(warning);
+            match payload {
+                TablePayload::RowBinary {
+                    bytes,
+                    columns,
+                    layout,
+                    body,
+                } => {
+                    let mut reader = Reader::at(&bytes, body);
+                    let mut index = 0usize;
+                    while !reader.is_empty() {
+                        if index.is_multiple_of(1024) {
+                            tokio::task::yield_now().await;
                         }
-                        continue;
-                    }
-                };
-                let mut labels = row_labels(&row, &self.promoted_resource_attributes)?;
-                labels.insert("__name__".into(), name.clone());
-                let info = target_info(&row)?.filter(|info| {
-                    selectors.is_empty() || selectors.iter().any(|s| matches(s, info))
-                });
-                let candidates = derived_names(&name, kind);
-                let selected = selectors.is_empty()
-                    || candidates.iter().any(|n| {
-                        let mut l = labels.clone();
-                        l.insert("__name__".into(), n.clone());
-                        if kind == "histogram" {
-                            l.insert("le".into(), "+Inf".into());
-                        }
-                        selectors
-                            .iter()
-                            .any(|s| matches(s, &l) || potential_bucket_match(s, &l, kind))
-                    });
-                if selected {
-                    let typ = match kind {
-                        "sum" if row["IsMonotonic"].as_bool() == Some(true) => "counter",
-                        "sum" | "gauge" => "gauge",
-                        "histogram" | "exponential_histogram" => "histogram",
-                        _ => "summary",
-                    };
-                    let help = string(&row, "MetricDescription");
-                    let unit = string(&row, "MetricUnit");
-                    // Most sample rows repeat the same metadata. Compare borrowed
-                    // strings before allocating another JSON object for every point.
-                    let known = loaded.metadata.get(&name).is_some_and(|entries| {
-                        entries.iter().any(|entry| {
-                            entry["type"] == typ && entry["help"] == help && entry["unit"] == unit
-                        })
-                    });
-                    if !known {
-                        loaded
-                            .metadata
-                            .entry(name.clone())
-                            .or_default()
-                            .push(serde_json::json!({"type":typ,"help":help,"unit":unit}));
+                        let (row, group) = read_group(&mut reader, &columns, &layout, request.kind)
+                            .with_context(|| decode_failure(&bytes))?;
+                        decoder.charge_rows(group.len())?;
+                        decoder.sample_group(request.kind, row, group).await?;
+                        index += 1;
                     }
                 }
-                // One output buffer per derived series within this transport
-                // group. Keys contain only suffix + generated label bits, so the
-                // hot point loop neither clones nor compares full label maps.
-                type OutputKey = (&'static str, Option<(&'static str, u64)>);
-                let mut outputs: Vec<(Labels, Vec<Point>)> = Vec::new();
-                let mut output_cache: HashMap<OutputKey, Option<usize>, KeyHasher> =
-                    HashMap::default();
-                let mut info_points = Vec::new();
-                let mut native_points = Vec::new();
-                for (sample_index, tuple) in tuples.into_iter().enumerate() {
-                    if sample_index.is_multiple_of(1024) {
-                        tokio::task::yield_now().await;
-                    }
-                    // Sample fields are read from the tuple by position; writing
-                    // them into the row allocated a key per field per sample.
-                    let mut tuple_values = Vec::new();
-                    if grouped {
-                        let Json::Array(values) = tuple else {
-                            bail!("invalid grouped metric sample")
-                        };
-                        if values.len() != sample_fields.len() {
-                            bail!("invalid grouped metric sample length")
+                TablePayload::Json(text) => {
+                    for (index, line) in text.lines().enumerate() {
+                        if index.is_multiple_of(1024) {
+                            tokio::task::yield_now().await;
                         }
-                        tuple_values = values;
-                    }
-                    let sample =
-                        |name: &str| sample_field(&row, &tuple_values, sample_fields, name);
-                    if let Some(info) = &info {
-                        if !samples && !groups.contains_key(info) {
-                            charge_samples(&mut retained, 1, self.max_samples)?;
-                        }
-                        if !samples {
-                            groups.entry(info.clone()).or_default();
-                        }
-                        if samples && integer(sample("Flags")).unwrap_or(0) & 1 == 0 {
-                            charge_samples(&mut retained, 1, self.max_samples)?;
-                            info_points.push(Point {
-                                timestamp: integer(sample("_timestamp"))?,
-                                value: 1.0,
-                                ..Default::default()
-                            });
-                        }
-                    }
-                    if !selected {
-                        continue;
-                    }
-                    if !samples {
-                        for n in &candidates {
-                            let mut ls = labels.clone();
-                            ls.insert("__name__".into(), n.clone());
-                            let extra: Box<
-                                dyn Iterator<Item = Result<Option<(&str, String)>>> + Send + '_,
-                            > = if n.ends_with("_bucket") && kind == "histogram" {
-                                Box::new(
-                                    sample("ExplicitBounds")
-                                        .as_array()
-                                        .context("missing bounds")?
-                                        .iter()
-                                        .map(|v| number(v).map(|x| Some(("le", float_string(x)))))
-                                        .chain(std::iter::once(Ok(Some(("le", "+Inf".into()))))),
-                                )
-                            } else if n == &name && kind == "summary" {
-                                Box::new(
-                                    sample("ValueAtQuantiles.Quantile")
-                                        .as_array()
-                                        .context("missing quantiles")?
-                                        .iter()
-                                        .map(|v| {
-                                            number(v).map(|x| Some(("quantile", float_string(x))))
-                                        }),
-                                )
-                            } else {
-                                Box::new(std::iter::once(Ok(None)))
-                            };
-                            for (index, e) in extra.enumerate() {
-                                if index.is_multiple_of(1024) {
-                                    tokio::task::yield_now().await;
-                                }
-                                let mut ls = ls.clone();
-                                if let Some((k, v)) = e? {
-                                    ls.insert(k.into(), v);
-                                }
-                                if selectors.is_empty() || selectors.iter().any(|s| matches(s, &ls))
-                                {
-                                    if !groups.contains_key(&ls) {
-                                        charge_samples(&mut retained, 1, self.max_samples)?;
-                                    }
-                                    groups.entry(ls).or_default();
-                                }
-                            }
-                        }
-                        continue;
-                    }
-                    if matches!(kind, "sum" | "histogram" | "exponential_histogram")
-                        && integer(sample("AggregationTemporality"))? == 1
-                    {
-                        bail!(
-                            "delta temporality for {name} requires cumulative conversion; configure the collector deltatocumulative processor"
-                        )
-                    }
-                    let timestamp = integer(sample("_timestamp"))?;
-                    let stale = integer(sample("Flags")).unwrap_or(0) & 1 != 0;
-                    let start_timestamp = integer(sample("_start_timestamp"))?;
-                    if kind == "exponential_histogram" {
-                        charge_samples(&mut retained, 1, self.max_samples)?;
-                        for field in ["PositiveBucketCounts", "NegativeBucketCounts"] {
-                            charge_samples(
-                                &mut retained,
-                                sample(field)
-                                    .as_array()
-                                    .context("missing native bucket counts")?
-                                    .len(),
-                                self.max_samples,
-                            )?;
-                        }
-                        let mut h = crate::histogram::Histogram {
-                            schema: integer(sample("Scale"))? as i32,
-                            count: number(sample("Count"))?,
-                            sum: number(sample("Sum"))?,
-                            zero_count: number(sample("ZeroCount"))?,
-                            zero_threshold: row
-                                .get("ZeroThreshold")
-                                .map(number)
-                                .transpose()?
-                                .unwrap_or(0.0),
-                            ..Default::default()
-                        };
-                        if !(-4..=20).contains(&h.schema) {
-                            bail!(
-                                "OTLP exponential histogram scale {} cannot be represented as a Prometheus native histogram",
-                                h.schema
-                            );
-                        }
-                        for (prefix, buckets) in
-                            [("Positive", &mut h.positive), ("Negative", &mut h.negative)]
-                        {
-                            let offset = integer(sample(&format!("{prefix}Offset")))? as i32;
-                            for (i, v) in sample(&format!("{prefix}BucketCounts"))
-                                .as_array()
-                                .context("missing native bucket counts")?
-                                .iter()
-                                .enumerate()
-                            {
-                                if i.is_multiple_of(1024) {
-                                    tokio::task::yield_now().await;
-                                }
-                                let index = i64::from(offset) + i as i64 + 1;
-                                let index = i32::try_from(index)
-                                    .context("native histogram bucket index overflow")?;
-                                buckets.insert(index, number(v)?);
-                            }
-                        }
-                        if h.schema > 8 {
-                            h.reduce(8)?;
-                        }
-                        if row.get("ZeroThreshold").is_none() {
-                            let warning="Collector schema does not store exponential histogram ZeroThreshold; assuming zero".to_owned();
-                            if !loaded.warnings.contains(&warning) {
-                                loaded.warnings.push(warning)
-                            }
-                        }
-                        if stale {
-                            h.sum = f64::from_bits(STALE_BITS)
-                        }
-                        native_points.push(Point {
-                            timestamp,
-                            start_timestamp,
-                            histogram: Some(Box::new(h)),
-                            ..Default::default()
-                        });
-                        continue;
-                    }
-                    let mut push = |suffix: &'static str,
-                                    extra: Option<(&'static str, f64)>,
-                                    value: f64|
-                     -> Result<()> {
-                        let key = (suffix, extra.map(|(label, value)| (label, value.to_bits())));
-                        let index = if let Some(index) = output_cache.get(&key) {
-                            *index
+                        let mut row: Json =
+                            serde_json::from_str(line).context("invalid ClickHouse metric row")?;
+                        if request.grouped {
+                            let group = decoder.json_group(&mut row, request)?;
+                            decoder.sample_group(request.kind, row, group).await?;
                         } else {
-                            let mut ls = labels.clone();
-                            ls.insert("__name__".into(), format!("{name}{suffix}"));
-                            if let Some((label, value)) = extra {
-                                ls.insert(label.into(), float_string(value));
-                            }
-                            let index = if selectors.is_empty()
-                                || selectors.iter().any(|s| matches(s, &ls))
-                            {
-                                let index = outputs.len();
-                                outputs.push((ls, Vec::new()));
-                                Some(index)
-                            } else {
-                                None
-                            };
-                            // Retained outputs are bounded by max_samples. Cap
-                            // negative cache entries independently when arbitrary
-                            // changing bounds never match the requested selector.
-                            if index.is_some() || output_cache.len() < 4096 {
-                                output_cache.insert(key, index);
-                            }
-                            index
-                        };
-                        if let Some(index) = index {
-                            charge_samples(&mut retained, 1, self.max_samples)?;
-                            outputs[index].1.push(Point {
-                                timestamp,
-                                start_timestamp,
-                                value: if stale {
-                                    f64::from_bits(STALE_BITS)
-                                } else {
-                                    value
-                                },
-                                ..Default::default()
-                            });
-                        }
-                        Ok(())
-                    };
-                    match kind {
-                        "gauge" | "sum" => push("", None, number(sample("Value"))?)?,
-                        "histogram" => {
-                            let counts = sample("BucketCounts")
-                                .as_array()
-                                .context("missing BucketCounts")?;
-                            let bounds = sample("ExplicitBounds")
-                                .as_array()
-                                .context("missing ExplicitBounds")?;
-                            if (counts.is_empty() && !bounds.is_empty())
-                                || (!counts.is_empty() && counts.len() != bounds.len() + 1)
-                            {
-                                bail!("invalid histogram bucket count for {name}")
-                            }
-                            if counts.is_empty() {
-                                push(
-                                    "_bucket",
-                                    Some(("le", f64::INFINITY)),
-                                    number(sample("Count"))?,
-                                )?;
-                            }
-                            let mut cumulative = 0.0;
-                            for (i, count) in counts.iter().enumerate() {
-                                if i.is_multiple_of(1024) {
-                                    tokio::task::yield_now().await;
-                                }
-                                cumulative += number(count)?;
-                                let bound = if i < bounds.len() {
-                                    number(&bounds[i])?
-                                } else {
-                                    f64::INFINITY
-                                };
-                                push("_bucket", Some(("le", bound)), cumulative)?;
-                            }
-                            push("_sum", None, number(sample("Sum"))?)?;
-                            push("_count", None, number(sample("Count"))?)?;
-                        }
-                        "summary" => {
-                            let quantiles = sample("ValueAtQuantiles.Quantile")
-                                .as_array()
-                                .context("missing quantiles")?;
-                            let values = sample("ValueAtQuantiles.Value")
-                                .as_array()
-                                .context("missing quantile values")?;
-                            if quantiles.len() != values.len() {
-                                bail!("invalid summary quantiles for {name}")
-                            }
-                            for (index, (q, v)) in quantiles.iter().zip(values).enumerate() {
-                                if index.is_multiple_of(1024) {
-                                    tokio::task::yield_now().await;
-                                }
-                                push("", Some(("quantile", number(q)?)), number(v)?)?;
-                            }
-                            push("_sum", None, number(sample("Sum"))?)?;
-                            push("_count", None, number(sample("Count"))?)?;
-                        }
-                        _ => unreachable!(),
-                    }
-                }
-                if samples {
-                    if let Some(info) = info {
-                        outputs.push((info, info_points));
-                    }
-                    if !native_points.is_empty() {
-                        outputs.push((labels, native_points));
-                    }
-                    for (labels, mut points) in outputs {
-                        match groups.entry(labels) {
-                            std::collections::btree_map::Entry::Vacant(entry) => {
-                                entry.insert(points);
-                            }
-                            std::collections::btree_map::Entry::Occupied(mut entry) => {
-                                entry.get_mut().append(&mut points);
-                            }
+                            decoder.discovery_row(request.kind, row).await?;
                         }
                     }
                 }
             }
         }
-        for (index, (labels, mut points)) in groups.into_iter().enumerate() {
+        decoder.finish().await
+    }
+
+    /// Builds the query for one table, or none when no selector can match a
+    /// metric stored in it.
+    fn table_query(
+        &self,
+        kind: &'static str,
+        filter: Option<Vec<String>>,
+        start: i64,
+        end: i64,
+        selectors: &[VectorSelector],
+        samples: bool,
+    ) -> Option<TableQuery> {
+        if filter.as_ref().is_some_and(|v| v.is_empty()) {
+            return None;
+        }
+        let predicate = if filter.is_some() {
+            " AND MetricName IN {names:Array(String)}"
+        } else {
+            ""
+        };
+        let (labels_predicate, labels_params) = label_filter(
+            kind,
+            selectors,
+            &self.promoted_resource_attributes,
+            &self.label_columns,
+        );
+        let projection = if samples {
+            // Keep optional schema additions such as ZeroThreshold while
+            // avoiding unused strings and potentially huge exemplar arrays.
+            let mut excluded = vec![
+                "ResourceSchemaUrl",
+                "ScopeDroppedAttrCount",
+                "ServiceName",
+                "TimeUnix",
+                "StartTimeUnix",
+            ];
+            if kind != "summary" {
+                excluded.extend([
+                    "`Exemplars.FilteredAttributes`",
+                    "`Exemplars.TimeUnix`",
+                    "`Exemplars.Value`",
+                    "`Exemplars.SpanId`",
+                    "`Exemplars.TraceId`",
+                ]);
+            }
+            if matches!(kind, "histogram" | "exponential_histogram") {
+                excluded.extend(["Min", "Max"]);
+            }
+            // Selecting only _count/_sum still reads histogram rows; empty
+            // buckets decode as a lone +Inf bucket that no selector reads.
+            let mut placeholders = "";
+            if kind == "histogram" && !reads_buckets(selectors) {
+                excluded.extend(["BucketCounts", "ExplicitBounds"]);
+                placeholders =
+                    ", emptyArrayUInt64() AS BucketCounts, emptyArrayFloat64() AS ExplicitBounds";
+            }
+            let columns = format!("* EXCEPT ({}){placeholders}", excluded.join(", "));
+            format!(
+                "{columns}, toUnixTimestamp64Milli(toDateTime64(TimeUnix, 3)) AS _timestamp, toUnixTimestamp64Milli(toDateTime64(StartTimeUnix, 3)) AS _start_timestamp"
+            )
+        } else {
+            let extra = match kind {
+                "sum" => ", IsMonotonic",
+                "histogram" => ", ExplicitBounds",
+                "summary" => ", `ValueAtQuantiles.Quantile`",
+                _ => "",
+            };
+            format!(
+                "DISTINCT MetricName, MetricDescription, MetricUnit, ResourceAttributes, ScopeName, ScopeVersion, ScopeSchemaUrl, ScopeAttributes, Attributes{extra}"
+            )
+        };
+        let grouped = samples;
+        let mut sample_fields = vec!["_timestamp", "_start_timestamp", "Flags"];
+        sample_fields.extend(match kind {
+            "gauge" | "sum" => vec!["Value"],
+            // Bucket bounds rarely change within a series, so they stay in
+            // the grouping key and are sent once per group, not per sample.
+            "histogram" => vec!["Count", "Sum", "BucketCounts"],
+            "summary" => vec![
+                "Count",
+                "Sum",
+                "ValueAtQuantiles.Quantile",
+                "ValueAtQuantiles.Value",
+            ],
+            "exponential_histogram" => vec![
+                "Count",
+                "Sum",
+                "Scale",
+                "ZeroCount",
+                "PositiveOffset",
+                "PositiveBucketCounts",
+                "NegativeOffset",
+                "NegativeBucketCounts",
+            ],
+            _ => unreachable!(),
+        });
+        // Tables are read concurrently, so each may use the whole row
+        // budget; the shared limit is enforced while decoding.
+        let row_limit = self.max_rows.saturating_add(1);
+        let source = format!(
+            "{}.otel_metrics_{kind} WHERE TimeUnix >= fromUnixTimestamp64Milli({{start:Int64}}) AND TimeUnix <= fromUnixTimestamp64Milli({{end:Int64}}){predicate}{labels_predicate}",
+            self.database
+        );
+        let sql = if grouped {
+            let fields = sample_fields
+                .iter()
+                .map(|field| format!("`{field}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            // Bound raw rows BEFORE aggregation. The extra row survives as
+            // a tuple and causes the same scan-limit error during decoding.
+            // Every other projected field remains part of the grouping key,
+            // including optional schema additions such as ZeroThreshold.
+            // No values are aggregated away: only repeated labels/metadata
+            // are removed from the transport representation.
+            format!(
+                "SELECT * EXCEPT ({fields}), groupArray(tuple({fields})) AS _samples FROM (SELECT {projection} FROM {source} LIMIT {row_limit}) GROUP BY ALL"
+            )
+        } else {
+            format!("SELECT {projection} FROM {source} LIMIT {row_limit}")
+        };
+        let mut params = vec![
+            ("param_start".to_owned(), start.to_string()),
+            ("param_end".to_owned(), end.to_string()),
+            (
+                "param_names".to_owned(),
+                string_array(&filter.unwrap_or_default()),
+            ),
+        ];
+        params.extend(labels_params);
+        Some(TableQuery {
+            kind,
+            grouped,
+            sample_fields,
+            sql,
+            params,
+        })
+    }
+}
+
+/// Parses and checks a RowBinary sample response's header.
+fn prepare_rowbinary(bytes: Vec<u8>, fields: &[&str]) -> Result<TablePayload> {
+    let mut reader = Reader::new(&bytes);
+    let columns = reader.header().with_context(|| decode_failure(&bytes))?;
+    let layout = SampleLayout::new(&columns, fields)?;
+    let body = reader.offset();
+    Ok(TablePayload::RowBinary {
+        bytes,
+        columns,
+        layout,
+        body,
+    })
+}
+
+/// Reads one grouped RowBinary row: its label and metadata columns as the
+/// JSON object the JSON transport would present, and its samples by type.
+/// The SQL row limit bounds the samples a group can hold.
+fn read_group(
+    reader: &mut Reader,
+    columns: &[Column],
+    layout: &SampleLayout,
+    kind: &str,
+) -> Result<(Json, Vec<Sample>)> {
+    let mut row = serde_json::Map::new();
+    let mut samples = Vec::new();
+    for (index, column) in columns.iter().enumerate() {
+        if index == layout.column {
+            let count = reader.length()?;
+            samples.reserve_exact(count.min(1024));
+            for _ in 0..count {
+                samples.push(Sample::read(reader, layout, kind)?);
+            }
+        } else {
+            row.insert(column.name.clone(), reader.cell(&column.ty)?);
+        }
+    }
+    Ok((Json::Object(row), samples))
+}
+
+/// Context for a RowBinary decoding failure. A query that fails after
+/// ClickHouse started streaming its response, for example on a memory or
+/// execution time limit, ends with the exception text instead of rows.
+fn decode_failure(bytes: &[u8]) -> String {
+    match trailing_exception(bytes) {
+        Some(text) => format!(
+            "ClickHouse failed while streaming the response: {}",
+            text.chars().take(500).collect::<String>()
+        ),
+        None => "invalid ClickHouse metric row".to_owned(),
+    }
+}
+
+/// Decodes table responses into series, enforcing the row and sample budgets
+/// across every table of one request.
+struct Decoder<'a> {
+    store: &'a Store,
+    selectors: &'a [VectorSelector],
+    groups: BTreeMap<Labels, Vec<Point>>,
+    metadata: BTreeMap<String, Vec<Json>>,
+    warnings: Vec<String>,
+    /// Raw rows decoded so far, bounded by `max_rows`.
+    rows: usize,
+    /// Retained points, native buckets or discovered series, bounded by
+    /// `max_samples`.
+    retained: usize,
+}
+
+/// Output series of one transport group, created on first use so a selector
+/// match runs once per derived series instead of once per sample.
+struct Outputs<'a> {
+    labels: &'a Labels,
+    name: &'a str,
+    selectors: &'a [VectorSelector],
+    /// Samples in the group, the capacity of every output.
+    capacity: usize,
+    series: Vec<(Labels, Vec<Point>)>,
+}
+
+impl Outputs<'_> {
+    /// The output for `name` plus `suffix` and an optional generated label,
+    /// or none when no selector reads it.
+    fn resolve(&mut self, suffix: &str, extra: Option<(&str, f64)>) -> Option<usize> {
+        let mut labels = self.labels.clone();
+        labels.insert("__name__".into(), format!("{}{suffix}", self.name));
+        if let Some((label, value)) = extra {
+            labels.insert(label.into(), float_string(value));
+        }
+        if self.selectors.is_empty() || self.selectors.iter().any(|s| matches(s, &labels)) {
+            self.series
+                .push((labels, Vec::with_capacity(self.capacity)));
+            Some(self.series.len() - 1)
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a> Decoder<'a> {
+    fn new(store: &'a Store, selectors: &'a [VectorSelector]) -> Self {
+        Self {
+            store,
+            selectors,
+            groups: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+            warnings: Vec::new(),
+            rows: 0,
+            retained: 0,
+        }
+    }
+
+    fn charge_rows(&mut self, amount: usize) -> Result<()> {
+        self.rows = self
+            .rows
+            .checked_add(amount)
+            .context("ClickHouse sample scan limit exceeded")?;
+        if self.rows > self.store.max_rows {
+            bail!("ClickHouse sample scan limit exceeded");
+        }
+        Ok(())
+    }
+
+    fn charge(&mut self, amount: usize) -> Result<()> {
+        charge_samples(&mut self.retained, amount, self.store.max_samples)
+    }
+
+    fn warn(&mut self, warning: String) {
+        if !self.warnings.contains(&warning) {
+            self.warnings.push(warning);
+        }
+    }
+
+    /// Takes the samples out of a grouped JSON row.
+    fn json_group(&mut self, row: &mut Json, request: &TableQuery) -> Result<Vec<Sample>> {
+        let tuples = match row
+            .as_object_mut()
+            .context("invalid grouped metric row")?
+            .remove("_samples")
+        {
+            Some(Json::Array(tuples)) => tuples,
+            _ => bail!("missing grouped metric samples"),
+        };
+        self.charge_rows(tuples.len())?;
+        tuples
+            .iter()
+            .map(|tuple| {
+                let values = tuple.as_array().context("invalid grouped metric sample")?;
+                Sample::from_json(values, &request.sample_fields, request.kind)
+            })
+            .collect()
+    }
+
+    /// The Prometheus name of a row's metric, or none after recording why the
+    /// row is skipped.
+    fn metric_name(&mut self, row: &Json, kind: &str) -> Option<String> {
+        match row_metric_name(row, kind) {
+            Ok(name) => Some(name),
+            Err(error) => {
+                self.warn(format!(
+                    "skipped invalid OTel metric name {:?}: {error}",
+                    string(row, "MetricName")
+                ));
+                None
+            }
+        }
+    }
+
+    /// Whether any selector can read a series derived from this row.
+    fn selected(&self, kind: &str, name: &str, labels: &Labels) -> bool {
+        self.selectors.is_empty()
+            || derived_names(name, kind).iter().any(|n| {
+                let mut l = labels.clone();
+                l.insert("__name__".into(), n.clone());
+                if kind == "histogram" {
+                    l.insert("le".into(), "+Inf".into());
+                }
+                self.selectors
+                    .iter()
+                    .any(|s| matches(s, &l) || potential_bucket_match(s, &l, kind))
+            })
+    }
+
+    fn record_metadata(&mut self, kind: &str, row: &Json, name: &str) {
+        let typ = match kind {
+            "sum" if row["IsMonotonic"].as_bool() == Some(true) => "counter",
+            "sum" | "gauge" => "gauge",
+            "histogram" | "exponential_histogram" => "histogram",
+            _ => "summary",
+        };
+        let help = string(row, "MetricDescription");
+        let unit = string(row, "MetricUnit");
+        // Most sample rows repeat the same metadata. Compare borrowed
+        // strings before allocating another JSON object for every point.
+        let known = self.metadata.get(name).is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry["type"] == typ && entry["help"] == help && entry["unit"] == unit)
+        });
+        if !known {
+            self.metadata
+                .entry(name.to_owned())
+                .or_default()
+                .push(serde_json::json!({"type":typ,"help":help,"unit":unit}));
+        }
+    }
+
+    /// Decodes one transport group of samples into its derived series.
+    async fn sample_group(
+        &mut self,
+        kind: &'static str,
+        row: Json,
+        samples: Vec<Sample>,
+    ) -> Result<()> {
+        // Group identity is immutable. Normalize/match labels and
+        // metadata once, then decode only point fields inside the loops.
+        let Some(name) = self.metric_name(&row, kind) else {
+            return Ok(());
+        };
+        let mut labels = row_labels(&row, &self.store.promoted_resource_attributes)?;
+        labels.insert("__name__".into(), name.clone());
+        let info = target_info(&row)?.filter(|info| {
+            self.selectors.is_empty() || self.selectors.iter().any(|s| matches(s, info))
+        });
+        let selected = self.selected(kind, &name, &labels);
+        if selected {
+            self.record_metadata(kind, &row, &name);
+        }
+        let mut outputs: Vec<(Labels, Vec<Point>)> = Vec::new();
+        if let Some(info) = info {
+            let mut points = Vec::with_capacity(samples.len());
+            for sample in &samples {
+                if !sample.stale() {
+                    self.charge(1)?;
+                    points.push(Point {
+                        timestamp: sample.timestamp,
+                        value: 1.0,
+                        ..Default::default()
+                    });
+                }
+            }
+            outputs.push((info, points));
+        }
+        if selected {
+            if matches!(kind, "sum" | "histogram" | "exponential_histogram")
+                && integer(&row["AggregationTemporality"])? == 1
+            {
+                bail!(
+                    "delta temporality for {name} requires cumulative conversion; configure the collector deltatocumulative processor"
+                )
+            }
+            if kind == "exponential_histogram" {
+                let points = self.native_points(&row, &samples).await?;
+                outputs.push((labels, points));
+            } else {
+                let mut resolver = Outputs {
+                    labels: &labels,
+                    name: &name,
+                    selectors: self.selectors,
+                    capacity: samples.len(),
+                    series: outputs,
+                };
+                self.float_points(kind, &row, &samples, &mut resolver)
+                    .await?;
+                outputs = resolver.series;
+            }
+        }
+        for (labels, mut points) in outputs {
+            match self.groups.entry(labels) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(points);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    entry.get_mut().append(&mut points);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Appends a float point to `output`, if any selector reads that series.
+    fn push(
+        &mut self,
+        series: &mut [(Labels, Vec<Point>)],
+        output: Option<usize>,
+        sample: &Sample,
+        value: f64,
+    ) -> Result<()> {
+        if let Some(index) = output {
+            self.charge(1)?;
+            series[index].1.push(Point {
+                timestamp: sample.timestamp,
+                start_timestamp: sample.start_timestamp,
+                value: if sample.stale() {
+                    f64::from_bits(STALE_BITS)
+                } else {
+                    value
+                },
+                ..Default::default()
+            });
+        }
+        Ok(())
+    }
+
+    /// Decodes gauge, sum, histogram and summary samples into float series.
+    async fn float_points(
+        &mut self,
+        kind: &str,
+        row: &Json,
+        samples: &[Sample],
+        outputs: &mut Outputs<'_>,
+    ) -> Result<()> {
+        let name = outputs.name;
+        match kind {
+            "gauge" | "sum" => {
+                let output = outputs.resolve("", None);
+                for (index, sample) in samples.iter().enumerate() {
+                    if index.is_multiple_of(1024) {
+                        tokio::task::yield_now().await;
+                    }
+                    let Measurement::Float(value) = sample.measurement else {
+                        bail!("invalid metric sample for {name}")
+                    };
+                    self.push(&mut outputs.series, output, sample, value)?;
+                }
+            }
+            "histogram" => {
+                let bounds = numbers(&row["ExplicitBounds"]).context("missing ExplicitBounds")?;
+                // Bounds are part of the group, so every sample with buckets
+                // maps onto the same output series.
+                let mut bucket_outputs: Option<Vec<Option<usize>>> = None;
+                let mut infinity_output = None;
+                let sum_output = outputs.resolve("_sum", None);
+                let count_output = outputs.resolve("_count", None);
+                for (index, sample) in samples.iter().enumerate() {
+                    if index.is_multiple_of(1024) {
+                        tokio::task::yield_now().await;
+                    }
+                    let Measurement::Histogram {
+                        count,
+                        sum,
+                        bucket_counts,
+                    } = &sample.measurement
+                    else {
+                        bail!("invalid histogram sample for {name}")
+                    };
+                    if (bucket_counts.is_empty() && !bounds.is_empty())
+                        || (!bucket_counts.is_empty() && bucket_counts.len() != bounds.len() + 1)
+                    {
+                        bail!("invalid histogram bucket count for {name}")
+                    }
+                    if bucket_counts.is_empty() {
+                        let output = *infinity_output.get_or_insert_with(|| {
+                            outputs.resolve("_bucket", Some(("le", f64::INFINITY)))
+                        });
+                        self.push(&mut outputs.series, output, sample, *count)?;
+                    } else {
+                        if bucket_outputs.is_none() {
+                            let mut resolved = Vec::with_capacity(bounds.len() + 1);
+                            for bound in &bounds {
+                                resolved.push(outputs.resolve("_bucket", Some(("le", *bound))));
+                            }
+                            resolved.push(*infinity_output.get_or_insert_with(|| {
+                                outputs.resolve("_bucket", Some(("le", f64::INFINITY)))
+                            }));
+                            bucket_outputs = Some(resolved);
+                        }
+                        let mut cumulative = 0.0;
+                        for (output, bucket_count) in
+                            bucket_outputs.iter().flatten().zip(bucket_counts)
+                        {
+                            cumulative += bucket_count;
+                            self.push(&mut outputs.series, *output, sample, cumulative)?;
+                        }
+                    }
+                    self.push(&mut outputs.series, sum_output, sample, *sum)?;
+                    self.push(&mut outputs.series, count_output, sample, *count)?;
+                }
+            }
+            "summary" => {
+                // Quantiles can differ between samples, so their outputs are
+                // resolved per distinct quantile.
+                let mut quantile_outputs: HashMap<u64, Option<usize>> = HashMap::new();
+                let sum_output = outputs.resolve("_sum", None);
+                let count_output = outputs.resolve("_count", None);
+                for (index, sample) in samples.iter().enumerate() {
+                    if index.is_multiple_of(1024) {
+                        tokio::task::yield_now().await;
+                    }
+                    let Measurement::Summary {
+                        count,
+                        sum,
+                        quantiles,
+                        values,
+                    } = &sample.measurement
+                    else {
+                        bail!("invalid summary sample for {name}")
+                    };
+                    if quantiles.len() != values.len() {
+                        bail!("invalid summary quantiles for {name}")
+                    }
+                    for (quantile, value) in quantiles.iter().zip(values) {
+                        let output = *quantile_outputs
+                            .entry(quantile.to_bits())
+                            .or_insert_with(|| outputs.resolve("", Some(("quantile", *quantile))));
+                        self.push(&mut outputs.series, output, sample, *value)?;
+                    }
+                    self.push(&mut outputs.series, sum_output, sample, *sum)?;
+                    self.push(&mut outputs.series, count_output, sample, *count)?;
+                }
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+
+    /// Converts exponential histogram samples into native histogram points.
+    async fn native_points(&mut self, row: &Json, samples: &[Sample]) -> Result<Vec<Point>> {
+        let zero_threshold = row
+            .get("ZeroThreshold")
+            .map(number)
+            .transpose()?
+            .unwrap_or(0.0);
+        if row.get("ZeroThreshold").is_none() {
+            self.warn(
+                "Collector schema does not store exponential histogram ZeroThreshold; assuming zero"
+                    .to_owned(),
+            );
+        }
+        let mut points = Vec::with_capacity(samples.len());
+        for (index, sample) in samples.iter().enumerate() {
+            if index.is_multiple_of(1024) {
+                tokio::task::yield_now().await;
+            }
+            let Measurement::Exponential(exponential) = &sample.measurement else {
+                bail!("invalid exponential histogram sample")
+            };
+            self.charge(1)?;
+            self.charge(exponential.positive.len())?;
+            self.charge(exponential.negative.len())?;
+            let schema = i32::try_from(exponential.scale)
+                .ok()
+                .filter(|schema| (-4..=20).contains(schema))
+                .with_context(|| {
+                    format!(
+                        "OTLP exponential histogram scale {} cannot be represented as a Prometheus native histogram",
+                        exponential.scale
+                    )
+                })?;
+            let mut histogram = crate::histogram::Histogram {
+                schema,
+                count: exponential.count,
+                sum: exponential.sum,
+                zero_count: exponential.zero_count,
+                zero_threshold,
+                ..Default::default()
+            };
+            for (offset, buckets, counts) in [
+                (
+                    exponential.positive_offset,
+                    &mut histogram.positive,
+                    &exponential.positive,
+                ),
+                (
+                    exponential.negative_offset,
+                    &mut histogram.negative,
+                    &exponential.negative,
+                ),
+            ] {
+                for (i, count) in counts.iter().enumerate() {
+                    let index = offset.saturating_add(i as i64).saturating_add(1);
+                    let index =
+                        i32::try_from(index).context("native histogram bucket index overflow")?;
+                    buckets.insert(index, *count);
+                }
+            }
+            if histogram.schema > 8 {
+                histogram.reduce(8)?;
+            }
+            if sample.stale() {
+                histogram.sum = f64::from_bits(STALE_BITS)
+            }
+            points.push(Point {
+                timestamp: sample.timestamp,
+                start_timestamp: sample.start_timestamp,
+                histogram: Some(Box::new(histogram)),
+                ..Default::default()
+            });
+        }
+        Ok(points)
+    }
+
+    /// Records the series a discovery row describes, one per derived name
+    /// and generated label value.
+    async fn discovery_row(&mut self, kind: &str, row: Json) -> Result<()> {
+        self.charge_rows(1)?;
+        let Some(name) = self.metric_name(&row, kind) else {
+            return Ok(());
+        };
+        let mut labels = row_labels(&row, &self.store.promoted_resource_attributes)?;
+        labels.insert("__name__".into(), name.clone());
+        let info = target_info(&row)?.filter(|info| {
+            self.selectors.is_empty() || self.selectors.iter().any(|s| matches(s, info))
+        });
+        let selected = self.selected(kind, &name, &labels);
+        if selected {
+            self.record_metadata(kind, &row, &name);
+        }
+        if let Some(info) = info {
+            if !self.groups.contains_key(&info) {
+                self.charge(1)?;
+            }
+            self.groups.entry(info).or_default();
+        }
+        if !selected {
+            return Ok(());
+        }
+        for derived in derived_names(&name, kind) {
+            let generated: Vec<Option<(&str, String)>> =
+                if derived.ends_with("_bucket") && kind == "histogram" {
+                    numbers(&row["ExplicitBounds"])
+                        .context("missing bounds")?
+                        .into_iter()
+                        .map(|bound| Some(("le", float_string(bound))))
+                        .chain(std::iter::once(Some(("le", "+Inf".into()))))
+                        .collect()
+                } else if derived == name && kind == "summary" {
+                    numbers(&row["ValueAtQuantiles.Quantile"])
+                        .context("missing quantiles")?
+                        .into_iter()
+                        .map(|quantile| Some(("quantile", float_string(quantile))))
+                        .collect()
+                } else {
+                    vec![None]
+                };
+            for (index, extra) in generated.into_iter().enumerate() {
+                if index.is_multiple_of(1024) {
+                    tokio::task::yield_now().await;
+                }
+                let mut series_labels = labels.clone();
+                series_labels.insert("__name__".into(), derived.clone());
+                if let Some((label, value)) = extra {
+                    series_labels.insert(label.into(), value);
+                }
+                if self.selectors.is_empty()
+                    || self.selectors.iter().any(|s| matches(s, &series_labels))
+                {
+                    if !self.groups.contains_key(&series_labels) {
+                        self.charge(1)?;
+                    }
+                    self.groups.entry(series_labels).or_default();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Orders every series' points, rejecting rows that disagree about a
+    /// timestamp, and builds the loaded result.
+    async fn finish(self) -> Result<Loaded> {
+        let mut loaded = Loaded {
+            series: Vec::with_capacity(self.groups.len()),
+            metadata: self.metadata,
+            warnings: self.warnings,
+        };
+        for (index, (labels, mut points)) in self.groups.into_iter().enumerate() {
             if index.is_multiple_of(1024) {
                 tokio::task::yield_now().await;
             }
@@ -1261,6 +1745,14 @@ pub(crate) fn number(v: &Json) -> Result<f64> {
     } else {
         bail!("missing or invalid numeric metric value {v}")
     }
+}
+/// Every element of a JSON array as a number.
+fn numbers(v: &Json) -> Result<Vec<f64>> {
+    v.as_array()
+        .context("missing numeric array")?
+        .iter()
+        .map(number)
+        .collect()
 }
 fn integer(v: &Json) -> Result<i64> {
     if let Some(n) = v.as_i64() {

@@ -5,6 +5,7 @@ mod exemplars;
 pub mod histogram;
 pub mod model;
 mod numeric;
+mod rowbinary;
 pub mod storage;
 mod translation;
 pub use translation::label_name;
