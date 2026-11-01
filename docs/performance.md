@@ -18,9 +18,14 @@ a long window still needs all those raw samples.
   together, for all five metric types. The raw row limit applies **before** SQL
   grouping, with one extra row to detect overflow. Every timestamp/value remains
   intact; this is lossless transport compression, not a statistical rollup.
+- Sample rows travel as zstd-compressed `RowBinaryWithNamesAndTypes` and are
+  decoded by column type straight into points, so timestamps and values never
+  pass through text and a large histogram panel moves about 50x fewer bytes.
+  Discovery and dictionary rows stay on JSON. A column type the reader does not
+  know makes that table fall back to JSON with one warning instead of failing.
 - Sample reads omit exemplar payloads and other unused columns. Row and byte
   budgets span the metric tables, and expanded histogram/sample counts have a
-  separate budget before evaluation.
+  separate budget before evaluation. The byte budget counts decompressed bytes.
 - Label matching is cached across timestamps within an evaluation. Sample
   results are never cached. The separate shared metric dictionary cache expires
   after 60 seconds by default; new metric names may appear after that delay.
