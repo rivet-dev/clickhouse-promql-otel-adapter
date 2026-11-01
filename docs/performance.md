@@ -123,6 +123,37 @@ cargo test --release --locked --test review_correctness \
   classic_histogram -- --ignored --nocapture
 ```
 
+## Production measurements — 2026-11-01 (0.0.5)
+
+The same 640-query replay as for 0.0.4, run back to back against both releases
+on the production 2-vCPU VM and multi-tenant ClickHouse. All results identical.
+
+| Workload | 0.0.4 | 0.0.5 |
+|---|---:|---:|
+| All 640 queries, sequential | 65.9 s | 7.7 s |
+| p50 / p99 / max | 104 / 479 / 1,315 ms | 4.7 / 143 / 462 ms |
+| Six concurrent clients, wall time | 19.8 s | 3.2 s |
+| Largest classic-histogram panel | 1,315 ms | 331 ms |
+
+What changed:
+
+- `use_statistics=0` (probed once per process): with automatic column
+  statistics, planning any query filtered on sort-key columns loaded statistics
+  from every active part before pruning, 100 to 200 ms per query on ~50 parts
+  even when no rows matched. Planning and results are otherwise unchanged.
+- Range queries evaluate `rate`/`increase`/`delta`, their aggregations and
+  instant-selector aggregations series by series for all steps at once, and
+  classic `histogram_quantile` groups buckets by label identity.
+- Samples arrive as zstd-compressed RowBinary and decode by column type; the SQL
+  label predicate is scoped per selector.
+- Decoded table loads are shared across concurrent panels for
+  `--series-cache-ttl-seconds` (see the README).
+
+Against Prometheus 3.14 serving the same two hours of one tenant from its own
+TSDB (both limited to two cores, local ClickHouse), the sequential replay took
+1.7 s on Prometheus and 5.0 s on 0.0.5 (6.3 s with the series cache off); 0.0.4
+took 13.5 s. The remaining gap is mostly one ClickHouse round trip per query.
+
 ## Production measurements — 2026-10-31 (0.0.4)
 
 A replay of 640 real dashboard and alert queries (one-hour range, 15-second
