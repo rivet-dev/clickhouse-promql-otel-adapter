@@ -8,11 +8,11 @@ fn selector(text: &str) -> VectorSelector {
     }
 }
 
-fn filter(
+fn table_filter(
     selectors: &[&str],
     names: &[Option<&[&str]>],
     columns: &[(&str, &str)],
-) -> Option<Predicate> {
+) -> Option<TableFilter> {
     let selectors = selectors.iter().map(|s| selector(s)).collect::<Vec<_>>();
     let names = names
         .iter()
@@ -23,6 +23,54 @@ fn filter(
         .map(|(label, column)| (label.to_string(), column.to_string()))
         .collect::<Vec<_>>();
     selector_filter("gauge", &selectors, &names, &[], &columns)
+}
+
+fn filter(
+    selectors: &[&str],
+    names: &[Option<&[&str]>],
+    columns: &[(&str, &str)],
+) -> Option<(String, Vec<(String, String)>)> {
+    table_filter(selectors, names, columns).map(|filter| (filter.predicate, filter.params))
+}
+
+#[test]
+fn only_selectors_the_table_can_serve_are_kept_for_decoding() {
+    let kept = |selectors: &[&str], names: &[Option<&[&str]>]| {
+        table_filter(selectors, names, &[]).map(|filter| {
+            filter
+                .selectors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(
+        kept(
+            &["a", "missing", "b{x=\"1\"}"],
+            &[Some(&["a"]), Some(&[]), Some(&["b"])]
+        ),
+        Some(vec!["a".to_string(), "b{x=\"1\"}".to_string()])
+    );
+    assert_eq!(
+        kept(&["missing", "{__name__=~\"c.*\"}"], &[Some(&[]), None]),
+        Some(vec!["{__name__=~\"c.*\"}".to_string()])
+    );
+    assert_eq!(kept(&["missing"], &[Some(&[])]), None);
+    assert_eq!(kept(&[], &[]), Some(Vec::new()));
+    // The same set in another order or with repeats is the same request.
+    let names: &[Option<&[&str]>] = &[Some(&["b"]), Some(&["a"]), Some(&["b"])];
+    let a_then_b = table_filter(&["b", "a", "b"], names, &[]).unwrap();
+    let b_then_a = table_filter(&["a", "b"], &names[1..], &[]).unwrap();
+    assert_eq!(
+        a_then_b
+            .selectors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    assert_eq!(a_then_b.predicate, b_then_a.predicate);
+    assert_eq!(a_then_b.params, b_then_a.params);
 }
 
 #[test]
@@ -107,7 +155,8 @@ fn or_branches_filter_independently_within_their_selector() {
         self::selector("a{tenant=~\"x.*\"}").matchers.matchers,
     ];
     let names = [Some(vec!["a".to_string()])];
-    let (predicate, params) = selector_filter("gauge", &[selector], &names, &[], &[]).unwrap();
+    let filter = selector_filter("gauge", &[selector], &names, &[], &[]).unwrap();
+    let (predicate, params) = (filter.predicate, filter.params);
     assert_eq!(predicate, " AND ((MetricName IN {names_0:Array(String)}))");
     assert_eq!(
         params.len(),
