@@ -143,3 +143,24 @@ fn mirrored_columns_replace_the_attribute_term_for_positive_matchers() {
         );
     }
 }
+
+#[test]
+fn clickhouse_summary_headers_feed_round_trip_logs() {
+    let mut headers = reqwest::header::HeaderMap::new();
+    assert_eq!(Summary::from_headers(&headers), Summary::default());
+    headers.insert(
+        "x-clickhouse-summary",
+        "{\"read_rows\":\"131217\",\"read_bytes\":\"1\",\"elapsed_ns\":\"83456789\"}"
+            .parse()
+            .unwrap(),
+    );
+    assert_eq!(
+        Summary::from_headers(&headers),
+        Summary {
+            elapsed_ms: Some(83),
+            read_rows: Some(131217),
+        }
+    );
+    headers.insert("x-clickhouse-summary", "not json".parse().unwrap());
+    assert_eq!(Summary::from_headers(&headers), Summary::default());
+}

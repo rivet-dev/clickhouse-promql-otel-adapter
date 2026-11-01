@@ -336,8 +336,14 @@ pub struct Loaded {
 impl Store {
     pub fn new(url: String, database: String, username: String, password: String) -> Result<Self> {
         validate_identifier(&database)?;
+        // ClickHouse closes idle HTTP connections after its keep_alive_timeout
+        // (30 s by default). Dropping pooled connections first means a
+        // dashboard refresh never reuses a socket the server just closed, and
+        // keepalive probes keep the rest open through a NAT or load balancer.
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
+            .pool_idle_timeout(Duration::from_secs(25))
+            .tcp_keepalive(Duration::from_secs(10))
             .build()?;
         Ok(Self {
             client,
@@ -388,6 +394,7 @@ impl Store {
             .context("ClickHouse request failed")?;
         let headers_ms = started.elapsed().as_millis() as u64;
         let status = response.status();
+        let summary = Summary::from_headers(response.headers());
         if response
             .content_length()
             .is_some_and(|n| n > self.max_bytes as u64)
@@ -401,8 +408,13 @@ impl Store {
             }
             bytes.extend_from_slice(&chunk);
         }
+        // clickhouse_ms is the server's execution time up to its response
+        // headers, which for a grouped sample query is the whole aggregation.
+        // headers_ms minus it is the connection, request and queueing cost.
         tracing::debug!(
             headers_ms,
+            clickhouse_ms = summary.elapsed_ms,
+            read_rows = summary.read_rows,
             total_ms = started.elapsed().as_millis() as u64,
             bytes = bytes.len(),
             query = sql.get(..160).unwrap_or(sql),
@@ -926,6 +938,34 @@ impl Store {
             sample_fields,
             sql,
             params,
+        }
+    }
+}
+
+/// Server-side figures from the `X-ClickHouse-Summary` response header.
+#[derive(Debug, Default, PartialEq)]
+struct Summary {
+    elapsed_ms: Option<u64>,
+    read_rows: Option<u64>,
+}
+
+impl Summary {
+    /// Missing or unparseable headers leave the fields unset; the summary
+    /// only feeds logs.
+    fn from_headers(headers: &reqwest::header::HeaderMap) -> Self {
+        let Some(text) = headers
+            .get("x-clickhouse-summary")
+            .and_then(|value| value.to_str().ok())
+        else {
+            return Self::default();
+        };
+        let Ok(summary) = serde_json::from_str::<Json>(text) else {
+            return Self::default();
+        };
+        let number = |key: &str| summary[key].as_str().and_then(|v| v.parse::<u64>().ok());
+        Self {
+            elapsed_ms: number("elapsed_ns").map(|ns| ns / 1_000_000),
+            read_rows: number("read_rows"),
         }
     }
 }
