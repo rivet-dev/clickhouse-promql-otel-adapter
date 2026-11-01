@@ -68,6 +68,9 @@ pub struct Engine<'a> {
     precomputed: HashMap<usize, columnar::Columnar>,
     /// Evaluation timestamps of the current range query, in order.
     step_times: Vec<i64>,
+    /// Classic bucket grouping per histogram_quantile call site, by the
+    /// address of the call's vector argument.
+    bucket_sites: HashMap<usize, distributions::BucketSite>,
 }
 impl<'a> Engine<'a> {
     pub fn new(series: &'a [Series], start: i64, end: i64) -> Self {
@@ -107,12 +110,14 @@ impl<'a> Engine<'a> {
             charges: 0,
             precomputed: HashMap::new(),
             step_times: Vec::new(),
+            bucket_sites: HashMap::new(),
         }
     }
     pub fn evaluate(&mut self, expr: &Expr, t: i64) -> Result<Value> {
         self.selector_cache.clear();
         self.selector_cache_entries = 0;
         self.precomputed.clear();
+        self.bucket_sites.clear();
         self.eval(expr, t)
     }
     pub fn parse(query: &str) -> Result<Expr> {
@@ -125,6 +130,7 @@ impl<'a> Engine<'a> {
         self.selector_cache.clear();
         self.selector_cache_entries = 0;
         self.precomputed.clear();
+        self.bucket_sites.clear();
         self.source = query.into();
         self.eval(&Self::parse_at(query, self.start, self.end, 0)?, timestamp)
     }
@@ -146,6 +152,7 @@ impl<'a> Engine<'a> {
             bail!("exceeded maximum resolution of 11,000 points per timeseries")
         }
         self.precomputed.clear();
+        self.bucket_sites.clear();
         self.step_times = step_grid(self.start, self.end, step);
         self.precompute(expr)?;
         let mut result: BTreeMap<Labels, Vec<Point>> = BTreeMap::new();
