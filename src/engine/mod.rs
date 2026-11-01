@@ -73,6 +73,10 @@ pub struct Engine<'a> {
     /// Classic bucket grouping per histogram_quantile call site, by the
     /// address of the call's vector argument.
     bucket_sites: HashMap<usize, distributions::BucketSite>,
+    /// Result labels with the metric name removed, per input label set, so a
+    /// result series keeps one shared label allocation across steps. The
+    /// input labels are retained so their identity stays unique.
+    dropped_names: HashMap<usize, (Labels, Labels)>,
 }
 impl<'a> Engine<'a> {
     pub fn new(series: &'a [Series], start: i64, end: i64) -> Self {
@@ -113,6 +117,7 @@ impl<'a> Engine<'a> {
             precomputed: HashMap::new(),
             step_times: Vec::new(),
             bucket_sites: HashMap::new(),
+            dropped_names: HashMap::new(),
         }
     }
     pub fn evaluate(&mut self, expr: &Expr, t: i64) -> Result<Value> {
@@ -120,6 +125,7 @@ impl<'a> Engine<'a> {
         self.selector_cache_entries = 0;
         self.precomputed.clear();
         self.bucket_sites.clear();
+        self.dropped_names.clear();
         self.eval(expr, t)
     }
     pub fn parse(query: &str) -> Result<Expr> {
@@ -133,6 +139,7 @@ impl<'a> Engine<'a> {
         self.selector_cache_entries = 0;
         self.precomputed.clear();
         self.bucket_sites.clear();
+        self.dropped_names.clear();
         self.source = query.into();
         self.eval(&Self::parse_at(query, self.start, self.end, 0)?, timestamp)
     }
@@ -155,6 +162,7 @@ impl<'a> Engine<'a> {
         }
         self.precomputed.clear();
         self.bucket_sites.clear();
+        self.dropped_names.clear();
         self.step_times = step_grid(self.start, self.end, step);
         self.precompute(expr)?;
         // Result series are indexed by label hash while steps are appended and
@@ -333,6 +341,21 @@ impl<'a> Engine<'a> {
         self.infos.retain(|v| !v.starts_with(&base));
         self.infos.insert(format!("{base}, from buckets {} to {}, with a max diff of {}, over {count} samples from {} to {} ({})",crate::model::float_string(min),crate::model::float_string(max),crate::model::float_string(diff),date(start),date(end),self.position(expr)));
     }
+    /// `labels` without the metric name, computed once per input label set.
+    fn without_name(&mut self, labels: &Labels) -> Labels {
+        const MAX_CACHED_LABELS: usize = 1 << 20;
+        let id = labels.identity();
+        if let Some((_, dropped)) = self.dropped_names.get(&id) {
+            return dropped.clone();
+        }
+        let mut dropped = labels.clone();
+        crate::model::drop_name(&mut dropped);
+        if self.dropped_names.len() < MAX_CACHED_LABELS {
+            self.dropped_names
+                .insert(id, (labels.clone(), dropped.clone()));
+        }
+        dropped
+    }
     fn charge(&mut self, count: usize) -> Result<()> {
         self.samples_read = self.samples_read.saturating_add(count);
         // Reading the clock per sample was a measurable share of evaluation;
@@ -389,7 +412,9 @@ impl<'a> Engine<'a> {
         {
             self.histogram_stats = true;
         }
-        let cache_key = if self.is_range && invariant(expr) {
+        // Literals are cheaper to evaluate than to look up by their text.
+        let literal = matches!(expr, Expr::NumberLiteral(_) | Expr::StringLiteral(_));
+        let cache_key = if self.is_range && !literal && invariant(expr) {
             Some(format!(
                 "{}:{}:{}:{expr}",
                 self.histogram_stats, self.histogram_stats_blocked, self.counter_hint
@@ -430,7 +455,7 @@ impl<'a> Engine<'a> {
                 Ok(Value::Vector(v)) => {
                     for s in v {
                         if s.drop_name {
-                            crate::model::drop_name(&mut s.labels);
+                            s.labels = self.without_name(&s.labels);
                         }
                     }
                 }

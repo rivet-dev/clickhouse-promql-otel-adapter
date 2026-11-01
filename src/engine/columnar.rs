@@ -38,7 +38,7 @@ impl Columnar {
     /// The node's instant vector at step `step`, as the step loop would have
     /// built it.
     pub(super) fn materialize(&self, step: usize, timestamp: i64) -> Value {
-        let mut samples = Vec::new();
+        let mut samples = Vec::with_capacity(self.labels.len());
         for (output, labels) in self.labels.iter().enumerate() {
             let cell = output * self.steps + step;
             if !self.present[cell] {
