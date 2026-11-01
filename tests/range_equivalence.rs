@@ -461,3 +461,69 @@ fn gaps_nans_and_negative_zero() {
         15_000,
     );
 }
+
+#[test]
+fn histogram_quantile_groups_by_identity() {
+    let mut native = series("x_bucket", &[("job", "n"), ("le", "1")], &ramp(6, 1.0));
+    native.points[2].histogram = Some(Box::new(Histogram {
+        schema: 0,
+        count: 3.0,
+        sum: 4.5,
+        positive: BTreeMap::from([(0, 3.0)]),
+        ..Default::default()
+    }));
+    let data = [
+        series("x_bucket", &[("job", "a"), ("le", "0.5")], &ramp(10, 1.0)),
+        series("x_bucket", &[("job", "a"), ("le", "1")], &ramp(10, 2.0)),
+        series("x_bucket", &[("job", "a"), ("le", "+Inf")], &ramp(10, 4.0)),
+        // Duplicate bound after relabeling and a bucket that breaks monotonicity.
+        series("x_bucket", &[("job", "a"), ("le", "1.0")], &ramp(10, 0.5)),
+        series("x_bucket", &[("job", "a"), ("le", "2")], &ramp(10, 1.5)),
+        // Appears only from the fifth step on.
+        series(
+            "x_bucket",
+            &[("job", "0"), ("le", "1")],
+            &ramp(10, 1.0)[4..],
+        ),
+        series(
+            "x_bucket",
+            &[("job", "0"), ("le", "+Inf")],
+            &ramp(10, 1.0)[4..],
+        ),
+        // Malformed and missing le labels.
+        series("x_bucket", &[("job", "m"), ("le", "big")], &ramp(10, 1.0)),
+        series("x_bucket", &[("job", "m")], &ramp(10, 1.0)),
+        native,
+        series("x_bucket", &[("job", "n"), ("le", "+Inf")], &ramp(6, 2.0)),
+    ];
+    check(
+        &data,
+        &[
+            "histogram_quantile(0.5, x_bucket)",
+            "histogram_quantile(0.9, rate(x_bucket[1m]))",
+            "histogram_quantile(0.9, sum by (le, job) (rate(x_bucket[1m])))",
+            "histogram_quantile(0.5, x_bucket{job!=\"n\"})",
+            "histogram_quantiles(x_bucket{job!=\"n\"}, \"q\", 0.5, 0.99)",
+            "histogram_quantile(0.5, sum by (le) (x_bucket{job!=\"n\"}))",
+            "limitk(1, histogram_quantile(0.5, x_bucket{job!=\"n\"}))",
+        ],
+        0,
+        135_000,
+        15_000,
+    );
+    // A group that appears after the first step is still emitted in label
+    // order, which limitk observes directly.
+    let query = "limitk(1, histogram_quantile(0.5, x_bucket{job!=\"n\"}))";
+    let expr = Engine::parse_at(query, 0, 135_000, 15_000).unwrap();
+    let mut engine = engine(&data, query, 0, 135_000, &Options::default());
+    let result = engine.range(&expr, 15_000).unwrap().matrix().unwrap();
+    let points = |job: &str| {
+        result
+            .iter()
+            .find(|s| s.labels.get("job").map(String::as_str) == Some(job))
+            .map(|s| s.points.iter().map(|p| p.timestamp).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    assert_eq!(points("a"), vec![0, 15_000, 30_000, 45_000]);
+    assert_eq!(points("0"), (4..10).map(|i| i * 15_000).collect::<Vec<_>>());
+}
