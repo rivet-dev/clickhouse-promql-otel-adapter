@@ -33,11 +33,12 @@ a long window still needs all those raw samples.
 - Each transport group prepares its derived output labels once, then appends
   points to indexed buffers. Duplicate detection uses full-label hashing instead
   of repeatedly comparing long shared label prefixes; result order is unchanged.
-- Range queries evaluate `rate`, `increase` and `delta` over a plain range
-  selector, and `sum`/`min`/`max`/`count` of one, series by series for all
-  steps before the step loop, while each series' samples are cache resident.
-  Each window is selected, reduced and grouped exactly as the step loop does,
-  so results, annotations and `samplesRead` are unchanged. A node whose table
+- Range queries evaluate plain instant selectors, `rate`, `increase` and
+  `delta` over a plain range selector, and `sum`/`min`/`max`/`count` of
+  either, series by series for all steps before the step loop, while each
+  series' samples are cache resident. Each sample or window is selected,
+  reduced and grouped exactly as the step loop does, so results, annotations
+  and `samplesRead` are unchanged. A node whose table
   would exceed a quarter of the sample budget, or whose inputs include native
   histograms, stays on the step loop. The tables count toward `peakSamples`
   like the invariant cache, which is the one visible statistics change.

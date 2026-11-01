@@ -577,3 +577,88 @@ fn vector_matching_with_cached_keys() {
         15_000,
     );
 }
+
+#[test]
+fn instant_selectors_and_their_aggregations() {
+    let stale = f64::from_bits(STALE_BITS);
+    let mut native = series("g", &[("host", "n")], &ramp(6, 1.0));
+    native.points[1].histogram = Some(Box::new(Histogram {
+        schema: 0,
+        count: 1.0,
+        sum: 2.0,
+        positive: BTreeMap::from([(0, 1.0)]),
+        ..Default::default()
+    }));
+    let data = [
+        series("g", &[("host", "a"), ("kind", "x")], &ramp(20, 1.0)),
+        series(
+            "g",
+            &[("host", "b"), ("kind", "x")],
+            &[(5_000, 2.0), (20_000, stale), (35_000, 4.0), (200_000, 1.0)],
+        ),
+        // Sparse samples around the lookback boundary.
+        series(
+            "g",
+            &[("host", "c"), ("kind", "y")],
+            &[(0, 7.0), (301_000, 8.0)],
+        ),
+        series(
+            "g",
+            &[("host", "d"), ("kind", "y")],
+            &[(0, f64::NAN), (15_000, -0.0)],
+        ),
+        counter(
+            "c_total",
+            &[("host", "a")],
+            &[(0, 1.0, 0), (15_000, 2.0, 10_000), (30_000, 3.0, 25_000)],
+        ),
+        series("cap", &[("host", "a")], &ramp(20, 10.0)),
+        series("cap", &[("host", "b")], &ramp(20, 20.0)),
+    ];
+    let floats = series("g", &[("host", "e")], &ramp(6, 3.0));
+    let with_native = [native, floats];
+    let queries = [
+        "g",
+        "g offset 30s",
+        "g offset -30s",
+        "sum(g)",
+        "sum by (host) (g)",
+        "max by (kind) (g)",
+        "min without (host) (g)",
+        "count(g)",
+        "count by (kind) (g offset 15s)",
+        "timestamp(g)",
+        "start_timestamp(c_total)",
+        "timestamp(c_total offset 10s)",
+        "timestamp(g and on (host) cap)",
+        "-g",
+        "abs(g) > 2",
+        "sum(g) / count(g)",
+        "topk(2, g)",
+        "max(label_replace(max(max by (host) (g) / max by (host) (cap)), \"cap\", \"g\", \"\", \"\"))",
+        "sum by (host) (g) or sum by (host) (cap)",
+        "histogram_count(g)",
+        "g @ 60",
+        "sum(g @ 60)",
+        "avg(g)",
+        "sum_over_time(sum by (kind) (g)[1m:15s])",
+        "sum(rate(c_total[1m])) + sum(g)",
+    ];
+    check(&data, &queries, 0, 400_000, 15_000);
+    check(&data, &queries, 3_000, 100_000, 7_000);
+    check(
+        &with_native,
+        &["g", "sum(g)", "max by (host) (g)", "count(g)"],
+        0,
+        90_000,
+        15_000,
+    );
+    let options = Options {
+        max_samples: 100,
+        lookback: 20_000,
+        ..Default::default()
+    };
+    for query in ["g", "sum(g)", "g offset 1m", "max by (kind) (g)"] {
+        assert_equivalent(&data, query, 0, 180_000, 15_000, &options);
+    }
+}
