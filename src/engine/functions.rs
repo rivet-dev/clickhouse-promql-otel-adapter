@@ -34,11 +34,11 @@ impl Engine<'_> {
             return self.info(c, t);
         }
         if self.is_range
-            && !super::invariant(&Expr::Call(c.clone()))
             && matches!(
                 name,
                 "sort" | "sort_desc" | "sort_by_label" | "sort_by_label_desc"
             )
+            && !super::invariant(&Expr::Call(c.clone()))
         {
             self.annotation(
                 true,
