@@ -256,3 +256,56 @@ async fn literal_regex_alternatives_push_down_with_missing_and_negative_semantic
     })
     .await;
 }
+
+#[tokio::test]
+async fn label_filters_are_scoped_to_their_own_selectors_metric_names() {
+    common::empty_database_test(false, |mut store| async move {
+        let mut rows = Vec::new();
+        for name in ["a", "b"] {
+            for tenant in ["1", "2", "3"] {
+                let mut row = gauge(json!({"tenant": tenant}));
+                row["MetricName"] = json!(name);
+                rows.push(row);
+            }
+        }
+        insert(&store, "gauge", rows).await;
+        // a{tenant="1"} reads one row and b reads three; a selector without
+        // pushable matchers must not admit every row of a.
+        store.max_rows = 4;
+        let loaded = store
+            .load(T, T, &[selector("a{tenant=\"1\"}"), selector("b")])
+            .await
+            .unwrap();
+        assert_eq!(loaded.series.len(), 4);
+        store.max_rows = 3;
+        let loaded = store
+            .load(
+                T,
+                T,
+                &[selector("a{tenant=\"1\"}"), selector("b{tenant=~\"2|3\"}")],
+            )
+            .await
+            .unwrap();
+        assert_eq!(loaded.series.len(), 3);
+        // The two-name dictionary shares the row budget.
+        store.max_rows = 2;
+        let loaded = store
+            .load(T, T, &[selector("a{tenant=\"1\"}"), selector("missing")])
+            .await
+            .unwrap();
+        assert_eq!(loaded.series.len(), 1);
+        // A selector nothing narrows still admits the whole table.
+        let error = store
+            .load(
+                T,
+                T,
+                &[selector("a{tenant=\"1\"}"), selector("{__name__=~\"b.*\"}")],
+            )
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("sample scan limit"), "{error}");
+    })
+    .await;
+}

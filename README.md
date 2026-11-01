@@ -308,7 +308,7 @@ Add a **Prometheus** data source in Grafana: `http://<host>:9091`. Full local st
 | `--password` | `CLICKHOUSE_PASSWORD` | | |
 | `--replica-label` | | | HA replica label for dedup (repeatable) |
 | `--promote-resource-attribute` | | | Copy a resource attribute onto every series as `ATTR` or `ATTR=LABEL` (repeatable), like Prometheus `promote_resource_attributes` |
-| `--label-column` | | | Also filter `LABEL=COLUMN` on a column that always holds the label's value (repeatable), such as a tenant ID in the sort key |
+| `--label-column` | | | Filter `LABEL=COLUMN` on a column that mirrors the label's value on every row (repeatable), such as a tenant ID in the sort key; positive matchers on the label then use the column alone |
 | `--thanos-default-step` | | off | Seconds; allows range queries without `step` |
 | | `RUST_LOG` | | Log filter |
 

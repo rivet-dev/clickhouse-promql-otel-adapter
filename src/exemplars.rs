@@ -3,8 +3,7 @@ use crate::{
     engine::matches,
     model::{Labels, float_string},
     storage::{
-        Store, TABLES, charge_samples, label_filter, number, prometheus_scope, row_labels,
-        row_metric_name,
+        Store, TABLES, charge_samples, number, prometheus_scope, row_labels, row_metric_name,
     },
     translation::label_name,
 };
@@ -24,41 +23,27 @@ impl Store {
         let mut bytes_read = 0usize;
         let mut retained = 0usize;
         for kind in TABLES.into_iter().filter(|k| *k != "summary") {
-            let filter = self.metric_filter(kind, start, selectors).await?;
-            if filter.as_ref().is_some_and(|v| v.is_empty()) {
+            let Some((predicate, filter_params)) =
+                self.table_filter(kind, start, selectors).await?
+            else {
                 continue;
-            }
-            let predicate = if filter.is_some() {
-                " AND MetricName IN {names:Array(String)}"
-            } else {
-                ""
             };
-            let (labels_predicate, labels_params) = label_filter(
-                kind,
-                selectors,
-                &self.promoted_resource_attributes,
-                &self.label_columns,
-            );
             let extra = match kind {
                 "sum" => ", IsMonotonic",
                 "histogram" => ", ExplicitBounds",
                 _ => "",
             };
             let sql = format!(
-                "SELECT MetricName, MetricUnit, ResourceAttributes, ScopeName, ScopeVersion, ScopeSchemaUrl, ScopeAttributes, Attributes, `Exemplars.FilteredAttributes`, `Exemplars.Value`, `Exemplars.SpanId`, `Exemplars.TraceId`{extra}, arrayMap(t -> toUnixTimestamp64Milli(toDateTime64(t,3)), `Exemplars.TimeUnix`) AS _times FROM {}.otel_metrics_{kind} WHERE arrayExists(t -> t >= {{start:Int64}} AND t <= {{end:Int64}}, _times){predicate}{labels_predicate} LIMIT {} SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow",
+                "SELECT MetricName, MetricUnit, ResourceAttributes, ScopeName, ScopeVersion, ScopeSchemaUrl, ScopeAttributes, Attributes, `Exemplars.FilteredAttributes`, `Exemplars.Value`, `Exemplars.SpanId`, `Exemplars.TraceId`{extra}, arrayMap(t -> toUnixTimestamp64Milli(toDateTime64(t,3)), `Exemplars.TimeUnix`) AS _times FROM {}.otel_metrics_{kind} WHERE arrayExists(t -> t >= {{start:Int64}} AND t <= {{end:Int64}}, _times){predicate} LIMIT {} SETTINGS output_format_json_quote_denormals=1 FORMAT JSONEachRow",
                 self.database,
                 self.max_rows.saturating_sub(total).saturating_add(1)
             );
             let mut params = vec![
                 ("param_start", start.to_string()),
                 ("param_end", end.to_string()),
-                (
-                    "param_names",
-                    crate::storage::string_array(&filter.unwrap_or_default()),
-                ),
             ];
             params.extend(
-                labels_params
+                filter_params
                     .iter()
                     .map(|(key, value)| (key.as_str(), value.clone())),
             );
