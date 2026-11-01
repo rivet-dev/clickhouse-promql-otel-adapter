@@ -12,7 +12,13 @@ struct Backend {
     requests: AtomicUsize,
     fail: AtomicBool,
 }
-async fn dictionary(State(state): State<Arc<Backend>>) -> (StatusCode, &'static str) {
+/// The adapter's one-time `use_statistics` probe; mocks answer it without counting.
+const PROBE: &str = "SELECT 1";
+
+async fn dictionary(State(state): State<Arc<Backend>>, body: String) -> (StatusCode, &'static str) {
+    if body == PROBE {
+        return (StatusCode::OK, "1\n");
+    }
     state.requests.fetch_add(1, Ordering::SeqCst);
     if state.fail.swap(false, Ordering::SeqCst) {
         return (StatusCode::SERVICE_UNAVAILABLE, "temporary failure");
@@ -106,7 +112,11 @@ struct Recorder {
 async fn recorded(
     State(state): State<Arc<Recorder>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    body: String,
 ) -> &'static str {
+    if body == PROBE {
+        return "1\n";
+    }
     state.ranges.lock().unwrap().push((
         params.get("param_from").cloned().unwrap_or_default(),
         params.get("param_until").cloned(),
@@ -156,6 +166,62 @@ async fn name_scans_cover_only_the_missing_time_range() {
         scans(&backend),
         vec![("400".into(), Some("1000".into())); 5],
         "an earlier start scans only the uncovered range"
+    );
+    server.abort();
+}
+
+#[derive(Default)]
+struct OldServer {
+    with_setting: AtomicUsize,
+    queries: AtomicUsize,
+}
+async fn old_server(
+    State(state): State<Arc<OldServer>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    body: String,
+) -> (StatusCode, &'static str) {
+    if params.contains_key("use_statistics") {
+        state.with_setting.fetch_add(1, Ordering::SeqCst);
+        return (
+            StatusCode::NOT_FOUND,
+            "Code: 115. DB::Exception: Unknown setting 'use_statistics'. (UNKNOWN_SETTING)",
+        );
+    }
+    if body != PROBE {
+        state.queries.fetch_add(1, Ordering::SeqCst);
+    }
+    (StatusCode::OK, "")
+}
+
+#[tokio::test]
+async fn servers_without_use_statistics_get_queries_without_it() {
+    let backend = Arc::new(OldServer::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = Router::new()
+        .route("/", post(old_server))
+        .with_state(backend.clone());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let store = Store::new(url, "otel".into(), "reader".into(), "".into()).unwrap();
+    let Expr::VectorSelector(selector) = parser::parse("missing_metric").unwrap() else {
+        panic!()
+    };
+    store
+        .load(0, 1, std::slice::from_ref(&selector))
+        .await
+        .unwrap();
+    store.load(0, 1, &[selector]).await.unwrap();
+    assert_eq!(
+        backend.with_setting.load(Ordering::SeqCst),
+        1,
+        "probed once"
+    );
+    assert_eq!(
+        backend.queries.load(Ordering::SeqCst),
+        10,
+        "every scan ran without it"
     );
     server.abort();
 }

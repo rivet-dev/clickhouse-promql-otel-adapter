@@ -327,6 +327,7 @@ pub struct Store {
     pub series_cache_bytes: usize,
     dictionaries: Arc<[Mutex<DictionaryEntry>; 5]>,
     series_cache: Arc<std::sync::Mutex<CacheMap>>,
+    skip_statistics: Arc<tokio::sync::OnceCell<bool>>,
 }
 #[derive(Default)]
 pub struct Loaded {
@@ -504,7 +505,43 @@ impl Store {
             series_cache_bytes: 128 * 1024 * 1024,
             dictionaries: Arc::new(std::array::from_fn(|_| Mutex::new(None))),
             series_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            skip_statistics: Arc::new(tokio::sync::OnceCell::new()),
         })
+    }
+
+    /// Whether the server accepts `use_statistics=0`, asked once. With
+    /// automatic column statistics, planning a query that filters on sort-key
+    /// columns loads statistics from every active part before pruning: 100 to
+    /// 200 ms per query on a table with ~50 parts, even when no rows are read.
+    /// The setting only changes planning cost, never results. A transient
+    /// probe failure is not remembered, so a later query asks again.
+    async fn skips_statistics(&self) -> bool {
+        let probe = self.skip_statistics.get_or_try_init(|| async {
+            let response = self
+                .client
+                .post(&self.url)
+                .basic_auth(&self.username, Some(&self.password))
+                .query(&[("use_statistics", "0")])
+                .body("SELECT 1")
+                .send()
+                .await
+                .context("ClickHouse request failed")?;
+            if response.status().is_success() {
+                return Ok(true);
+            }
+            let text = response.text().await.unwrap_or_default();
+            if text.contains("UNKNOWN_SETTING") || text.contains("Unknown setting") {
+                tracing::info!(
+                    "ClickHouse has no use_statistics setting; planning uses its defaults"
+                );
+                return Ok(false);
+            }
+            anyhow::bail!(
+                "use_statistics probe failed: {}",
+                text.chars().take(200).collect::<String>()
+            )
+        });
+        probe.await.copied().unwrap_or(false)
     }
     pub async fn query(&self, sql: &str, params: &[(&str, String)]) -> Result<String> {
         let bytes = self.query_bytes(sql, params).await?;
@@ -523,8 +560,9 @@ impl Store {
     /// Sends one statement. Responses are requested zstd-compressed and
     /// decompressed while streaming, so `max_bytes` bounds decompressed bytes.
     async fn query_inner(&self, sql: &str, params: &[(&str, String)]) -> Result<Vec<u8>> {
+        let skip_statistics = self.skips_statistics().await;
         let started = Instant::now();
-        let mut response = self
+        let mut request = self
             .client
             .post(&self.url)
             .basic_auth(&self.username, Some(&self.password))
@@ -533,7 +571,11 @@ impl Store {
                 ("cancel_http_readonly_queries_on_client_close", "1"),
                 ("max_execution_time", "120"),
                 ("enable_http_compression", "1"),
-            ])
+            ]);
+        if skip_statistics {
+            request = request.query(&[("use_statistics", "0")]);
+        }
+        let mut response = request
             .body(sql.to_owned())
             .send()
             .await
