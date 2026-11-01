@@ -108,80 +108,78 @@ impl Engine<'_> {
                 for s in &right {
                     right_keys.push(self.match_key(site, &s.labels, &modifier.matching));
                 }
-                let left_present = left_keys.iter().cloned().collect::<HashSet<_>>();
-                let right_present = right_keys.iter().cloned().collect::<HashSet<_>>();
-                if let Some(value) =
-                    if matches!(modifier.card, VectorMatchCardinality::OneToMany(_)) {
-                        modifier.fill_values.rhs
-                    } else {
-                        modifier.fill_values.lhs
-                    }
-                {
-                    let mut added = HashSet::new();
-                    for signature in &right_keys {
-                        if !left_present.contains(signature) && added.insert(signature.clone()) {
-                            left.push(Sample {
-                                labels: signature.clone(),
-                                value,
-                                timestamp: t,
-                                ..Default::default()
-                            });
-                            left_keys.push(signature.clone());
+                let one_to_many = matches!(modifier.card, VectorMatchCardinality::OneToMany(_));
+                let (fill_left, fill_right) = if one_to_many {
+                    (modifier.fill_values.rhs, modifier.fill_values.lhs)
+                } else {
+                    (modifier.fill_values.lhs, modifier.fill_values.rhs)
+                };
+                // Indexes are built only where an operator consults them.
+                if fill_left.is_some() || fill_right.is_some() {
+                    let left_present = left_keys.iter().cloned().collect::<HashSet<_>>();
+                    let right_present = right_keys.iter().cloned().collect::<HashSet<_>>();
+                    if let Some(value) = fill_left {
+                        let mut added = HashSet::new();
+                        for signature in &right_keys {
+                            if !left_present.contains(signature) && added.insert(signature.clone())
+                            {
+                                left.push(Sample {
+                                    labels: signature.clone(),
+                                    value,
+                                    timestamp: t,
+                                    ..Default::default()
+                                });
+                                left_keys.push(signature.clone());
+                            }
                         }
                     }
-                }
-                if let Some(value) =
-                    if matches!(modifier.card, VectorMatchCardinality::OneToMany(_)) {
-                        modifier.fill_values.lhs
-                    } else {
-                        modifier.fill_values.rhs
-                    }
-                {
-                    let mut added = HashSet::new();
-                    for signature in &left_keys {
-                        if !right_present.contains(signature) && added.insert(signature.clone()) {
-                            right.push(Sample {
-                                labels: signature.clone(),
-                                value,
-                                timestamp: t,
-                                ..Default::default()
-                            });
-                            right_keys.push(signature.clone());
+                    if let Some(value) = fill_right {
+                        let mut added = HashSet::new();
+                        for signature in &left_keys {
+                            if !right_present.contains(signature) && added.insert(signature.clone())
+                            {
+                                right.push(Sample {
+                                    labels: signature.clone(),
+                                    value,
+                                    timestamp: t,
+                                    ..Default::default()
+                                });
+                                right_keys.push(signature.clone());
+                            }
                         }
                     }
                 }
 
-                let mut rhs: HashMap<Labels, Vec<&Sample>> = HashMap::new();
-                let mut lhs: HashMap<Labels, Vec<&Sample>> = HashMap::new();
-                for (s, signature) in right.iter().zip(&right_keys) {
-                    rhs.entry(signature.clone()).or_default().push(s);
-                }
-                for (s, signature) in left.iter().zip(&left_keys) {
-                    lhs.entry(signature.clone()).or_default().push(s);
-                }
                 if matches!(op.as_str(), "and" | "or" | "unless") {
                     let mut result = Vec::new();
-                    for (s, signature) in left.iter().zip(&left_keys) {
-                        let present = rhs.contains_key(signature);
-                        if op == "or" || (op == "and" && present) || (op == "unless" && !present) {
-                            result.push(s.clone())
-                        }
-                    }
                     if op == "or" {
+                        result.extend(left.iter().cloned());
+                        let lhs = left_keys.iter().cloned().collect::<HashSet<_>>();
                         for (s, signature) in right.iter().zip(&right_keys) {
-                            if !lhs.contains_key(signature) {
+                            if !lhs.contains(signature) {
+                                result.push(s.clone())
+                            }
+                        }
+                    } else {
+                        let rhs = right_keys.iter().cloned().collect::<HashSet<_>>();
+                        for (s, signature) in left.iter().zip(&left_keys) {
+                            let present = rhs.contains(signature);
+                            if (op == "and" && present) || (op == "unless" && !present) {
                                 result.push(s.clone())
                             }
                         }
                     }
                     return Ok(Value::Vector(result));
                 }
-                let one_to_many = matches!(modifier.card, VectorMatchCardinality::OneToMany(_));
-                let (many, many_keys, one) = if one_to_many {
-                    (&right, &right_keys, &lhs)
+                let (many, many_keys, one_side, one_keys) = if one_to_many {
+                    (&right, &right_keys, &left, &left_keys)
                 } else {
-                    (&left, &left_keys, &rhs)
+                    (&left, &left_keys, &right, &right_keys)
                 };
+                let mut one: HashMap<Labels, Vec<&Sample>> = HashMap::new();
+                for (s, signature) in one_side.iter().zip(one_keys) {
+                    one.entry(signature.clone()).or_default().push(s);
+                }
                 if many.is_empty() || one.is_empty() {
                     return Ok(Value::Vector(vec![]));
                 }
