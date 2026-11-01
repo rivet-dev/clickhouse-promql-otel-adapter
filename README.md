@@ -310,7 +310,7 @@ Add a **Prometheus** data source in Grafana: `http://<host>:9091`. Full local st
 | `--promote-resource-attribute` | | | Copy a resource attribute onto every series as `ATTR` or `ATTR=LABEL` (repeatable), like Prometheus `promote_resource_attributes` |
 | `--label-column` | | | Filter `LABEL=COLUMN` on a column that mirrors the label's value on every row (repeatable), such as a tenant ID in the sort key; positive matchers on the label then use the column alone |
 | `--series-cache-ttl-seconds` | | `10` | How long decoded sample rows serve identical requests from other panels; `0` disables ([details](#series-cache)) |
-| `--series-cache-bytes` | | `268435456` | Approximate bytes of decoded series kept for other panels |
+| `--series-cache-bytes` | | `134217728` | Approximate bytes of decoded series kept for other panels |
 | `--thanos-default-step` | | off | Seconds; allows range queries without `step` |
 | | `RUST_LOG` | | Log filter |
 

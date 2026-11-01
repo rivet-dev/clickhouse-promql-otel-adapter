@@ -46,7 +46,7 @@ struct Config {
     #[arg(long, default_value_t = 10)]
     series_cache_ttl_seconds: u64,
     /// Approximate bytes of decoded series kept for other panels.
-    #[arg(long, default_value_t = 268_435_456)]
+    #[arg(long, default_value_t = 134_217_728)]
     series_cache_bytes: u64,
     /// Labels identifying HA replicas; may be repeated.
     #[arg(long = "replica-label")]

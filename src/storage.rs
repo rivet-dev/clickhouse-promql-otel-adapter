@@ -438,8 +438,10 @@ impl Drop for Lead {
     }
 }
 
-/// Drops the least recently used entries until the cache fits its budget.
-fn evict(entries: &mut CacheMap, max_bytes: usize) {
+/// Removes the least recently used entries until the cache fits its budget,
+/// returning them so the caller can free them after releasing the lock.
+fn evict(entries: &mut CacheMap, max_bytes: usize) -> Vec<CacheSlot> {
+    let mut removed = Vec::new();
     loop {
         let total: usize = entries
             .values()
@@ -449,7 +451,7 @@ fn evict(entries: &mut CacheMap, max_bytes: usize) {
             })
             .sum();
         if total <= max_bytes {
-            return;
+            return removed;
         }
         let oldest = entries
             .iter()
@@ -460,11 +462,18 @@ fn evict(entries: &mut CacheMap, max_bytes: usize) {
             .min_by_key(|(last_used, _)| *last_used)
             .map(|(_, key)| key);
         match oldest {
-            Some(key) => {
-                entries.remove(&key);
-            }
-            None => return,
+            Some(key) => removed.extend(entries.remove(&key)),
+            None => return removed,
         }
+    }
+}
+
+/// Frees removed cache entries on a blocking thread. A decoded table can be
+/// hundreds of megabytes; freeing it inline stalled the query that happened
+/// to expire it, and every query waiting on the cache lock behind it.
+fn free_in_background(removed: Vec<CacheSlot>) {
+    if !removed.is_empty() {
+        tokio::task::spawn_blocking(move || drop(removed));
     }
 }
 impl Store {
@@ -492,7 +501,7 @@ impl Store {
             max_samples: 5_000_000,
             metric_cache_ttl: Duration::ZERO,
             series_cache_ttl: Duration::ZERO,
-            series_cache_bytes: 256 * 1024 * 1024,
+            series_cache_bytes: 128 * 1024 * 1024,
             dictionaries: Arc::new(std::array::from_fn(|_| Mutex::new(None))),
             series_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         })
@@ -867,27 +876,37 @@ impl Store {
                 .collect::<Vec<_>>()
                 .join(";"),
         };
+        let mut expired = Vec::new();
         let receiver = {
             let mut entries = self.series_cache.lock().unwrap_or_else(|e| e.into_inner());
             let now = Instant::now();
-            entries.retain(|_, slot| match slot {
-                CacheSlot::Ready { loaded_at, .. } => {
-                    now.duration_since(*loaded_at) < self.series_cache_ttl
-                }
-                CacheSlot::Loading(_) => true,
-            });
+            let stale = entries
+                .iter()
+                .filter(|(_, slot)| match slot {
+                    CacheSlot::Ready { loaded_at, .. } => {
+                        now.duration_since(*loaded_at) >= self.series_cache_ttl
+                    }
+                    CacheSlot::Loading(_) => false,
+                })
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            expired.extend(stale.iter().filter_map(|key| entries.remove(key)));
             match entries.get_mut(&key) {
                 Some(CacheSlot::Ready {
                     value, last_used, ..
                 }) => {
                     *last_used = now;
                     tracing::debug!(table = request.kind, "series cache hit");
-                    return Ok(value.clone());
+                    let value = value.clone();
+                    drop(entries);
+                    free_in_background(expired);
+                    return Ok(value);
                 }
                 Some(CacheSlot::Loading(receiver)) => Some(receiver.clone()),
                 None => None,
             }
         };
+        free_in_background(expired);
         if let Some(mut receiver) = receiver {
             tracing::debug!(table = request.kind, "series cache wait");
             loop {
@@ -918,9 +937,10 @@ impl Store {
             Ok(value) => Ok(value.clone()),
             Err(error) => Err(SharedError::new(error)),
         };
+        let mut evicted = Vec::new();
         {
             let mut entries = self.series_cache.lock().unwrap_or_else(|e| e.into_inner());
-            entries.remove(&key);
+            evicted.extend(entries.remove(&key));
             if let Ok(value) = &result {
                 let footprint = value.footprint();
                 if footprint <= self.series_cache_bytes {
@@ -934,10 +954,11 @@ impl Store {
                             last_used: now,
                         },
                     );
-                    evict(&mut entries, self.series_cache_bytes);
+                    evicted.extend(evict(&mut entries, self.series_cache_bytes));
                 }
             }
         }
+        free_in_background(evicted);
         // Waiters that already left hold no receiver; the send then has no
         // one to reach, which is fine.
         let _ = sender.send(Some(outcome));
