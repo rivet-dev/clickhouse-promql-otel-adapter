@@ -19,6 +19,11 @@ use tokio::sync::Mutex;
 
 type Dictionary = Arc<Vec<Json>>;
 type DictionaryEntry = Option<NameCoverage>;
+type Dictionaries = Arc<[Mutex<DictionaryEntry>; 5]>;
+
+/// Distinct tenants whose metric name dictionaries are kept; past it the
+/// cache starts over.
+const MAX_DICTIONARY_TENANTS: usize = 1024;
 
 /// Late or clock-skewed samples older than this when the dictionary was last
 /// extended forward are rescanned by the next forward extension.
@@ -325,7 +330,17 @@ pub struct Store {
     pub series_cache_ttl: Duration,
     /// Approximate bytes of decoded series the cache may hold.
     pub series_cache_bytes: usize,
-    dictionaries: Arc<[Mutex<DictionaryEntry>; 5]>,
+    /// ClickHouse `max_execution_time` sent with every statement, in seconds.
+    pub max_execution_time: u64,
+    /// ClickHouse setting that carries the tenant, such as a custom
+    /// `SQL_project_id` read by a row policy.
+    pub tenant_setting: Option<String>,
+    /// The tenant every statement of this store is scoped to. Requests get a
+    /// scoped clone through `for_tenant`.
+    pub tenant: Option<String>,
+    /// Refuse to send any statement without a tenant.
+    pub require_tenant: bool,
+    dictionaries: Arc<std::sync::Mutex<HashMap<Option<String>, Dictionaries>>>,
     series_cache: Arc<std::sync::Mutex<CacheMap>>,
     skip_statistics: Arc<tokio::sync::OnceCell<bool>>,
 }
@@ -373,6 +388,7 @@ impl TableResult {
 /// only serve a request that would have fetched and kept the same series.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct CacheKey {
+    tenant: Option<String>,
     kind: &'static str,
     sql: String,
     params: Vec<(String, String)>,
@@ -503,7 +519,11 @@ impl Store {
             metric_cache_ttl: Duration::ZERO,
             series_cache_ttl: Duration::ZERO,
             series_cache_bytes: 128 * 1024 * 1024,
-            dictionaries: Arc::new(std::array::from_fn(|_| Mutex::new(None))),
+            max_execution_time: 120,
+            tenant_setting: None,
+            tenant: None,
+            require_tenant: false,
+            dictionaries: Arc::new(std::sync::Mutex::new(HashMap::new())),
             series_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
             skip_statistics: Arc::new(tokio::sync::OnceCell::new()),
         })
@@ -543,6 +563,25 @@ impl Store {
         });
         probe.await.copied().unwrap_or(false)
     }
+    /// A clone whose statements read only `tenant`'s rows.
+    pub fn for_tenant(&self, tenant: Option<String>) -> Self {
+        let mut store = self.clone();
+        store.tenant = tenant;
+        store
+    }
+
+    /// This store's tenant's metric name dictionaries, one per table.
+    fn tenant_dictionaries(&self) -> Dictionaries {
+        let mut tenants = self.dictionaries.lock().unwrap_or_else(|e| e.into_inner());
+        if !tenants.contains_key(&self.tenant) && tenants.len() >= MAX_DICTIONARY_TENANTS {
+            tenants.clear();
+        }
+        tenants
+            .entry(self.tenant.clone())
+            .or_insert_with(|| Arc::new(std::array::from_fn(|_| Mutex::new(None))))
+            .clone()
+    }
+
     pub async fn query(&self, sql: &str, params: &[(&str, String)]) -> Result<String> {
         let bytes = self.query_bytes(sql, params).await?;
         String::from_utf8(bytes)
@@ -560,6 +599,9 @@ impl Store {
     /// Sends one statement. Responses are requested zstd-compressed and
     /// decompressed while streaming, so `max_bytes` bounds decompressed bytes.
     async fn query_inner(&self, sql: &str, params: &[(&str, String)]) -> Result<Vec<u8>> {
+        if self.require_tenant && self.tenant.is_none() {
+            bail!("refusing a ClickHouse statement without a tenant");
+        }
         let skip_statistics = self.skips_statistics().await;
         let started = Instant::now();
         let mut request = self
@@ -569,9 +611,12 @@ impl Store {
             .query(params)
             .query(&[
                 ("cancel_http_readonly_queries_on_client_close", "1"),
-                ("max_execution_time", "120"),
+                ("max_execution_time", &self.max_execution_time.to_string()),
                 ("enable_http_compression", "1"),
             ]);
+        if let (Some(setting), Some(tenant)) = (&self.tenant_setting, &self.tenant) {
+            request = request.query(&[(setting, tenant)]);
+        }
         if skip_statistics {
             request = request.query(&[("use_statistics", "0")]);
         }
@@ -619,8 +664,20 @@ impl Store {
         }
         Ok(bytes)
     }
+    /// Checks that ClickHouse answers. Sent without a tenant, so it works
+    /// with `require_tenant`; `SELECT 1` reads no table.
     pub async fn ready(&self) -> Result<()> {
-        self.query("SELECT 1", &[]).await?;
+        let response = self
+            .client
+            .post(&self.url)
+            .basic_auth(&self.username, Some(&self.password))
+            .body("SELECT 1")
+            .send()
+            .await
+            .context("ClickHouse request failed")?;
+        if !response.status().is_success() {
+            bail!("ClickHouse returned {}", response.status());
+        }
         Ok(())
     }
     /// For each selector, the stored metric names it can match in this
@@ -710,10 +767,11 @@ impl Store {
             .context("unknown metric table")?;
         // Hold the per-table lock during a scan so concurrent panels share it.
         // Samples are never cached. Failed/cancelled scans remain retryable.
-        let mut cache = self.dictionaries[index].lock().await;
+        let dictionaries = self.tenant_dictionaries();
+        let mut cache = dictionaries[index].lock().await;
         let identity = format!(
-            "{}\n{}\n{}\n{kind}",
-            self.url, self.username, self.max_bytes
+            "{}\n{}\n{}\n{kind}\n{:?}",
+            self.url, self.username, self.max_bytes, self.tenant
         );
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -774,7 +832,8 @@ impl Store {
     /// leaves the cache expired, so the next query starts another scan.
     async fn refresh_names(&self, index: usize, since: i64, now_ms: i64) {
         let text = self.fetch_names(TABLES[index], since, None).await;
-        let mut cache = self.dictionaries[index].lock().await;
+        let dictionaries = self.tenant_dictionaries();
+        let mut cache = dictionaries[index].lock().await;
         let Some(coverage) = cache.as_mut() else {
             return;
         };
@@ -908,6 +967,7 @@ impl Store {
             return self.load_table(request).await.map(Arc::new);
         }
         let key = CacheKey {
+            tenant: self.tenant.clone(),
             kind: request.kind,
             sql: request.sql.clone(),
             params: request.params.clone(),

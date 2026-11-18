@@ -309,6 +309,9 @@ Add a **Prometheus** data source in Grafana: `http://<host>:9091`. Full local st
 | `--replica-label` | | | HA replica label for dedup (repeatable) |
 | `--promote-resource-attribute` | | | Copy a resource attribute onto every series as `ATTR` or `ATTR=LABEL` (repeatable), like Prometheus `promote_resource_attributes` |
 | `--label-column` | | | Filter `LABEL=COLUMN` on a column that mirrors the label's value on every row (repeatable), such as a tenant ID in the sort key; positive matchers on the label then use the column alone |
+| `--tenant-header` | | | Scope every statement to a request header's tenant as `HEADER=SETTING`, sending the value as ClickHouse setting `SETTING` (for example `x-rivet-project=SQL_project_id` for a `getSetting('SQL_project_id')` row policy); metric-name and series caches are kept per tenant |
+| `--require-tenant` | | | Reject API requests without the tenant header with 400 |
+| `--clickhouse-max-execution-time-seconds` | | `120` | ClickHouse `max_execution_time` for every statement; keep it under the user's server-side cap |
 | `--series-cache-ttl-seconds` | | `10` | How long decoded sample rows serve identical requests from other panels; `0` disables ([details](#series-cache)) |
 | `--series-cache-bytes` | | `134217728` | Approximate bytes of decoded series kept for other panels |
 | `--thanos-default-step` | | off | Seconds; allows range queries without `step` |
