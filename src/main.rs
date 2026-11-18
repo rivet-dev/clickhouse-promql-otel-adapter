@@ -63,6 +63,17 @@ struct Config {
     /// column must hold exactly its label's value.
     #[arg(long = "label-column", value_parser = parse_label_column)]
     label_columns: Vec<(String, String)>,
+    /// ClickHouse `max_execution_time` for every statement, in seconds.
+    #[arg(long, default_value_t = 120, value_parser=clap::value_parser!(u64).range(1..))]
+    clickhouse_max_execution_time_seconds: u64,
+    /// Scope every statement to the tenant named by a request header, as
+    /// HEADER=SETTING: the header's value is sent as the ClickHouse setting
+    /// SETTING, for a row policy such as `ProjectId = getSetting('SQL_project_id')`.
+    #[arg(long, value_parser = parse_tenant_header)]
+    tenant_header: Option<(axum::http::HeaderName, String)>,
+    /// Reject API requests without the tenant header with 400.
+    #[arg(long, requires = "tenant_header")]
+    require_tenant: bool,
     /// Enable Thanos defaults for omitted range step (seconds, usually 60).
     #[arg(long, value_parser=clap::value_parser!(u64).range(1..))]
     thanos_default_step: Option<u64>,
@@ -82,14 +93,20 @@ async fn main() -> anyhow::Result<()> {
     store.series_cache_bytes = usize::try_from(c.series_cache_bytes)?;
     store.promoted_resource_attributes = c.promoted_resource_attributes;
     store.label_columns = c.label_columns;
+    store.max_execution_time = c.clickhouse_max_execution_time_seconds;
+    store.tenant_setting = c.tenant_header.as_ref().map(|(_, setting)| setting.clone());
+    store.require_tenant = c.require_tenant;
     // Cover the default one-hour dashboard plus the five-minute lookback.
     let warm_start = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or_default()
         .saturating_sub(65 * 60 * 1000);
-    let warm_store = store.clone();
-    tokio::spawn(async move { warm_store.warm_names(warm_start).await });
+    // Names are cached per tenant, so there is nothing shared to warm.
+    if c.tenant_header.is_none() {
+        let warm_store = store.clone();
+        tokio::spawn(async move { warm_store.warm_names(warm_start).await });
+    }
     let address = format!("{}:{}", c.host, c.port);
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(%address,"listening");
@@ -101,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
     app.request_timeout = std::time::Duration::from_secs(c.request_timeout_seconds as u64);
     app.replica_labels = c.replica_labels;
     app.thanos_default_step = c.thanos_default_step.map(std::time::Duration::from_secs);
+    app.tenant_header = c.tenant_header.map(|(header, _)| header);
     axum::serve(listener, router(app))
         .with_graceful_shutdown(async {
             tokio::signal::ctrl_c().await.ok();
@@ -132,4 +150,12 @@ fn parse_label_column(value: &str) -> anyhow::Result<(String, String)> {
     }
     validate_identifier(column)?;
     Ok((label.to_owned(), column.to_owned()))
+}
+
+fn parse_tenant_header(value: &str) -> anyhow::Result<(axum::http::HeaderName, String)> {
+    let (header, setting) = value
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("expected HEADER=SETTING"))?;
+    validate_identifier(setting)?;
+    Ok((header.parse()?, setting.to_owned()))
 }

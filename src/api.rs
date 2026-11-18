@@ -33,6 +33,9 @@ pub struct App {
     pub store_labels: crate::model::Labels,
     pub request_timeout: Duration,
     pub thanos_default_step: Option<Duration>,
+    /// Header naming the tenant every statement is scoped to; see
+    /// `Store::tenant`. Required when the store requires a tenant.
+    pub tenant_header: Option<axum::http::HeaderName>,
 }
 impl App {
     pub fn new(store: Store) -> Self {
@@ -46,6 +49,7 @@ impl App {
             store_labels: Default::default(),
             request_timeout: Duration::from_secs(120),
             thanos_default_step: None,
+            tenant_header: None,
         }
     }
 }
@@ -322,12 +326,16 @@ impl Params {
             .collect()
     }
 }
-async fn handle(State(app): State<App>, request: Request) -> Response {
+async fn handle(State(mut app): State<App>, request: Request) -> Response {
     if request.method() == Method::OPTIONS {
         return StatusCode::NO_CONTENT.into_response();
     }
     if request.method() != Method::GET && request.method() != Method::POST {
         return (StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed\n").into_response();
+    }
+    match tenant(&app, &request) {
+        Ok(tenant) => app.store = app.store.for_tenant(tenant),
+        Err(error) => return error.into_response(),
     }
     let search = request.uri().path().starts_with("/api/v1/search/");
     let started = Instant::now();
@@ -438,6 +446,25 @@ async fn handle(State(app): State<App>, request: Request) -> Response {
     }
 }
 
+/// The request's tenant, from the configured tenant header.
+fn tenant(app: &App, request: &Request) -> Result<Option<String>> {
+    let Some(header) = &app.tenant_header else {
+        return Ok(None);
+    };
+    let tenant = match request.headers().get(header) {
+        Some(value) => Some(
+            value
+                .to_str()
+                .map_err(|_| ApiError::bad(format!("header {header} is not valid text")))?,
+        ),
+        None => None,
+    }
+    .filter(|value| !value.is_empty());
+    if tenant.is_none() && app.store.require_tenant {
+        return Err(ApiError::bad(format!("missing required header {header}")));
+    }
+    Ok(tenant.map(str::to_owned))
+}
 async fn parameters(request: Request) -> Result<(String, Params)> {
     let method = request.method().clone();
     if method != Method::GET && method != Method::POST {
