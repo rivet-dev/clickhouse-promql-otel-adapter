@@ -1,4 +1,5 @@
 pub mod api;
+pub mod compile;
 mod dedup;
 pub mod engine;
 mod exemplars;
