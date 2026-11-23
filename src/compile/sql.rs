@@ -24,6 +24,11 @@ const LABELS: &str = "mapFilter((k, v) -> v != '', mapUpdate(map('job', Resource
 const PREVIOUS: &str =
     "OVER (PARTITION BY series ORDER BY TimeUnix ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)";
 
+/// Prometheus's lookback. A counter sample further than this after the one
+/// before it starts a new series and adds no growth, so a step's value never
+/// depends on how far back the query reads.
+const LOOKBACK_SECONDS: u32 = 300;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Table {
     Gauge,
@@ -99,7 +104,7 @@ pub fn leaf(table: Table, names: &[String], matchers: &[Matcher], reading: Readi
             let column = column.name();
             (
                 format!(
-                    "lagInFrame({column}, 1, {column}) {PREVIOUS} AS before, if({column} >= before, toFloat64({column} - before), toFloat64({column})) AS growth"
+                    "lagInFrame({column}, 1, {column}) {PREVIOUS} AS before, lagInFrame(TimeUnix, 1, TimeUnix) {PREVIOUS} AS before_at, if(dateDiff('second', before_at, TimeUnix) > {LOOKBACK_SECONDS}, 0, if({column} >= before, toFloat64({column} - before), toFloat64({column}))) AS growth"
                 ),
                 if per_second {
                     "sum(growth) / {step:UInt32} AS value".to_owned()
@@ -110,7 +115,7 @@ pub fn leaf(table: Table, names: &[String], matchers: &[Matcher], reading: Readi
         }
         Reading::Buckets => (
             format!(
-                "ExplicitBounds, lagInFrame(BucketCounts, 1, BucketCounts) {PREVIOUS} AS before, if(length(before) = length(BucketCounts) AND arrayAll((now, was) -> now >= was, BucketCounts, before), arrayMap((now, was) -> toUInt64(now - was), BucketCounts, before), BucketCounts) AS growth"
+                "ExplicitBounds, lagInFrame(BucketCounts, 1, BucketCounts) {PREVIOUS} AS before, lagInFrame(TimeUnix, 1, TimeUnix) {PREVIOUS} AS before_at, if(dateDiff('second', before_at, TimeUnix) > {LOOKBACK_SECONDS}, arrayMap(now -> toUInt64(0), BucketCounts), if(length(before) = length(BucketCounts) AND arrayAll((now, was) -> now >= was, BucketCounts, before), arrayMap((now, was) -> toUInt64(now - was), BucketCounts, before), BucketCounts)) AS growth"
             ),
             "sumForEach(growth) AS counts, any(ExplicitBounds) AS bounds".to_owned(),
         ),

@@ -239,6 +239,62 @@ async fn leaves_skip_staleness_markers() {
 }
 
 #[tokio::test]
+async fn counters_returning_after_the_lookback_start_without_growth() {
+    common::empty_database_test(false, |store| async move {
+        add_project_column(&store).await;
+        let base = FROM - 290;
+        insert(
+            &store,
+            "otel_metrics_sum",
+            "ProjectId, ResourceAttributes, MetricName, Attributes, TimeUnix, Value, IsMonotonic, AggregationTemporality",
+            &[
+                counter_row("a", "p1", base, 17000.0),
+                counter_row("a", "p1", FROM + 130, 2.0),
+                counter_row("a", "p1", FROM + 190, 5.0),
+            ],
+        )
+        .await;
+        insert(
+            &store,
+            "otel_metrics_histogram",
+            "ProjectId, ResourceAttributes, MetricName, Attributes, TimeUnix, Count, Sum, BucketCounts, ExplicitBounds",
+            &[
+                format!("('a', map('service.instance.id', 'p1'), 'h', map('pod', 'p1'), toDateTime({base}), 90, 9, [80, 10, 0], [0.1, 1])"),
+                format!("('a', map('service.instance.id', 'p1'), 'h', map('pod', 'p1'), toDateTime({}), 2, 1, [1, 1, 0], [0.1, 1])", FROM + 130),
+                format!("('a', map('service.instance.id', 'p1'), 'h', map('pod', 'p1'), toDateTime({}), 5, 2, [3, 2, 0], [0.1, 1])", FROM + 190),
+            ],
+        )
+        .await;
+
+        let increase = plan("increase(a_total[1m])");
+        let rows = run(&store, &increase.leaves[0].sql, "a").await.unwrap();
+        let values = rows
+            .iter()
+            .map(|r| (r["t"].as_u64().unwrap(), r["value"].as_f64().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            values,
+            vec![(u64::from(FROM + 120), 0.0), (u64::from(FROM + 180), 3.0)]
+        );
+
+        let buckets = plan("histogram_quantile(0.5, rate(h_bucket[1m]))");
+        let rows = run(&store, &buckets.leaves[0].sql, "a").await.unwrap();
+        let counts = rows
+            .iter()
+            .map(|r| (r["t"].as_u64().unwrap(), r["counts"].clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            counts,
+            vec![
+                (u64::from(FROM + 120), serde_json::json!([0, 0, 0])),
+                (u64::from(FROM + 180), serde_json::json!([2, 1, 0])),
+            ]
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn leaves_fail_past_the_series_limit() {
     common::empty_database_test(false, |store| async move {
         add_project_column(&store).await;
