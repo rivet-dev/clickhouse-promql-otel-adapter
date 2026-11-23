@@ -177,6 +177,68 @@ async fn compiled_leaves_read_one_project() {
 }
 
 #[tokio::test]
+async fn leaves_skip_staleness_markers() {
+    common::empty_database_test(false, |store| async move {
+        add_project_column(&store).await;
+        let base = FROM - 60;
+        let counter = |seconds: u32, value: f64, flags: u32| {
+            format!(
+                "('a', map('service.instance.id', 'p1'), 'a_total', map('pod', 'p1'), toDateTime({seconds}), {value}, {flags}, true, 2)"
+            )
+        };
+        insert(
+            &store,
+            "otel_metrics_sum",
+            "ProjectId, ResourceAttributes, MetricName, Attributes, TimeUnix, Value, Flags, IsMonotonic, AggregationTemporality",
+            &[
+                counter(base, 1000.0, 0),
+                counter(base + 60, 1060.0, 0),
+                counter(base + 90, 0.0, 1),
+                counter(base + 150, 1090.0, 0),
+            ],
+        )
+        .await;
+        let gauge = |seconds: u32, value: f64, flags: u32| {
+            format!(
+                "('a', map('service.instance.id', 'p1'), 'g', map('pod', 'p1'), toDateTime({seconds}), {value}, {flags})"
+            )
+        };
+        insert(
+            &store,
+            "otel_metrics_gauge",
+            "ProjectId, ResourceAttributes, MetricName, Attributes, TimeUnix, Value, Flags",
+            &[
+                gauge(FROM + 10, 7.0, 0),
+                gauge(FROM + 50, 0.0, 1),
+                gauge(FROM + 70, 0.0, 1),
+            ],
+        )
+        .await;
+
+        let increase = plan("increase(a_total[1m])");
+        let rows = run(&store, &increase.leaves[0].sql, "a").await.unwrap();
+        let values = rows
+            .iter()
+            .map(|r| (r["t"].as_u64().unwrap(), r["value"].as_f64().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            values,
+            vec![(u64::from(FROM), 60.0), (u64::from(FROM + 60), 30.0)]
+        );
+
+        for expr in ["g", "min_over_time(g[1m])", "avg_over_time(g[1m])"] {
+            let rows = run(&store, &plan(expr).leaves[0].sql, "a").await.unwrap();
+            let values = rows
+                .iter()
+                .map(|r| (r["t"].as_u64().unwrap(), r["value"].as_f64().unwrap()))
+                .collect::<Vec<_>>();
+            assert_eq!(values, vec![(u64::from(FROM), 7.0)], "{expr}");
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn leaves_fail_past_the_series_limit() {
     common::empty_database_test(false, |store| async move {
         add_project_column(&store).await;

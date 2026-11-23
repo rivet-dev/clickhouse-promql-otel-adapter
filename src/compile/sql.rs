@@ -138,6 +138,8 @@ fn scope(names: &[String], matchers: &[Matcher]) -> String {
         "ProjectId = {project:String}".to_owned(),
         "TimeUnix >= toDateTime({query_from:UInt32})".to_owned(),
         "TimeUnix < toDateTime({to:UInt32})".to_owned(),
+        // OTel `NoRecordedValue`: a staleness marker stored as a zero sample.
+        "bitAnd(Flags, 1) = 0".to_owned(),
         name_term(names),
     ];
     terms.extend(matchers.iter().map(matcher_term));
