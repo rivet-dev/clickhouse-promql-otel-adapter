@@ -26,6 +26,15 @@ const LABELS: &str = "mapFilter((k, v) -> v != '', mapUpdate(map('job', Resource
 const PREVIOUS: &str =
     "OVER (PARTITION BY series ORDER BY TimeUnix ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)";
 
+const STEP_BEFORE: &str =
+    "OVER (PARTITION BY series ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)";
+
+const BOUNDED_STEP_BEFORE: &str =
+    "OVER (PARTITION BY series, bounds ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)";
+
+/// `LABELS` for a row grouped by series: built once per step, not per sample.
+const STEP_LABELS: &str = "mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes)))";
+
 /// Prometheus's lookback. A counter sample further than this after the one
 /// before it starts a new series and adds no growth, so a step's value never
 /// depends on how far back the query reads.
@@ -103,39 +112,6 @@ pub fn leaf(
     reading: Reading,
     grouping: Option<&Grouping>,
 ) -> String {
-    let (inner, outer) = match reading {
-        Reading::Last => ("Value".to_owned(), "argMax(Value, TimeUnix) AS value".to_owned()),
-        Reading::Max => ("Value".to_owned(), "max(Value) AS value".to_owned()),
-        Reading::Min => ("Value".to_owned(), "min(Value) AS value".to_owned()),
-        Reading::Avg => ("Value".to_owned(), "avg(Value) AS value".to_owned()),
-        Reading::Changes => (
-            format!("Value, lagInFrame(Value, 1, Value) {PREVIOUS} AS before"),
-            "toFloat64(countIf(Value != before)) AS value".to_owned(),
-        ),
-        Reading::Deriv => (
-            "Value".to_owned(),
-            "tupleElement(simpleLinearRegression(toFloat64(toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9))) / 1e9, Value), 1) AS value".to_owned(),
-        ),
-        Reading::Growth { column, per_second } => {
-            let column = column.name();
-            (
-                format!(
-                    "lagInFrame({column}, 1, {column}) {PREVIOUS} AS before, lagInFrame(TimeUnix, 1, TimeUnix) {PREVIOUS} AS before_at, if(dateDiff('second', before_at, TimeUnix) > {LOOKBACK_SECONDS}, 0, if({column} >= before, toFloat64({column} - before), toFloat64({column}))) AS growth"
-                ),
-                if per_second {
-                    "sum(growth) / {step:UInt32} AS value".to_owned()
-                } else {
-                    "sum(growth) AS value".to_owned()
-                },
-            )
-        }
-        Reading::Buckets => (
-            format!(
-                "ExplicitBounds, lagInFrame(BucketCounts, 1, BucketCounts) {PREVIOUS} AS before, lagInFrame(TimeUnix, 1, TimeUnix) {PREVIOUS} AS before_at, if(dateDiff('second', before_at, TimeUnix) > {LOOKBACK_SECONDS}, arrayMap(now -> toUInt64(0), BucketCounts), if(length(before) = length(BucketCounts) AND arrayAll((now, was) -> now >= was, BucketCounts, before), arrayMap((now, was) -> toUInt64(now - was), BucketCounts, before), BucketCounts)) AS growth"
-            ),
-            "sumForEach(growth) AS counts, any(ExplicitBounds) AS bounds".to_owned(),
-        ),
-    };
     let source = match sources {
         [(table, names)] => format!("{}\n\tWHERE {}", table.name(), scope(names, matchers)),
         sources => {
@@ -153,29 +129,25 @@ pub fn leaf(
             format!("(\n\t\t{branches}\n\t)")
         }
     };
+    let labels = match grouping {
+        None => "all_labels".to_owned(),
+        Some(grouping) => group_labels(&grouping.by),
+    };
+    let rows = indent(&series_rows(&source, reading, &labels), 1);
+    let columns = match reading {
+        Reading::Buckets => "counts, bounds",
+        _ => "value",
+    };
+
     let Some(grouping) = grouping else {
         return format!(
-            "SELECT t, any(labels) AS labels, {outer}, throwIf(uniqExact(series) OVER () > {MAX_SERIES_PER_LEAF}, '{SERIES_LIMIT_ERROR}') AS series_limit
+            "SELECT t, labels, {columns}, throwIf(uniqExact(series) OVER () > {MAX_SERIES_PER_LEAF}, '{SERIES_LIMIT_ERROR}') AS series_limit
 FROM (
-	SELECT {BUCKET} AS t, {SERIES} AS series, {LABELS} AS labels, TimeUnix, {inner}
-	FROM {source}
+	{rows}
 )
-WHERE t >= {{from:UInt32}}
-GROUP BY t, series
 ORDER BY series, t"
         );
     };
-    let per_series = format!(
-        "SELECT t, any(labels) AS labels, {outer}
-	FROM (
-		SELECT {BUCKET} AS t, {SERIES} AS series, {LABELS} AS all_labels, {} AS labels, TimeUnix, {inner}
-		FROM {}
-	)
-	WHERE t >= {{from:UInt32}}
-	GROUP BY t, series",
-        group_labels(&grouping.by),
-        source.replace('\n', "\n\t\t"),
-    );
     let limit = format!(
         "throwIf(uniqExact(labels) OVER () > {MAX_SERIES_PER_LEAF}, '{SERIES_LIMIT_ERROR}') AS series_limit"
     );
@@ -187,13 +159,13 @@ ORDER BY series, t"
 FROM (
 	SELECT t, labels, bounds, sumForEach(counts) AS counts, count() AS members
 	FROM (
-	{per_series}
+		{rows}
 	)
 	GROUP BY t, labels, bounds
 )
 GROUP BY t, labels
 ORDER BY labels, t",
-            per_series = per_series.replace('\n', "\n\t"),
+            rows = indent(&rows, 1),
         ),
         _ => {
             let value = match grouping.function {
@@ -206,13 +178,97 @@ ORDER BY labels, t",
             format!(
                 "SELECT t, labels, {value} AS value, {limit}
 FROM (
-	{per_series}
+	{rows}
 )
 GROUP BY t, labels
 ORDER BY labels, t"
             )
         }
     }
+}
+
+/// One row per series and step at or after `{from}`: `(t, series, labels,
+/// value)`, or `(t, series, labels, counts, bounds)` for buckets. `labels` is
+/// an expression over `all_labels`, the series' full label map.
+fn series_rows(source: &str, reading: Reading, labels: &str) -> String {
+    let (inner, outer) = match reading {
+        Reading::Growth { column, per_second } => {
+            return growth_rows(source, column, per_second, labels);
+        }
+        Reading::Buckets => return bucket_rows(source, labels),
+        Reading::Last => ("Value".to_owned(), "argMax(Value, TimeUnix) AS value"),
+        Reading::Max => ("Value".to_owned(), "max(Value) AS value"),
+        Reading::Min => ("Value".to_owned(), "min(Value) AS value"),
+        Reading::Avg => ("Value".to_owned(), "avg(Value) AS value"),
+        Reading::Changes => (
+            format!("Value, lagInFrame(Value, 1, Value) {PREVIOUS} AS before"),
+            "toFloat64(countIf(Value != before)) AS value",
+        ),
+        Reading::Deriv => (
+            "Value".to_owned(),
+            "tupleElement(simpleLinearRegression(toFloat64(toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9))) / 1e9, Value), 1) AS value",
+        ),
+    };
+    format!(
+        "SELECT t, series, any(labels) AS labels, {outer}
+FROM (
+	SELECT {BUCKET} AS t, {SERIES} AS series, {LABELS} AS all_labels, {labels} AS labels, TimeUnix, {inner}
+	FROM {source}
+)
+WHERE t >= {{from:UInt32}}
+GROUP BY t, series"
+    )
+}
+
+/// Reset-aware counter growth per step. Each series is first reduced to one
+/// row per step (first, last and peak sample), so the window that joins a
+/// step to the one before it runs over steps, not raw samples. Within a step,
+/// `last < peak` means the counter reset, and the growth is the rise to the
+/// peak plus everything after the reset; a second reset in one step, or a
+/// counter that passes its old peak again in the step it reset, is
+/// undercounted. Between steps the growth follows Prometheus: a decrease is a
+/// reset that counts the new value, and a gap past the lookback adds nothing.
+fn growth_rows(source: &str, column: GrowthColumn, per_second: bool, labels: &str) -> String {
+    let column = format!("toFloat64({})", column.name());
+    let per_second = match per_second {
+        true => " / {step:UInt32}",
+        false => "",
+    };
+    format!(
+        "SELECT t, series, labels, (if(dateDiff('second', before_at, first_at) > {LOOKBACK_SECONDS}, 0, if(first >= before, first - before, first)) + if(last >= peak, last - first, peak - first + last)){per_second} AS value
+FROM (
+	SELECT t, series, labels, first, last, peak, first_at, lagInFrame(last, 1, first) {STEP_BEFORE} AS before, lagInFrame(last_at, 1, first_at) {STEP_BEFORE} AS before_at
+	FROM (
+		SELECT {BUCKET} AS t, {SERIES} AS series, {STEP_LABELS} AS all_labels, {labels} AS labels, argMin({column}, TimeUnix) AS first, argMax({column}, TimeUnix) AS last, max({column}) AS peak, min(TimeUnix) AS first_at, max(TimeUnix) AS last_at
+		FROM {source}
+		GROUP BY t, series
+	)
+)
+WHERE t >= {{from:UInt32}}",
+        source = indent(source, 2),
+    )
+}
+
+/// `growth_rows` for every histogram bucket. A series' steps are split by
+/// bounds, so a series whose buckets change starts over.
+fn bucket_rows(source: &str, labels: &str) -> String {
+    format!(
+        "SELECT t, series, labels, arrayMap((between, within) -> between + within, if(dateDiff('second', before_at, first_at) > {LOOKBACK_SECONDS}, arrayMap(now -> toUInt64(0), first), if(arrayAll((now, was) -> now >= was, first, before), arrayMap((now, was) -> toUInt64(now - was), first, before), first)), arrayMap((start, top, end) -> toUInt64(if(end >= top, end - start, top - start + end)), first, peak, last)) AS counts, bounds
+FROM (
+	SELECT t, series, labels, bounds, first, last, peak, first_at, lagInFrame(last, 1, first) {BOUNDED_STEP_BEFORE} AS before, lagInFrame(last_at, 1, first_at) {BOUNDED_STEP_BEFORE} AS before_at
+	FROM (
+		SELECT {BUCKET} AS t, {SERIES} AS series, ExplicitBounds AS bounds, {STEP_LABELS} AS all_labels, {labels} AS labels, argMin(BucketCounts, TimeUnix) AS first, argMax(BucketCounts, TimeUnix) AS last, maxForEach(BucketCounts) AS peak, min(TimeUnix) AS first_at, max(TimeUnix) AS last_at
+		FROM {source}
+		GROUP BY t, series, bounds
+	)
+)
+WHERE t >= {{from:UInt32}}",
+        source = indent(source, 2),
+    )
+}
+
+fn indent(sql: &str, tabs: usize) -> String {
+    sql.replace('\n', &format!("\n{}", "\t".repeat(tabs)))
 }
 
 /// A series' labels reduced to the grouping labels, matching how the plan

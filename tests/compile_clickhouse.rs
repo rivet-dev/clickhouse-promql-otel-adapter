@@ -498,3 +498,70 @@ async fn aggregations_over_a_selector_run_in_the_leaf() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn growth_counts_a_reset_inside_a_step() {
+    common::empty_database_test(false, |store| async move {
+        add_project_column(&store).await;
+        let samples = [
+            (FROM - 60, 90),
+            (FROM, 100),
+            (FROM + 15, 110),
+            (FROM + 30, 3),
+            (FROM + 45, 8),
+            (FROM + 70, 20),
+            (FROM + 100, 25),
+        ];
+        let counters = samples
+            .iter()
+            .map(|(seconds, value)| counter_row("a", "p1", *seconds, f64::from(*value)))
+            .collect::<Vec<_>>();
+        insert(
+            &store,
+            "otel_metrics_sum",
+            "ProjectId, ResourceAttributes, MetricName, Attributes, TimeUnix, Value, IsMonotonic, AggregationTemporality",
+            &counters,
+        )
+        .await;
+        let histograms = samples
+            .iter()
+            .map(|(seconds, value)| {
+                format!("('a', map('service.instance.id', 'p1'), 'h', map('pod', 'p1'), toDateTime({seconds}), {value}, 0, [{value}, 1], [0.1])")
+            })
+            .collect::<Vec<_>>();
+        insert(
+            &store,
+            "otel_metrics_histogram",
+            "ProjectId, ResourceAttributes, MetricName, Attributes, TimeUnix, Count, Sum, BucketCounts, ExplicitBounds",
+            &histograms,
+        )
+        .await;
+
+        // Step FROM: 90 -> 100 across the boundary, then 100 -> 110, a reset
+        // to 3 that counts 3, and 3 -> 8. Step FROM + 60: 8 -> 20 -> 25.
+        let expected = vec![(u64::from(FROM), 28.0), (u64::from(FROM + 60), 17.0)];
+        for expr in ["increase(a_total[1m])", "sum(increase(a_total[1m]))", "increase(h_count[1m])"] {
+            let rows = run(&store, &plan(expr).leaves[0].sql, "a").await.unwrap();
+            let values = rows
+                .iter()
+                .map(|r| (r["t"].as_u64().unwrap(), r["value"].as_f64().unwrap()))
+                .collect::<Vec<_>>();
+            assert_eq!(values, expected, "{expr}");
+        }
+
+        let buckets = plan("histogram_quantile(0.5, rate(h_bucket[1m]))");
+        let rows = run(&store, &buckets.leaves[0].sql, "a").await.unwrap();
+        let counts = rows
+            .iter()
+            .map(|r| (r["t"].as_u64().unwrap(), r["counts"].clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            counts,
+            vec![
+                (u64::from(FROM), serde_json::json!([28, 0])),
+                (u64::from(FROM + 60), serde_json::json!([17, 0])),
+            ]
+        );
+    })
+    .await;
+}
