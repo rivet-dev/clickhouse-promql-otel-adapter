@@ -2,8 +2,11 @@
 //! a small operator tree.
 //!
 //! Each selector becomes one leaf: a complete `SELECT` that buckets one
-//! cluster's samples by the request step. The operators above the selectors
-//! stay in the plan's tree, for the caller to evaluate over the leaf results.
+//! cluster's samples by the request step. An aggregation directly over a
+//! selector (`sum`, `min`, `max`, `avg` or `count`, by a label list or over
+//! everything) runs in its leaf, so the leaf returns one series per group.
+//! The other operators stay in the plan's tree, for the caller to evaluate
+//! over the leaf results.
 //! Exact Prometheus semantics are not a goal: ranges are ignored, and
 //! `rate`/`increase` are reset-aware growth per step bucket rather than
 //! extrapolated sliding windows.
@@ -22,7 +25,7 @@ use promql_parser::parser::{
 };
 use serde::{Deserialize, Serialize};
 
-use sql::{GrowthColumn, Reading, Table};
+use sql::{Grouping, GrowthColumn, Reading, Table};
 pub use sql::{MAX_SERIES_PER_LEAF, SERIES_LIMIT_ERROR, quote};
 
 /// The label whose matchers are removed: the cluster comes only from the
@@ -340,7 +343,7 @@ impl Compiler {
                     Kind::Value,
                 ))
             }
-            Expr::VectorSelector(v) => self.selector(v, Table::Gauge, Reading::Last),
+            Expr::VectorSelector(v) => self.selector(v, Table::Gauge, Reading::Last, None),
             Expr::Aggregate(a) => self.aggregate(a),
             Expr::Binary(b) => self.binary(b),
             Expr::Call(c) => self.call(c),
@@ -373,6 +376,9 @@ impl Compiler {
             Some(LabelModifier::Include(labels)) => (Some(labels.labels.clone()), None),
             Some(LabelModifier::Exclude(labels)) => (None, Some(labels.labels.clone())),
         };
+        if let Some(grouped) = self.grouped_leaf(&op, by.as_deref(), without.as_deref(), &a.expr) {
+            return grouped;
+        }
         let (arg, kind) = self.node(&a.expr)?;
         if kind == Kind::Buckets {
             // Summing buckets keeps them buckets as long as `le` stays a
@@ -440,6 +446,61 @@ impl Compiler {
         Ok((node, Kind::Value))
     }
 
+    /// Folds an aggregation directly over a selector into that selector's
+    /// leaf, so ClickHouse returns one series per group. `None` when the
+    /// aggregation stays in the tree.
+    fn grouped_leaf(
+        &mut self,
+        op: &str,
+        by: Option<&[String]>,
+        without: Option<&[String]>,
+        expr: &Expr,
+    ) -> Option<Result<(Node, Kind), CompileError>> {
+        if without.is_some() {
+            return None;
+        }
+        let function = match op {
+            "sum" => AggregateFunction::Sum,
+            "min" => AggregateFunction::Min,
+            "max" => AggregateFunction::Max,
+            "avg" => AggregateFunction::Avg,
+            "count" => AggregateFunction::Count,
+            _ => return None,
+        };
+        let by = by.unwrap_or_default();
+        match expr {
+            Expr::Paren(p) => self.grouped_leaf(op, Some(by), None, &p.expr),
+            Expr::VectorSelector(v) => {
+                let grouping = Grouping {
+                    function,
+                    by: by.to_vec(),
+                };
+                Some(self.selector(v, Table::Gauge, Reading::Last, Some(grouping)))
+            }
+            Expr::Call(c) if is_range_function(c.func.name) => {
+                let matrix = match matrix_argument(c.func.name, &c.args.args) {
+                    Ok(matrix) => matrix,
+                    Err(error) => return Some(Err(error)),
+                };
+                let reads_buckets =
+                    is_counter_function(c.func.name) && counter_source(matrix).1.is_none();
+                let by = if reads_buckets {
+                    // Summing buckets keeps them buckets only while `le` stays
+                    // a grouping label; anything else is refused by the tree path.
+                    if function != AggregateFunction::Sum || !by.iter().any(|l| l == "le") {
+                        return None;
+                    }
+                    by.iter().filter(|l| *l != "le").cloned().collect()
+                } else {
+                    by.to_vec()
+                };
+                let grouping = Grouping { function, by };
+                Some(self.range_call(c.func.name, matrix, Some(grouping)))
+            }
+            _ => None,
+        }
+    }
+
     fn binary(&mut self, b: &BinaryExpr) -> Result<(Node, Kind), CompileError> {
         let operator = b.op.to_string();
         let (lhs, _) = self.value(&b.lhs)?;
@@ -493,26 +554,9 @@ impl Compiler {
         let name = c.func.name;
         let args = &c.args.args;
         match name {
-            "rate" | "irate" | "increase" => {
+            name if is_range_function(name) => {
                 let matrix = matrix_argument(name, args)?;
-                let per_second = name != "increase";
-                let (table, column) = counter_source(matrix);
-                let reading = match column {
-                    None => Reading::Buckets,
-                    Some(column) => Reading::Growth { column, per_second },
-                };
-                self.selector(&matrix.vs, table, reading)
-            }
-            "max_over_time" | "min_over_time" | "avg_over_time" | "changes" | "deriv" => {
-                let matrix = matrix_argument(name, args)?;
-                let reading = match name {
-                    "max_over_time" => Reading::Max,
-                    "min_over_time" => Reading::Min,
-                    "avg_over_time" => Reading::Avg,
-                    "changes" => Reading::Changes,
-                    _ => Reading::Deriv,
-                };
-                self.selector(&matrix.vs, Table::Gauge, reading)
+                self.range_call(name, matrix, None)
             }
             "histogram_quantile" => {
                 let q = literal_parameter(name, args.first().map(|a| a.as_ref()))?;
@@ -561,11 +605,38 @@ impl Compiler {
         }
     }
 
+    /// Compiles a range function over a selector into one leaf.
+    fn range_call(
+        &mut self,
+        name: &str,
+        matrix: &MatrixSelector,
+        grouping: Option<Grouping>,
+    ) -> Result<(Node, Kind), CompileError> {
+        if is_counter_function(name) {
+            let per_second = name != "increase";
+            let (table, column) = counter_source(matrix);
+            let reading = match column {
+                None => Reading::Buckets,
+                Some(column) => Reading::Growth { column, per_second },
+            };
+            return self.selector(&matrix.vs, table, reading, grouping);
+        }
+        let reading = match name {
+            "max_over_time" => Reading::Max,
+            "min_over_time" => Reading::Min,
+            "avg_over_time" => Reading::Avg,
+            "changes" => Reading::Changes,
+            _ => Reading::Deriv,
+        };
+        self.selector(&matrix.vs, Table::Gauge, reading, grouping)
+    }
+
     fn selector(
         &mut self,
         selector: &VectorSelector,
         table: Table,
         reading: Reading,
+        grouping: Option<Grouping>,
     ) -> Result<(Node, Kind), CompileError> {
         if selector.at.is_some() {
             return Err(CompileError::unsupported("@ modifier"));
@@ -598,7 +669,7 @@ impl Compiler {
             _ => (Shape::Value, Kind::Value),
         };
         let leaf = Leaf {
-            sql: sql::leaf(&sources, &matchers, reading),
+            sql: sql::leaf(&sources, &matchers, reading, grouping.as_ref()),
             shape,
             offset_seconds,
         };
@@ -611,6 +682,19 @@ impl Compiler {
         };
         Ok((Node::Leaf { index }, kind))
     }
+}
+
+fn is_counter_function(name: &str) -> bool {
+    matches!(name, "rate" | "irate" | "increase")
+}
+
+/// Functions over a range selector that compile into the selector's leaf.
+fn is_range_function(name: &str) -> bool {
+    is_counter_function(name)
+        || matches!(
+            name,
+            "max_over_time" | "min_over_time" | "avg_over_time" | "changes" | "deriv"
+        )
 }
 
 fn matrix_argument<'a>(

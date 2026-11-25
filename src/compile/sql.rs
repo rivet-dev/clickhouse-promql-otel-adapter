@@ -7,6 +7,8 @@
 //! `{query_from:UInt32}` and `{step:UInt32}`.
 use promql_parser::label::{MatchOp, Matcher};
 
+use super::AggregateFunction;
+
 /// The most series one leaf may return before the statement fails.
 pub const MAX_SERIES_PER_LEAF: u32 = 1_000;
 
@@ -84,10 +86,23 @@ impl GrowthColumn {
     }
 }
 
+/// An aggregation folded into a leaf, so the leaf returns one series per group
+/// instead of every selected series.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grouping {
+    pub function: AggregateFunction,
+    pub by: Vec<String>,
+}
+
 /// Builds one leaf's statement. `sources` are the tables that may hold the
 /// series, each with the stored `MetricName`s it may hold them under; several
 /// sources are read as one, which only `Value` readings support.
-pub fn leaf(sources: &[(Table, Vec<String>)], matchers: &[Matcher], reading: Reading) -> String {
+pub fn leaf(
+    sources: &[(Table, Vec<String>)],
+    matchers: &[Matcher],
+    reading: Reading,
+    grouping: Option<&Grouping>,
+) -> String {
     let (inner, outer) = match reading {
         Reading::Last => ("Value".to_owned(), "argMax(Value, TimeUnix) AS value".to_owned()),
         Reading::Max => ("Value".to_owned(), "max(Value) AS value".to_owned()),
@@ -138,8 +153,9 @@ pub fn leaf(sources: &[(Table, Vec<String>)], matchers: &[Matcher], reading: Rea
             format!("(\n\t\t{branches}\n\t)")
         }
     };
-    format!(
-        "SELECT t, any(labels) AS labels, {outer}, throwIf(uniqExact(series) OVER () > {MAX_SERIES_PER_LEAF}, '{SERIES_LIMIT_ERROR}') AS series_limit
+    let Some(grouping) = grouping else {
+        return format!(
+            "SELECT t, any(labels) AS labels, {outer}, throwIf(uniqExact(series) OVER () > {MAX_SERIES_PER_LEAF}, '{SERIES_LIMIT_ERROR}') AS series_limit
 FROM (
 	SELECT {BUCKET} AS t, {SERIES} AS series, {LABELS} AS labels, TimeUnix, {inner}
 	FROM {source}
@@ -147,7 +163,67 @@ FROM (
 WHERE t >= {{from:UInt32}}
 GROUP BY t, series
 ORDER BY series, t"
-    )
+        );
+    };
+    let per_series = format!(
+        "SELECT t, any(labels) AS labels, {outer}
+	FROM (
+		SELECT {BUCKET} AS t, {SERIES} AS series, {LABELS} AS all_labels, {} AS labels, TimeUnix, {inner}
+		FROM {}
+	)
+	WHERE t >= {{from:UInt32}}
+	GROUP BY t, series",
+        group_labels(&grouping.by),
+        source.replace('\n', "\n\t\t"),
+    );
+    let limit = format!(
+        "throwIf(uniqExact(labels) OVER () > {MAX_SERIES_PER_LEAF}, '{SERIES_LIMIT_ERROR}') AS series_limit"
+    );
+    match reading {
+        // Series whose bounds differ cannot be summed; the bounds most series
+        // in the group share win.
+        Reading::Buckets => format!(
+            "SELECT t, labels, argMax(counts, members) AS counts, argMax(bounds, members) AS bounds, {limit}
+FROM (
+	SELECT t, labels, bounds, sumForEach(counts) AS counts, count() AS members
+	FROM (
+	{per_series}
+	)
+	GROUP BY t, labels, bounds
+)
+GROUP BY t, labels
+ORDER BY labels, t",
+            per_series = per_series.replace('\n', "\n\t"),
+        ),
+        _ => {
+            let value = match grouping.function {
+                AggregateFunction::Sum => "sum(value)",
+                AggregateFunction::Min => "min(value)",
+                AggregateFunction::Max => "max(value)",
+                AggregateFunction::Avg => "avg(value)",
+                AggregateFunction::Count => "toFloat64(count())",
+            };
+            format!(
+                "SELECT t, labels, {value} AS value, {limit}
+FROM (
+	{per_series}
+)
+GROUP BY t, labels
+ORDER BY labels, t"
+            )
+        }
+    }
+}
+
+/// A series' labels reduced to the grouping labels, matching how the plan
+/// evaluator picks them: absent and empty values are left out.
+fn group_labels(by: &[String]) -> String {
+    let pairs = by
+        .iter()
+        .map(|name| format!("{}, all_labels[{}]", quote(name), quote(name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("mapFilter((k, v) -> v != '', CAST(map({pairs}), 'Map(String, String)'))")
 }
 
 /// The only builder of a leaf's `WHERE`. The cluster predicate comes first

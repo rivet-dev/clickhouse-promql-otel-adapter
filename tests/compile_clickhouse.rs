@@ -176,7 +176,11 @@ async fn compiled_leaves_read_one_project() {
         assert!(!rows.is_empty());
 
         // A counter read without a counter function reads its samples.
-        let raw = plan("count(a_total)");
+        let counted = plan("count(a_total)");
+        let rows = run(&store, &counted.leaves[0].sql, "a").await.unwrap();
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().all(|r| r["value"] == 1.0), "{rows:?}");
+        let raw = plan("a_total");
         let rows = run(&store, &raw.leaves[0].sql, "a").await.unwrap();
         let values = rows
             .iter()
@@ -336,6 +340,161 @@ async fn leaves_fail_past_the_series_limit() {
             .unwrap_err()
             .to_string();
         assert!(error.contains(SERIES_LIMIT_ERROR), "{error}");
+    })
+    .await;
+}
+
+fn values_by(rows: &[Json], label: &str) -> Vec<(String, u64, f64)> {
+    rows.iter()
+        .map(|r| {
+            (
+                r["labels"][label].as_str().unwrap_or_default().to_owned(),
+                r["t"].as_u64().unwrap(),
+                r["value"].as_f64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn grouped_histograms_count_groups_toward_the_series_limit() {
+    common::empty_database_test(false, |store| async move {
+        add_project_column(&store).await;
+        let base = FROM - 60;
+        let phases = ["load", "init", "ready"];
+        let mut rows = Vec::new();
+        for i in 0..=MAX_SERIES_PER_LEAF {
+            let phase = phases[i as usize % 3];
+            let series = format!("map('pod', 'p{i}', 'phase', '{phase}')");
+            rows.push(format!("('a', map('service.instance.id', 'p{i}'), 'h', {series}, toDateTime({base}), 2, 1, [1, 1, 0], [0.1, 1])"));
+            rows.push(format!("('a', map('service.instance.id', 'p{i}'), 'h', {series}, toDateTime({}), 6, 3, [2, 3, 1], [0.1, 1])", base + 60));
+        }
+        // A series with other bounds cannot be summed into the group.
+        rows.push(format!("('a', map('service.instance.id', 'odd'), 'h', map('pod', 'odd', 'phase', 'load'), toDateTime({base}), 0, 0, [0, 0], [5])"));
+        rows.push(format!("('a', map('service.instance.id', 'odd'), 'h', map('pod', 'odd', 'phase', 'load'), toDateTime({}), 9, 9, [9, 0], [5])", base + 60));
+        insert(
+            &store,
+            "otel_metrics_histogram",
+            "ProjectId, ResourceAttributes, MetricName, Attributes, TimeUnix, Count, Sum, BucketCounts, ExplicitBounds",
+            &rows,
+        )
+        .await;
+
+        let raw = plan("histogram_quantile(0.5, rate(h_bucket[1m]))");
+        let error = run(&store, &raw.leaves[0].sql, "a")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(SERIES_LIMIT_ERROR), "{error}");
+
+        let grouped = plan("histogram_quantile(0.5, sum by (le, phase) (rate(h_bucket[1m])))");
+        assert_eq!(grouped.leaves.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&grouped.tree).unwrap(),
+            serde_json::json!({ "op": "histogram_quantile", "q": 0.5, "arg": { "op": "leaf", "index": 0 } })
+        );
+        let rows = run(&store, &grouped.leaves[0].sql, "a").await.unwrap();
+        let groups = rows
+            .iter()
+            .map(|r| {
+                (
+                    r["labels"].clone(),
+                    r["t"].as_u64().unwrap(),
+                    r["counts"].clone(),
+                    r["bounds"].clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let expected = |phase: &str, pods: u64| {
+            (
+                serde_json::json!({ "phase": phase }),
+                u64::from(FROM),
+                serde_json::json!([pods, 2 * pods, pods]),
+                serde_json::json!([0.1, 1]),
+            )
+        };
+        let mut groups = groups;
+        groups.sort_by_key(|g| g.0.to_string());
+        assert_eq!(
+            groups,
+            vec![expected("init", 334), expected("load", 334), expected("ready", 333)]
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn aggregations_over_a_selector_run_in_the_leaf() {
+    common::empty_database_test(false, |store| async move {
+        add_project_column(&store).await;
+        let base = FROM - 60;
+        let gauge = |pod: &str, role: &str, value: f64| {
+            format!(
+                "('a', map('service.name', 'engine', 'service.instance.id', '{pod}'), 'g', map('pod', '{pod}', 'role', '{role}'), toDateTime({}), {value})",
+                FROM + 10
+            )
+        };
+        insert(
+            &store,
+            "otel_metrics_gauge",
+            "ProjectId, ResourceAttributes, MetricName, Attributes, TimeUnix, Value",
+            &[
+                gauge("p1", "engine", 5.0),
+                gauge("p2", "engine", 7.0),
+                gauge("p3", "runner", 1.0),
+                gauge("p4", "", 4.0),
+            ],
+        )
+        .await;
+        let mut counters = Vec::new();
+        for (pod, per_minute) in [("p1", 60.0), ("p2", 120.0), ("p3", 30.0)] {
+            for offset in [0, 60] {
+                counters.push(format!(
+                    "('a', map('service.name', 'engine', 'service.instance.id', '{pod}'), 'a_total', map('pod', '{pod}', 'role', '{}'), toDateTime({}), {}, true, 2)",
+                    if pod == "p3" { "runner" } else { "engine" },
+                    base + offset,
+                    per_minute * f64::from(offset / 60),
+                ));
+            }
+        }
+        insert(
+            &store,
+            "otel_metrics_sum",
+            "ProjectId, ResourceAttributes, MetricName, Attributes, TimeUnix, Value, IsMonotonic, AggregationTemporality",
+            &counters,
+        )
+        .await;
+
+        let t = u64::from(FROM);
+        for (expr, label, expected) in [
+            ("count by (role) (g)", "role", vec![("", t, 1.0), ("engine", t, 2.0), ("runner", t, 1.0)]),
+            ("avg by (role) (g)", "role", vec![("", t, 4.0), ("engine", t, 6.0), ("runner", t, 1.0)]),
+            ("min by (role) (g)", "role", vec![("", t, 4.0), ("engine", t, 5.0), ("runner", t, 1.0)]),
+            ("sum(g)", "role", vec![("", t, 17.0)]),
+            ("max by (job) ((g))", "job", vec![("engine", t, 7.0)]),
+            ("sum by (role) (rate(a_total[1m]))", "role", vec![("engine", t, 3.0), ("runner", t, 0.5)]),
+            ("count(rate(a_total[1m]))", "role", vec![("", t, 3.0)]),
+        ] {
+            let compiled = plan(expr);
+            assert_eq!(compiled.leaves.len(), 1, "{expr}");
+            assert_eq!(
+                serde_json::to_value(&compiled.tree).unwrap(),
+                serde_json::json!({ "op": "leaf", "index": 0 }),
+                "{expr}"
+            );
+            let rows = run(&store, &compiled.leaves[0].sql, "a").await.unwrap();
+            let mut values = values_by(&rows, label);
+            values.sort_by(|a, b| a.0.cmp(&b.0));
+            let expected = expected
+                .into_iter()
+                .map(|(l, t, v)| (l.to_owned(), t, v))
+                .collect::<Vec<_>>();
+            assert_eq!(values, expected, "{expr}");
+            for row in &rows {
+                let names = row["labels"].as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+                assert!(names.iter().all(|n| n == label), "{expr}: {row}");
+            }
+        }
     })
     .await;
 }
