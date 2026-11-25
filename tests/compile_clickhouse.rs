@@ -145,6 +145,8 @@ async fn compiled_leaves_read_one_project() {
             "g",
             r#"g{role=~"engine|runtime"}"#,
             "max_over_time(g[1m])",
+            "a_total",
+            "max_over_time(a_total[1m])",
             "changes(g[1m])",
             "deriv(g[1m])",
         ] {
@@ -172,6 +174,23 @@ async fn compiled_leaves_read_one_project() {
         let rows = run(&store, &regex.leaves[0].sql, "a").await.unwrap();
         assert!(rows.iter().all(|r| r["labels"]["role"] == "engine"));
         assert!(!rows.is_empty());
+
+        // A counter read without a counter function reads its samples.
+        let raw = plan("count(a_total)");
+        let rows = run(&store, &raw.leaves[0].sql, "a").await.unwrap();
+        let values = rows
+            .iter()
+            .map(|r| (r["t"].as_u64().unwrap(), r["value"].as_f64().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            values,
+            vec![
+                (u64::from(FROM), 60.0),
+                (u64::from(FROM + 60), 120.0),
+                (u64::from(FROM + 120), 30.0),
+                (u64::from(FROM + 180), 90.0),
+            ]
+        );
     })
     .await;
 }

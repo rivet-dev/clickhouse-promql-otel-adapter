@@ -585,13 +585,20 @@ impl Compiler {
         if table == Table::Histogram && matchers.iter().any(|m| m.name == "le") {
             return Err(CompileError::unsupported("le matcher on a histogram"));
         }
-        let names = stored_names(&name, table);
+        // A selector read without a counter function may name a gauge or a counter.
+        let sources = match table {
+            Table::Gauge => vec![
+                (Table::Gauge, stored_names(&name, Table::Gauge)),
+                (Table::Sum, stored_names(&name, Table::Sum)),
+            ],
+            Table::Sum | Table::Histogram => vec![(table, stored_names(&name, table))],
+        };
         let (shape, kind) = match reading {
             Reading::Buckets => (Shape::Buckets, Kind::Buckets),
             _ => (Shape::Value, Kind::Value),
         };
         let leaf = Leaf {
-            sql: sql::leaf(table, &names, &matchers, reading),
+            sql: sql::leaf(&sources, &matchers, reading),
             shape,
             offset_seconds,
         };

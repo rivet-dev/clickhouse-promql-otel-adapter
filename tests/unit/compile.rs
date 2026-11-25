@@ -24,25 +24,23 @@ fn error(expr: &str) -> CompileError {
     compile(expr, &BTreeMap::new()).expect_err(expr)
 }
 
-/// The text between a statement's innermost `WHERE` and the closing
-/// parenthesis of its subquery.
-fn innermost_where(sql: &str) -> &str {
-    let start = sql.find("\tWHERE ").expect("leaf has an inner WHERE") + "\tWHERE ".len();
-    let end = sql[start..].find("\n)").expect("leaf subquery closes") + start;
-    &sql[start..end]
-}
-
 #[test]
 fn every_leaf_is_scoped_to_one_project() {
     let variable = regex::Regex::new(r"\$\{?[A-Za-z_]").unwrap();
+    let scoped_read =
+        regex::Regex::new(r"FROM otel_metrics_\w+\n\t*WHERE ProjectId = \{project:String\}\n")
+            .unwrap();
     for expr in CORPUS {
         for leaf in compiled(expr).leaves {
-            let filter = innermost_where(&leaf.sql);
-            assert!(
-                filter.starts_with("ProjectId = {project:String}\n"),
-                "{expr}: {filter}"
+            let reads = leaf.sql.matches("FROM otel_metrics_").count();
+            assert!(reads >= 1, "{expr}");
+            assert_eq!(
+                scoped_read.find_iter(&leaf.sql).count(),
+                reads,
+                "{expr}: {}",
+                leaf.sql
             );
-            assert_eq!(leaf.sql.matches("ProjectId").count(), 1, "{expr}");
+            assert_eq!(leaf.sql.matches("ProjectId").count(), reads, "{expr}");
             assert!(!leaf.sql.contains("rivet_project"), "{expr}");
             assert!(!variable.is_match(&leaf.sql), "{expr}");
         }

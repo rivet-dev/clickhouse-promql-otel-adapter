@@ -84,9 +84,10 @@ impl GrowthColumn {
     }
 }
 
-/// Builds one leaf's statement. `names` are the stored `MetricName`s that
-/// may hold the series.
-pub fn leaf(table: Table, names: &[String], matchers: &[Matcher], reading: Reading) -> String {
+/// Builds one leaf's statement. `sources` are the tables that may hold the
+/// series, each with the stored `MetricName`s it may hold them under; several
+/// sources are read as one, which only `Value` readings support.
+pub fn leaf(sources: &[(Table, Vec<String>)], matchers: &[Matcher], reading: Reading) -> String {
     let (inner, outer) = match reading {
         Reading::Last => ("Value".to_owned(), "argMax(Value, TimeUnix) AS value".to_owned()),
         Reading::Max => ("Value".to_owned(), "max(Value) AS value".to_owned()),
@@ -120,14 +121,28 @@ pub fn leaf(table: Table, names: &[String], matchers: &[Matcher], reading: Readi
             "sumForEach(growth) AS counts, any(ExplicitBounds) AS bounds".to_owned(),
         ),
     };
-    let table_name = table.name();
-    let filter = scope(names, matchers);
+    let source = match sources {
+        [(table, names)] => format!("{}\n\tWHERE {}", table.name(), scope(names, matchers)),
+        sources => {
+            let branches = sources
+                .iter()
+                .map(|(table, names)| {
+                    format!(
+                        "SELECT ResourceAttributes, Attributes, TimeUnix, Value\n\t\tFROM {}\n\t\tWHERE {}",
+                        table.name(),
+                        scope(names, matchers).replace("\n\t\t", "\n\t\t\t")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n\t\tUNION ALL\n\t\t");
+            format!("(\n\t\t{branches}\n\t)")
+        }
+    };
     format!(
         "SELECT t, any(labels) AS labels, {outer}, throwIf(uniqExact(series) OVER () > {MAX_SERIES_PER_LEAF}, '{SERIES_LIMIT_ERROR}') AS series_limit
 FROM (
 	SELECT {BUCKET} AS t, {SERIES} AS series, {LABELS} AS labels, TimeUnix, {inner}
-	FROM {table_name}
-	WHERE {filter}
+	FROM {source}
 )
 WHERE t >= {{from:UInt32}}
 GROUP BY t, series
