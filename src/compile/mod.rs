@@ -13,7 +13,8 @@
 //!
 //! Metric and label names match as the Prometheus receiver stores them: a
 //! counter under its scraped name, with or without `_total`, and a classic
-//! histogram under its base name.
+//! histogram under its base name. A `_count` or `_sum` name may be either, so
+//! counter functions over one read both.
 mod sql;
 
 use std::collections::BTreeMap;
@@ -25,7 +26,7 @@ use promql_parser::parser::{
 };
 use serde::{Deserialize, Serialize};
 
-use sql::{Grouping, GrowthColumn, Reading, Table};
+use sql::{Column, Grouping, Reading, Source, Table};
 pub use sql::{MAX_SERIES_PER_LEAF, SERIES_LIMIT_ERROR, quote};
 
 /// The label whose matchers are removed: the cluster comes only from the
@@ -104,7 +105,9 @@ pub struct Plan {
 pub struct Leaf {
     /// A complete `SELECT`. Its placeholders are `{project:String}`,
     /// `{from:UInt32}`, `{to:UInt32}`, `{query_from:UInt32}` and
-    /// `{step:UInt32}`.
+    /// `{step:UInt32}`. Rows are labelled by step end on the grid from
+    /// `{from}` through `{to}`, both inclusive. `{query_from}` must be at most
+    /// `{from} - {step} - 300` so the first step sees the sample before it.
     pub sql: String,
     pub shape: Shape,
     /// The selector's `offset`, which the caller subtracts from the window.
@@ -458,7 +461,7 @@ impl Compiler {
                     Kind::Value,
                 ))
             }
-            Expr::VectorSelector(v) => self.selector(v, Table::Gauge, Reading::Last, None),
+            Expr::VectorSelector(v) => self.selector(v, Read::Value(Reading::Last), None),
             Expr::Aggregate(a) => self.aggregate(a),
             Expr::Binary(b) => self.binary(b),
             Expr::Call(c) => self.call(c),
@@ -590,15 +593,15 @@ impl Compiler {
                     function,
                     by: by.to_vec(),
                 };
-                Some(self.selector(v, Table::Gauge, Reading::Last, Some(grouping)))
+                Some(self.selector(v, Read::Value(Reading::Last), Some(grouping)))
             }
             Expr::Call(c) if is_range_function(c.func.name) => {
                 let matrix = match matrix_argument(c.func.name, &c.args.args) {
                     Ok(matrix) => matrix,
                     Err(error) => return Some(Err(error)),
                 };
-                let reads_buckets =
-                    is_counter_function(c.func.name) && counter_source(matrix).1.is_none();
+                let reads_buckets = is_counter_function(c.func.name)
+                    && metric_name(&matrix.vs).is_some_and(|name| name.ends_with("_bucket"));
                 let by = if reads_buckets {
                     // Summing buckets keeps them buckets only while `le` stays
                     // a grouping label; anything else is refused by the tree path.
@@ -729,12 +732,7 @@ impl Compiler {
     ) -> Result<(Node, Kind), CompileError> {
         if is_counter_function(name) {
             let per_second = name != "increase";
-            let (table, column) = counter_source(matrix);
-            let reading = match column {
-                None => Reading::Buckets,
-                Some(column) => Reading::Growth { column, per_second },
-            };
-            return self.selector(&matrix.vs, table, reading, grouping);
+            return self.selector(&matrix.vs, Read::Counter { per_second }, grouping);
         }
         let reading = match name {
             "max_over_time" => Reading::Max,
@@ -743,14 +741,13 @@ impl Compiler {
             "changes" => Reading::Changes,
             _ => Reading::Deriv,
         };
-        self.selector(&matrix.vs, Table::Gauge, reading, grouping)
+        self.selector(&matrix.vs, Read::Value(reading), grouping)
     }
 
     fn selector(
         &mut self,
         selector: &VectorSelector,
-        table: Table,
-        reading: Reading,
+        read: Read,
         grouping: Option<Grouping>,
     ) -> Result<(Node, Kind), CompileError> {
         if selector.at.is_some() {
@@ -768,23 +765,27 @@ impl Compiler {
             Some(Offset::Neg(d)) => -(d.as_secs() as i64),
         };
         let (name, matchers) = selection(selector)?;
-        if table == Table::Histogram && matchers.iter().any(|m| m.name == "le") {
+        let (sources, reading) = match read {
+            // A selector read without a counter function may name a gauge or a counter.
+            Read::Value(reading) => (
+                vec![
+                    source(Table::Gauge, &name, Column::Value),
+                    source(Table::Sum, &name, Column::Value),
+                ],
+                reading,
+            ),
+            Read::Counter { per_second } => counter_sources(&name, per_second),
+        };
+        let reads_histogram = sources.iter().any(|s| s.table == Table::Histogram);
+        if reads_histogram && matchers.iter().any(|m| m.name == "le") {
             return Err(CompileError::unsupported("le matcher on a histogram"));
         }
-        // A selector read without a counter function may name a gauge or a counter.
-        let sources = match table {
-            Table::Gauge => vec![
-                (Table::Gauge, stored_names(&name, Table::Gauge)),
-                (Table::Sum, stored_names(&name, Table::Sum)),
-            ],
-            Table::Sum | Table::Histogram => vec![(table, stored_names(&name, table))],
-        };
         let (shape, kind) = match reading {
             Reading::Buckets => (Shape::Buckets, Kind::Buckets),
             _ => (Shape::Value, Kind::Value),
         };
         let leaf = Leaf {
-            sql: sql::leaf(&sources, &matchers, reading, grouping.as_ref()),
+            sql: sql::leaf(&sources, &matchers, &name, reading, grouping.as_ref()),
             shape,
             offset_seconds,
         };
@@ -797,6 +798,15 @@ impl Compiler {
         };
         Ok((Node::Leaf { index }, kind))
     }
+}
+
+/// How a selector's samples are read.
+#[derive(Debug, Clone, Copy)]
+enum Read {
+    /// Gauge or counter samples, read as they are.
+    Value(Reading),
+    /// Counter growth, from the tables the metric name may be stored in.
+    Counter { per_second: bool },
 }
 
 fn is_counter_function(name: &str) -> bool {
@@ -836,19 +846,54 @@ fn literal_parameter(op: &str, param: Option<&Expr>) -> Result<f64, CompileError
     }
 }
 
-/// The table and growth column a counter selector reads: a classic
-/// histogram's `_bucket`, `_count` or `_sum` series, or a counter.
-fn counter_source(matrix: &MatrixSelector) -> (Table, Option<GrowthColumn>) {
-    let name = matrix.vs.name.as_deref().unwrap_or_default();
+/// The sources and reading of a counter function over `name`. A `_bucket`
+/// series is a classic histogram's buckets. A `_count` or `_sum` series is
+/// either a histogram's column or a plain counter with that suffix, so both
+/// tables are read.
+fn counter_sources(name: &str, per_second: bool) -> (Vec<Source>, Reading) {
+    let growth = Reading::Growth { per_second };
     if name.ends_with("_bucket") {
-        (Table::Histogram, None)
-    } else if name.ends_with("_count") {
-        (Table::Histogram, Some(GrowthColumn::Count))
-    } else if name.ends_with("_sum") {
-        (Table::Histogram, Some(GrowthColumn::Sum))
-    } else {
-        (Table::Sum, Some(GrowthColumn::Value))
+        return (
+            vec![source(Table::Histogram, name, Column::Value)],
+            Reading::Buckets,
+        );
     }
+    let histogram_column = if name.ends_with("_count") {
+        Some(Column::Count)
+    } else if name.ends_with("_sum") {
+        Some(Column::Sum)
+    } else {
+        None
+    };
+    let counter = source(Table::Sum, name, Column::Value);
+    match histogram_column {
+        Some(column) => (
+            vec![source(Table::Histogram, name, column), counter],
+            growth,
+        ),
+        None => (vec![counter], growth),
+    }
+}
+
+fn source(table: Table, name: &str, column: Column) -> Source {
+    Source {
+        table,
+        names: stored_names(name, table),
+        column,
+    }
+}
+
+/// The metric name a selector names, by its name or a `__name__` equality
+/// matcher.
+fn metric_name(selector: &VectorSelector) -> Option<String> {
+    let matched = selector
+        .matchers
+        .matchers
+        .iter()
+        .rev()
+        .find(|m| m.name == "__name__" && m.op == MatchOp::Equal)
+        .map(|m| m.value.clone());
+    matched.or_else(|| selector.name.clone())
 }
 
 /// The metric name and the label matchers a selector keeps: cluster and
