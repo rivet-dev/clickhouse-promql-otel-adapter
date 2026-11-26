@@ -142,3 +142,28 @@ fn unsupported_constructs_name_themselves() {
         assert_eq!(error(expr).construct, construct, "{expr}");
     }
 }
+
+#[test]
+fn regex_anchors_keep_their_matcher() {
+    for (expr, kept) in [
+        (r#"g{path=~"/api/.*$"}"#, "match(Attributes['path']"),
+        (r#"g{path!~"/api/.*$"}"#, "NOT match(Attributes['path']"),
+        (r#"g{path=~"^a$|^b$"}"#, "match(Attributes['path']"),
+    ] {
+        let sql = &compiled(expr).leaves[0].sql;
+        assert!(sql.contains(kept), "{expr}: {sql}");
+    }
+}
+
+#[test]
+fn variable_matchers_are_removed() {
+    for expr in [
+        r#"g{pod=~"$host"}"#,
+        r#"g{pod=~"${host}"}"#,
+        r#"g{pod=~"$host|$runtime"}"#,
+        r#"g{pod!~"/api/$path.*$"}"#,
+    ] {
+        let sql = &compiled(expr).leaves[0].sql;
+        assert!(!sql.contains("Attributes['pod']"), "{expr}: {sql}");
+    }
+}

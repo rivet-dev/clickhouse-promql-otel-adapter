@@ -565,3 +565,36 @@ async fn growth_counts_a_reset_inside_a_step() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn anchored_regex_matchers_filter_paths() {
+    common::empty_database_test(false, |store| async move {
+        add_project_column(&store).await;
+        let gauge = |path: &str| {
+            format!(
+                "('a', map('service.instance.id', 'p1'), 'g', map('path', '{path}'), toDateTime({}), 1, 0)",
+                FROM + 10
+            )
+        };
+        insert(
+            &store,
+            "otel_metrics_gauge",
+            "ProjectId, ResourceAttributes, MetricName, Attributes, TimeUnix, Value, Flags",
+            &[gauge("/api/users"), gauge("/web/home")],
+        )
+        .await;
+
+        for (expr, expected) in [
+            (r#"g{path=~"/api/.*$"}"#, "/api/users"),
+            (r#"g{path!~"/api/.*$"}"#, "/web/home"),
+        ] {
+            let rows = run(&store, &plan(expr).leaves[0].sql, "a").await.unwrap();
+            let paths = values_by(&rows, "path")
+                .into_iter()
+                .map(|(path, _, _)| path)
+                .collect::<Vec<_>>();
+            assert_eq!(paths, vec![expected.to_owned()], "{expr}");
+        }
+    })
+    .await;
+}

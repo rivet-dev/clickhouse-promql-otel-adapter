@@ -751,7 +751,7 @@ fn selection(selector: &VectorSelector) -> Result<(String, Vec<Matcher>), Compil
             }
             continue;
         }
-        if matcher.name == PROJECT_LABEL || matcher.value.contains('$') {
+        if matcher.name == PROJECT_LABEL || references_variable(&matcher.value) {
             continue;
         }
         kept.push(matcher.clone());
@@ -759,6 +759,14 @@ fn selection(selector: &VectorSelector) -> Result<(String, Vec<Matcher>), Compil
     let name =
         name.ok_or_else(|| CompileError::new("selector", "a selector must name its metric"))?;
     Ok((name, kept))
+}
+
+/// Whether a matcher value names a Grafana variable (`$name` or `${name}`).
+/// A `$` before anything else is a regex anchor and keeps the matcher.
+fn references_variable(value: &str) -> bool {
+    value.as_bytes().windows(2).any(|pair| {
+        pair[0] == b'$' && (pair[1] == b'{' || pair[1] == b'_' || pair[1].is_ascii_alphabetic())
+    })
 }
 
 /// The `MetricName`s the Prometheus receiver may have stored a series under.
