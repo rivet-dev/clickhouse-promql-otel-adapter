@@ -167,3 +167,57 @@ fn variable_matchers_are_removed() {
         assert!(!sql.contains("Attributes['pod']"), "{expr}: {sql}");
     }
 }
+
+#[test]
+fn duration_variables_stand_in_only_inside_ranges() {
+    for expr in [
+        "rate(a_total[$__rate_interval])",
+        "increase(a_total[${__range}])",
+        "max_over_time(g[[[__interval]]])",
+    ] {
+        compiled(expr);
+    }
+    for (expr, construct) in [
+        ("increase(a_total[$__range]) / $__range_s", "$__range_s"),
+        ("g * ${__range_ms}", "$__range_ms"),
+        ("g / $__interval_ms", "$__interval_ms"),
+        ("g / [[__rate_interval_ms]]", "$__rate_interval_ms"),
+        ("rate(a_total[$__range_s])", "$__range_s"),
+        ("g offset $__interval", "$__interval"),
+        ("g / $__range", "$__range"),
+    ] {
+        assert_eq!(error(expr).construct, construct, "{expr}");
+    }
+}
+
+#[test]
+fn variable_syntaxes_outside_matchers() {
+    let variables = BTreeMap::from([("k".to_owned(), "5".to_owned())]);
+    for expr in ["topk(${k}, g)", "topk(${k:raw}, g)", "topk([[k]], g)"] {
+        let plan = compile(expr, &variables).unwrap_or_else(|e| panic!("{expr}: {e}"));
+        assert!(
+            matches!(plan.tree, Node::Topk { k, .. } if k == 5.0),
+            "{expr}"
+        );
+    }
+    let error = compile("topk(${k:regex}, g)", &variables).unwrap_err();
+    assert_eq!(error.construct, "$k");
+    assert_eq!(
+        compile("topk([[k], g)", &variables).unwrap_err().construct,
+        "syntax"
+    );
+}
+
+#[test]
+fn variable_syntaxes_inside_matchers_are_removed() {
+    for expr in [
+        r#"g{pod=~"${host:regex}"}"#,
+        r#"g{pod=~"[[host]]"}"#,
+        r#"g{pod=~"[[host:pipe]]"}"#,
+    ] {
+        let sql = &compiled(expr).leaves[0].sql;
+        assert!(!sql.contains("Attributes['pod']"), "{expr}: {sql}");
+    }
+    let sql = &compiled(r#"g{pod=~"[[:alpha:]]+"}"#).leaves[0].sql;
+    assert!(sql.contains("match(Attributes['pod']"), "{sql}");
+}

@@ -32,9 +32,18 @@ pub use sql::{MAX_SERIES_PER_LEAF, SERIES_LIMIT_ERROR, quote};
 /// leaf's `ProjectId` predicate.
 const PROJECT_LABEL: &str = "rivet_project";
 
-/// Grafana's interval variables. Every leaf buckets by the request step, so
-/// any duration stands in for them.
-const INTERVAL_VARIABLES: [&str; 4] = ["__rate_interval", "__interval", "__range", "__range_s"];
+/// Grafana's duration variables. Every leaf buckets by the request step and
+/// ignores ranges, so any duration stands in for them inside a range.
+const DURATION_VARIABLES: [&str; 3] = ["__rate_interval", "__interval", "__range"];
+
+/// Grafana's numeric interval variables. Their value depends on the request
+/// range or step, which a compiled plan does not know.
+const NUMERIC_INTERVAL_VARIABLES: [&str; 4] = [
+    "__range_s",
+    "__range_ms",
+    "__interval_ms",
+    "__rate_interval_ms",
+];
 
 /// One expression to compile, as read from a `compile` input line.
 #[derive(Debug, Deserialize)]
@@ -252,13 +261,15 @@ pub fn compile_target(target: Target) -> Compiled {
     }
 }
 
-/// Replaces Grafana variables outside string literals: interval variables by
-/// a placeholder duration and the others by `variables`. Variables inside
-/// string literals stay, so their matchers can be removed after parsing.
+/// Replaces Grafana variables outside string literals: duration variables
+/// inside a range by a placeholder duration and the others by `variables`.
+/// Variables inside string literals stay, so their matchers can be removed
+/// after parsing.
 fn substitute(expr: &str, variables: &BTreeMap<String, String>) -> Result<String, CompileError> {
     let chars = expr.chars().collect::<Vec<_>>();
     let mut out = String::with_capacity(expr.len());
     let mut quote: Option<char> = None;
+    let mut bracket_depth = 0usize;
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
@@ -281,37 +292,141 @@ fn substitute(expr: &str, variables: &BTreeMap<String, String>) -> Result<String
             i += 1;
             continue;
         }
-        if c != '$' {
+        let bracket_reference = match c {
+            '[' if chars.get(i + 1) == Some(&'[') => bracket_variable(&chars, i),
+            _ => None,
+        };
+        let reference = if c == '$' {
+            dollar_variable(&chars, i)
+        } else if bracket_reference.is_some() {
+            bracket_reference
+        } else {
+            if c == '[' {
+                bracket_depth += 1;
+            } else if c == ']' {
+                bracket_depth = bracket_depth.saturating_sub(1);
+            }
             out.push(c);
             i += 1;
             continue;
-        }
-        let braced = chars.get(i + 1) == Some(&'{');
-        let start = if braced { i + 2 } else { i + 1 };
-        let mut end = start;
-        while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
-            end += 1;
-        }
-        let name = chars[start..end].iter().collect::<String>();
-        if name.is_empty() || (braced && chars.get(end) != Some(&'}')) {
+        };
+        let Some(reference) = reference else {
             return Err(CompileError::new(
                 "variable",
                 format!("malformed variable in {expr:?}"),
             ));
-        }
-        if INTERVAL_VARIABLES.contains(&name.as_str()) {
-            out.push_str("1m");
-        } else if let Some(value) = variables.get(&name) {
-            out.push_str(value);
-        } else {
-            return Err(CompileError::new(
-                format!("${name}"),
-                format!("variable ${name} is used outside a label matcher and has no value"),
-            ));
-        }
-        i = if braced { end + 1 } else { end };
+        };
+        out.push_str(&variable_value(&reference, bracket_depth > 0, variables)?);
+        i = reference.end;
     }
     Ok(out)
+}
+
+/// A Grafana variable reference: `$name`, `${name}`, `${name:format}`,
+/// `[[name]]` or `[[name:format]]`.
+struct VariableReference {
+    name: String,
+    format: Option<String>,
+    /// The index just past the reference.
+    end: usize,
+}
+
+/// Parses a `$name`, `${name}` or `${name:format}` reference at `start`.
+fn dollar_variable(chars: &[char], start: usize) -> Option<VariableReference> {
+    if chars.get(start + 1) != Some(&'{') {
+        let end = identifier_end(chars, start + 1)?;
+        return Some(VariableReference {
+            name: chars[start + 1..end].iter().collect(),
+            format: None,
+            end,
+        });
+    }
+    enclosed_variable(chars, start + 2, "}")
+}
+
+/// Parses a `[[name]]` or `[[name:format]]` reference at `start`.
+fn bracket_variable(chars: &[char], start: usize) -> Option<VariableReference> {
+    enclosed_variable(chars, start + 2, "]]")
+}
+
+/// Parses `name` or `name:format` starting at `start` and closed by `close`.
+fn enclosed_variable(chars: &[char], start: usize, close: &str) -> Option<VariableReference> {
+    let name_end = identifier_end(chars, start)?;
+    let name = chars[start..name_end].iter().collect::<String>();
+    let rest = chars[name_end..].iter().collect::<String>();
+    let (format, closed_at) = match rest.strip_prefix(':') {
+        Some(after_colon) => {
+            let format_len = after_colon.find(close)?;
+            let format = &after_colon[..format_len];
+            if format.is_empty() {
+                return None;
+            }
+            (
+                Some(format.to_owned()),
+                name_end + 1 + format.chars().count(),
+            )
+        }
+        None if rest.starts_with(close) => (None, name_end),
+        None => return None,
+    };
+    Some(VariableReference {
+        name,
+        format,
+        end: closed_at + close.chars().count(),
+    })
+}
+
+/// The index just past an identifier starting at `start`, or `None` when no
+/// identifier starts there.
+fn identifier_end(chars: &[char], start: usize) -> Option<usize> {
+    let first = chars.get(start)?;
+    if !(first.is_ascii_alphabetic() || *first == '_') {
+        return None;
+    }
+    let mut end = start + 1;
+    while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
+        end += 1;
+    }
+    Some(end)
+}
+
+/// The text a variable outside string literals is replaced by.
+fn variable_value(
+    reference: &VariableReference,
+    in_range: bool,
+    variables: &BTreeMap<String, String>,
+) -> Result<String, CompileError> {
+    let name = reference.name.as_str();
+    let construct = format!("${name}");
+    if NUMERIC_INTERVAL_VARIABLES.contains(&name) {
+        return Err(CompileError::new(
+            construct,
+            format!(
+                "${name} depends on the request range or step, which a compiled plan does not know"
+            ),
+        ));
+    }
+    if DURATION_VARIABLES.contains(&name) {
+        if !in_range {
+            return Err(CompileError::new(
+                construct,
+                format!("${name} is supported only as a range duration"),
+            ));
+        }
+        return Ok("1m".to_owned());
+    }
+    if let Some(format) = reference.format.as_deref().filter(|f| *f != "raw") {
+        return Err(CompileError::new(
+            construct,
+            format!("variable format :{format} is supported only inside label matchers"),
+        ));
+    }
+    variables.get(name).cloned().ok_or_else(|| {
+        CompileError::new(
+            construct,
+            format!("variable ${name} is used outside a label matcher and has no value"),
+        )
+    })
 }
 
 #[derive(Default)]
@@ -761,11 +876,15 @@ fn selection(selector: &VectorSelector) -> Result<(String, Vec<Matcher>), Compil
     Ok((name, kept))
 }
 
-/// Whether a matcher value names a Grafana variable (`$name` or `${name}`).
-/// A `$` before anything else is a regex anchor and keeps the matcher.
+/// Whether a matcher value references a Grafana variable. A `$` or `[[`
+/// that does not start a reference, such as a regex anchor or a POSIX class
+/// like `[[:alpha:]]`, keeps the matcher.
 fn references_variable(value: &str) -> bool {
-    value.as_bytes().windows(2).any(|pair| {
-        pair[0] == b'$' && (pair[1] == b'{' || pair[1] == b'_' || pair[1].is_ascii_alphabetic())
+    let chars = value.chars().collect::<Vec<_>>();
+    (0..chars.len()).any(|i| match chars[i] {
+        '$' => dollar_variable(&chars, i).is_some(),
+        '[' if chars.get(i + 1) == Some(&'[') => bracket_variable(&chars, i).is_some(),
+        _ => false,
     })
 }
 
