@@ -244,6 +244,8 @@ async fn leaves_skip_staleness_markers() {
                 gauge(FROM + 10, 7.0, 0),
                 gauge(FROM + 50, 0.0, 1),
                 gauge(FROM + 70, 0.0, 1),
+                format!("('a', map('service.instance.id', 'p1'), 'h2', map('pod', 'p1'), toDateTime({}), 0, 1)", FROM + 70),
+                format!("('a', map('service.instance.id', 'p1'), 'h2', map('pod', 'p1'), toDateTime({}), 3, 0)", FROM + 100),
             ],
         )
         .await;
@@ -259,7 +261,18 @@ async fn leaves_skip_staleness_markers() {
             vec![(u64::from(FROM), 60.0), (u64::from(FROM + 120), 30.0)]
         );
 
-        for expr in ["g", "min_over_time(g[1m])", "avg_over_time(g[1m])"] {
+        // A step ending in a marker has no sample, as Prometheus drops the
+        // series at the marker; a sample after a marker shows again.
+        for (expr, expected) in [
+            ("g", vec![]),
+            ("max(g)", vec![]),
+            ("h2", vec![(u64::from(FROM + 120), 3.0)]),
+        ] {
+            let rows = run(&store, &plan(expr).leaves[0].sql, "a").await.unwrap();
+            assert_eq!(gauge_values(&rows), expected, "{expr}");
+        }
+
+        for expr in ["min_over_time(g[1m])", "avg_over_time(g[1m])"] {
             let rows = run(&store, &plan(expr).leaves[0].sql, "a").await.unwrap();
             let values = rows
                 .iter()

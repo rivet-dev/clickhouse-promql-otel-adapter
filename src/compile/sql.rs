@@ -132,12 +132,17 @@ pub fn leaf(
     reading: Reading,
     grouping: Option<&Grouping>,
 ) -> String {
+    // A `Last` reading needs the markers to see that its step ends stale.
+    let markers = match reading {
+        Reading::Last => Markers::Keep,
+        _ => Markers::Skip,
+    };
     let (source, series, column) = match sources {
         [source] => (
             format!(
                 "{}\n\tWHERE {}",
                 source.table.name(),
-                scope(&source.names, matchers)
+                scope(&source.names, matchers, markers)
             ),
             SERIES,
             source.column,
@@ -151,10 +156,10 @@ pub fn leaf(
                         column => format!("toFloat64({}) AS Value", column.name()),
                     };
                     format!(
-                        "SELECT {} AS SourceTable, ResourceAttributes, Attributes, TimeUnix, {value}\n\t\tFROM {}\n\t\tWHERE {}",
+                        "SELECT {} AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, {value}\n\t\tFROM {}\n\t\tWHERE {}",
                         quote(source.table.name()),
                         source.table.name(),
-                        scope(&source.names, matchers).replace("\n\t\t", "\n\t\t\t")
+                        scope(&source.names, matchers, markers).replace("\n\t\t", "\n\t\t\t")
                     )
                 })
                 .collect::<Vec<_>>()
@@ -245,12 +250,21 @@ fn series_rows(
     reading: Reading,
     labels: &str,
 ) -> String {
+    let mut having = "";
     let (inner, outer) = match reading {
         Reading::Growth { per_second } => {
             return growth_rows(source, series, column, per_second, labels);
         }
         Reading::Buckets => return bucket_rows(source, series, labels),
-        Reading::Last => ("Value".to_owned(), "argMax(Value, TimeUnix) AS value"),
+        // A step whose latest row is a staleness marker has no sample, as
+        // Prometheus drops a series at its marker.
+        Reading::Last => {
+            having = "\nHAVING stale = 0";
+            (
+                "Value, Flags".to_owned(),
+                "argMax(Value, TimeUnix) AS value, argMax(bitAnd(Flags, 1), TimeUnix) AS stale",
+            )
+        }
         Reading::Max => ("Value".to_owned(), "max(Value) AS value"),
         Reading::Min => ("Value".to_owned(), "min(Value) AS value"),
         Reading::Avg => ("Value".to_owned(), "avg(Value) AS value"),
@@ -270,7 +284,7 @@ FROM (
 	FROM {source}
 )
 WHERE t >= {{from:UInt32}} AND t <= {{to:UInt32}}
-GROUP BY t, series"
+GROUP BY t, series{having}"
     )
 }
 
@@ -346,18 +360,27 @@ fn group_labels(by: &[String], metric: Option<&str>) -> String {
     format!("mapFilter((k, v) -> v != '', CAST(map({pairs}), 'Map(String, String)'))")
 }
 
+/// OTel `NoRecordedValue` rows: staleness markers stored as zero samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Markers {
+    Skip,
+    Keep,
+}
+
 /// The only builder of a leaf's `WHERE`. The cluster predicate comes first
 /// and cannot be left out; it is also the sort key's first column, so it
 /// bounds the scan to the cluster's range.
-fn scope(names: &[String], matchers: &[Matcher]) -> String {
+fn scope(names: &[String], matchers: &[Matcher], markers: Markers) -> String {
     let mut terms = vec![
         "ProjectId = {project:String}".to_owned(),
         "TimeUnix >= toDateTime({query_from:UInt32})".to_owned(),
         "TimeUnix <= toDateTime({to:UInt32})".to_owned(),
-        // OTel `NoRecordedValue`: a staleness marker stored as a zero sample.
-        "bitAnd(Flags, 1) = 0".to_owned(),
-        name_term(names),
     ];
+    match markers {
+        Markers::Skip => terms.push("bitAnd(Flags, 1) = 0".to_owned()),
+        Markers::Keep => {}
+    }
+    terms.push(name_term(names));
     terms.extend(matchers.iter().map(matcher_term));
     terms.join("\n\t\tAND ")
 }
