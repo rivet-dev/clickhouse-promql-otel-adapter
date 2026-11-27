@@ -3,7 +3,7 @@
 //!
 //! Each selector becomes one leaf: a complete `SELECT` that buckets one
 //! cluster's samples by the request step. An aggregation directly over a
-//! selector (`sum`, `min`, `max`, `avg` or `count`, by a label list or over
+//! selector (`sum`, `min`, `max`, `avg`, `count` or `group`, by a label list or over
 //! everything) runs in its leaf, so the leaf returns one series per group.
 //! The other operators stay in the plan's tree, for the caller to evaluate
 //! over the leaf results.
@@ -14,7 +14,8 @@
 //! Metric and label names match as the Prometheus receiver stores them: a
 //! counter under its scraped name, with or without `_total`, and a classic
 //! histogram under its base name. A `_count` or `_sum` name may be either, so
-//! counter functions over one read both.
+//! counter functions over one read both. A `_bucket` selector with an `le`
+//! matcher reads that one bucket's cumulative count as a counter.
 mod sql;
 
 use std::collections::BTreeMap;
@@ -192,6 +193,8 @@ pub enum AggregateFunction {
     Max,
     Avg,
     Count,
+    /// 1 for every group.
+    Group,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -524,13 +527,14 @@ impl Compiler {
         }
         let arg = Box::new(arg);
         let node = match op.as_str() {
-            "sum" | "min" | "max" | "avg" | "count" => Node::Aggregate {
+            "sum" | "min" | "max" | "avg" | "count" | "group" => Node::Aggregate {
                 function: match op.as_str() {
                     "sum" => AggregateFunction::Sum,
                     "min" => AggregateFunction::Min,
                     "max" => AggregateFunction::Max,
                     "avg" => AggregateFunction::Avg,
-                    _ => AggregateFunction::Count,
+                    "count" => AggregateFunction::Count,
+                    _ => AggregateFunction::Group,
                 },
                 by,
                 without,
@@ -583,6 +587,7 @@ impl Compiler {
             "max" => AggregateFunction::Max,
             "avg" => AggregateFunction::Avg,
             "count" => AggregateFunction::Count,
+            "group" => AggregateFunction::Group,
             _ => return None,
         };
         let by = by.unwrap_or_default();
@@ -601,7 +606,8 @@ impl Compiler {
                     Err(error) => return Some(Err(error)),
                 };
                 let reads_buckets = is_counter_function(c.func.name)
-                    && metric_name(&matrix.vs).is_some_and(|name| name.ends_with("_bucket"));
+                    && metric_name(&matrix.vs).is_some_and(|name| name.ends_with("_bucket"))
+                    && !matrix.vs.matchers.matchers.iter().any(|m| m.name == "le");
                 let by = if reads_buckets {
                     // Summing buckets keeps them buckets only while `le` stays
                     // a grouping label; anything else is refused by the tree path.
@@ -764,7 +770,7 @@ impl Compiler {
             Some(Offset::Pos(d)) => d.as_secs() as i64,
             Some(Offset::Neg(d)) => -(d.as_secs() as i64),
         };
-        let (name, matchers) = selection(selector)?;
+        let (name, mut matchers) = selection(selector)?;
         let (sources, reading) = match read {
             // A selector read without a counter function may name a gauge or a counter.
             Read::Value(reading) => (
@@ -774,6 +780,15 @@ impl Compiler {
                 ],
                 reading,
             ),
+            Read::Counter { per_second } if name.ends_with("_bucket") => {
+                match take_bucket_bound(&mut matchers)? {
+                    Some(column) => (
+                        vec![source(Table::Histogram, &name, column)],
+                        Reading::Growth { per_second },
+                    ),
+                    None => counter_sources(&name, per_second),
+                }
+            }
             Read::Counter { per_second } => counter_sources(&name, per_second),
         };
         let reads_histogram = sources.iter().any(|s| s.table == Table::Histogram);
@@ -844,6 +859,48 @@ fn literal_parameter(op: &str, param: Option<&Expr>) -> Result<f64, CompileError
             format!("the parameter of {op} must be a number literal"),
         )),
     }
+}
+
+/// Removes a `_bucket` selector's `le` matcher and returns the one bucket it
+/// selects, or `None` when there is no `le` matcher and every bucket is read.
+/// `+Inf` is the histogram's count. Only `=` is supported, since a bucket is
+/// found by an exact bound.
+fn take_bucket_bound(matchers: &mut Vec<Matcher>) -> Result<Option<Column>, CompileError> {
+    let Some(position) = matchers.iter().position(|m| m.name == "le") else {
+        return Ok(None);
+    };
+    let matcher = matchers.remove(position);
+    if matchers.iter().any(|m| m.name == "le") {
+        return Err(CompileError::new(
+            "le matcher on a histogram",
+            "a histogram selector may have one le matcher",
+        ));
+    }
+    if !matches!(matcher.op, MatchOp::Equal) {
+        return Err(CompileError::new(
+            "le matcher on a histogram",
+            "only an le equality matcher selects a histogram bucket",
+        ));
+    }
+    let bound = matcher.value.parse::<f64>().map_err(|_| {
+        CompileError::new(
+            "le matcher on a histogram",
+            format!("le value {:?} is not a number", matcher.value),
+        )
+    })?;
+    if bound == f64::INFINITY {
+        return Ok(Some(Column::Count));
+    }
+    if !bound.is_finite() {
+        return Err(CompileError::new(
+            "le matcher on a histogram",
+            format!("le value {:?} is not a bucket bound", matcher.value),
+        ));
+    }
+    Ok(Some(Column::Bucket {
+        bound,
+        le: matcher.value,
+    }))
 }
 
 /// The sources and reading of a counter function over `name`. A `_bucket`

@@ -853,6 +853,78 @@ async fn count_and_sum_suffixes_read_plain_counters_and_histograms() {
 }
 
 #[tokio::test]
+async fn an_le_matcher_reads_one_cumulative_bucket() {
+    common::empty_database_test(false, |store| async move {
+        add_project_column(&store).await;
+        let base = FROM - 60;
+        insert(
+            &store,
+            "otel_metrics_histogram",
+            HISTOGRAM_COLUMNS,
+            &[
+                format!("('a', map('service.instance.id', 'p1'), 'h', map('pod', 'p1'), toDateTime({base}), 2, 1, [1, 1, 0], [0.1, 1])"),
+                format!("('a', map('service.instance.id', 'p1'), 'h', map('pod', 'p1'), toDateTime({}), 62, 31, [21, 21, 20], [0.1, 1])", base + 60),
+                format!("('a', map('service.instance.id', 'p2'), 'h', map('pod', 'p2'), toDateTime({base}), 0, 0, [0, 0], [0.5])"),
+                format!("('a', map('service.instance.id', 'p2'), 'h', map('pod', 'p2'), toDateTime({}), 9, 9, [4, 5], [0.5])", base + 60),
+            ],
+        )
+        .await;
+
+        let t = u64::from(FROM);
+        for (expr, expected) in [
+            (r#"increase(h_bucket{le="0.1"}[1m])"#, vec![("p1".to_owned(), t, 20.0)]),
+            (r#"increase(h_bucket{le="1"}[1m])"#, vec![("p1".to_owned(), t, 40.0)]),
+            (r#"sum by (pod) (increase(h_bucket{le="1"}[1m]))"#, vec![("p1".to_owned(), t, 40.0)]),
+            (r#"increase(h_bucket{le="0.5"}[1m])"#, vec![("p2".to_owned(), t, 4.0)]),
+            (
+                r#"increase(h_bucket{le="+Inf"}[1m])"#,
+                vec![("p1".to_owned(), t, 60.0), ("p2".to_owned(), t, 9.0)],
+            ),
+        ] {
+            let rows = run(&store, &plan(expr).leaves[0].sql, "a").await.unwrap();
+            let mut values = values_by(&rows, "pod");
+            values.sort_by(|a, b| a.0.cmp(&b.0));
+            assert_eq!(values, expected, "{expr}");
+        }
+
+        let rows = run(&store, &plan(r#"increase(h_bucket{le="1"}[1m])"#).leaves[0].sql, "a")
+            .await
+            .unwrap();
+        assert_eq!(rows[0]["labels"]["le"], "1");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn group_returns_one_for_every_group() {
+    common::empty_database_test(false, |store| async move {
+        add_project_column(&store).await;
+        let gauge = |pod: &str, role: &str, value: f64| {
+            format!(
+                "('a', map('service.name', 'engine', 'service.instance.id', '{pod}'), 'g', map('pod', '{pod}', 'role', '{role}'), toDateTime({FROM}), {value})"
+            )
+        };
+        insert(
+            &store,
+            "otel_metrics_gauge",
+            GAUGE_COLUMNS,
+            &[gauge("p1", "engine", 5.0), gauge("p2", "engine", 7.0), gauge("p3", "runner", 0.0)],
+        )
+        .await;
+
+        let rows = run(&store, &plan("group by (role) (g)").leaves[0].sql, "a").await.unwrap();
+        let mut values = values_by(&rows, "role");
+        values.sort_by(|a, b| a.0.cmp(&b.0));
+        let t = u64::from(FROM);
+        assert_eq!(
+            values,
+            vec![("engine".to_owned(), t, 1.0), ("runner".to_owned(), t, 1.0)]
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn grouping_by_name_keeps_a_selected_metric_name() {
     common::empty_database_test(false, |store| async move {
         add_project_column(&store).await;

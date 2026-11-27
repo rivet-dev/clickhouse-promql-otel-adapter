@@ -67,7 +67,7 @@ impl Table {
 
 /// A table a leaf reads, the stored `MetricName`s it may hold the series
 /// under and the column holding its samples.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Source {
     pub table: Table,
     pub names: Vec<String>,
@@ -96,21 +96,57 @@ pub enum Reading {
 
 /// A source's sample column. Bucket readings ignore it and read
 /// `BucketCounts`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Column {
     Value,
     Count,
     Sum,
+    /// One classic histogram bucket: the cumulative count of observations at
+    /// most `bound`, read from the series whose `ExplicitBounds` contain it.
+    /// `le` is the matcher's text, kept as the series' `le` label.
+    Bucket {
+        bound: f64,
+        le: String,
+    },
 }
 
 impl Column {
-    fn name(self) -> &'static str {
+    fn expr(&self) -> String {
         match self {
-            Column::Value => "Value",
-            Column::Count => "Count",
-            Column::Sum => "Sum",
+            Column::Value => "Value".to_owned(),
+            Column::Count => "Count".to_owned(),
+            Column::Sum => "Sum".to_owned(),
+            Column::Bucket { bound, .. } => format!(
+                "arraySum(arraySlice(BucketCounts, 1, indexOf(ExplicitBounds, {})))",
+                float_literal(*bound)
+            ),
         }
     }
+
+    /// The series' Prometheus labels, which a single bucket extends by `le`.
+    fn step_labels(&self) -> String {
+        match self {
+            Column::Bucket { le, .. } => {
+                format!("mapUpdate({STEP_LABELS}, map('le', {}))", quote(le))
+            }
+            Column::Value | Column::Count | Column::Sum => STEP_LABELS.to_owned(),
+        }
+    }
+
+    /// A predicate keeping the rows this column can be read from.
+    fn term(&self) -> Option<String> {
+        match self {
+            Column::Bucket { bound, .. } => {
+                Some(format!("has(ExplicitBounds, {})", float_literal(*bound)))
+            }
+            Column::Value | Column::Count | Column::Sum => None,
+        }
+    }
+}
+
+/// A finite `f64` as a ClickHouse `Float64` literal.
+fn float_literal(value: f64) -> String {
+    format!("toFloat64({value:?})")
 }
 
 /// An aggregation folded into a leaf, so the leaf returns one series per group
@@ -142,24 +178,25 @@ pub fn leaf(
             format!(
                 "{}\n\tWHERE {}",
                 source.table.name(),
-                scope(&source.names, matchers, markers)
+                scope(&source.names, &source.column, matchers, markers)
             ),
             SERIES,
-            source.column,
+            source.column.clone(),
         ),
         sources => {
             let branches = sources
                 .iter()
                 .map(|source| {
-                    let value = match source.column {
+                    let value = match &source.column {
                         Column::Value => "Value".to_owned(),
-                        column => format!("toFloat64({}) AS Value", column.name()),
+                        column => format!("toFloat64({}) AS Value", column.expr()),
                     };
                     format!(
                         "SELECT {} AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, {value}\n\t\tFROM {}\n\t\tWHERE {}",
                         quote(source.table.name()),
                         source.table.name(),
-                        scope(&source.names, matchers, markers).replace("\n\t\t", "\n\t\t\t")
+                        scope(&source.names, &source.column, matchers, markers)
+                            .replace("\n\t\t", "\n\t\t\t")
                     )
                 })
                 .collect::<Vec<_>>()
@@ -181,7 +218,7 @@ pub fn leaf(
             group_labels(&grouping.by, metric)
         }
     };
-    let rows = indent(&series_rows(&source, series, column, reading, &labels), 1);
+    let rows = indent(&series_rows(&source, series, &column, reading, &labels), 1);
     let columns = match reading {
         Reading::Buckets => "counts, bounds",
         _ => "value",
@@ -226,6 +263,7 @@ ORDER BY labels, t",
                 AggregateFunction::Max => "max(value)",
                 AggregateFunction::Avg => "avg(value)",
                 AggregateFunction::Count => "toFloat64(count())",
+                AggregateFunction::Group => "toFloat64(1)",
             };
             format!(
                 "SELECT t, labels, {value} AS value, {limit}
@@ -246,7 +284,7 @@ ORDER BY labels, t"
 fn series_rows(
     source: &str,
     series: &str,
-    column: Column,
+    column: &Column,
     reading: Reading,
     labels: &str,
 ) -> String {
@@ -299,11 +337,12 @@ GROUP BY t, series{having}"
 fn growth_rows(
     source: &str,
     series: &str,
-    column: Column,
+    column: &Column,
     per_second: bool,
     labels: &str,
 ) -> String {
-    let column = format!("toFloat64({})", column.name());
+    let step_labels = column.step_labels();
+    let column = format!("toFloat64({})", column.expr());
     let per_second = match per_second {
         true => " / {step:UInt32}",
         false => "",
@@ -313,7 +352,7 @@ fn growth_rows(
 FROM (
 	SELECT t, series, labels, first, last, peak, first_at, lagInFrame(last, 1, first) {STEP_BEFORE} AS before, lagInFrame(last_at, 1, first_at) {STEP_BEFORE} AS before_at
 	FROM (
-		SELECT {BUCKET} AS t, {series} AS series, {STEP_LABELS} AS all_labels, {labels} AS labels, argMin({column}, TimeUnix) AS first, argMax({column}, TimeUnix) AS last, max({column}) AS peak, min(TimeUnix) AS first_at, max(TimeUnix) AS last_at
+		SELECT {BUCKET} AS t, {series} AS series, {step_labels} AS all_labels, {labels} AS labels, argMin({column}, TimeUnix) AS first, argMax({column}, TimeUnix) AS last, max({column}) AS peak, min(TimeUnix) AS first_at, max(TimeUnix) AS last_at
 		FROM {source}
 		GROUP BY t, series
 	)
@@ -370,7 +409,7 @@ enum Markers {
 /// The only builder of a leaf's `WHERE`. The cluster predicate comes first
 /// and cannot be left out; it is also the sort key's first column, so it
 /// bounds the scan to the cluster's range.
-fn scope(names: &[String], matchers: &[Matcher], markers: Markers) -> String {
+fn scope(names: &[String], column: &Column, matchers: &[Matcher], markers: Markers) -> String {
     let mut terms = vec![
         "ProjectId = {project:String}".to_owned(),
         "TimeUnix >= toDateTime({query_from:UInt32})".to_owned(),
@@ -381,6 +420,7 @@ fn scope(names: &[String], matchers: &[Matcher], markers: Markers) -> String {
         Markers::Keep => {}
     }
     terms.push(name_term(names));
+    terms.extend(column.term());
     terms.extend(matchers.iter().map(matcher_term));
     terms.join("\n\t\tAND ")
 }

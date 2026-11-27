@@ -116,6 +116,40 @@ fn counters_match_with_and_without_total() {
 }
 
 #[test]
+fn an_le_matcher_reads_one_bucket_as_a_counter() {
+    let plan = compiled(r#"sum by (pod) (increase(h_bucket{le="0.5", pod="p1"}[5m]))"#);
+    assert_eq!(plan.leaves.len(), 1);
+    assert_eq!(plan.leaves[0].shape, Shape::Value);
+    let sql = &plan.leaves[0].sql;
+    assert!(sql.contains("FROM otel_metrics_histogram"), "{sql}");
+    assert!(sql.contains("MetricName = 'h'"), "{sql}");
+    assert!(sql.contains("has(ExplicitBounds, toFloat64(0.5))"), "{sql}");
+    assert!(
+        sql.contains("indexOf(ExplicitBounds, toFloat64(0.5))"),
+        "{sql}"
+    );
+    assert!(!sql.contains("Attributes['le']"), "{sql}");
+
+    let infinite = compiled(r#"increase(h_bucket{le="+Inf"}[5m])"#);
+    let sql = &infinite.leaves[0].sql;
+    assert!(sql.contains("toFloat64(Count)"), "{sql}");
+    assert!(!sql.contains("ExplicitBounds"), "{sql}");
+}
+
+#[test]
+fn group_folds_into_its_leaf_or_stays_in_the_tree() {
+    let folded = compiled("group by (pod) (g)");
+    assert_eq!(folded.leaves.len(), 1);
+    assert!(folded.leaves[0].sql.contains("toFloat64(1) AS value"));
+
+    let tree = compiled("group by (pod) (g > 1)");
+    assert_eq!(
+        serde_json::to_value(&tree.tree).unwrap()["fn"],
+        serde_json::json!("group")
+    );
+}
+
+#[test]
 fn unsupported_constructs_name_themselves() {
     for (expr, construct) in [
         ("rate(a_total[5m] @ end())", "@ modifier"),
@@ -135,7 +169,23 @@ fn unsupported_constructs_name_themselves() {
             "sum by (pod) (rate(h_bucket[1m]))",
             "sum over histogram buckets",
         ),
-        ("rate(h_bucket{le=\"1\"}[1m])", "le matcher on a histogram"),
+        (
+            "rate(h_bucket{le=~\"1|2\"}[1m])",
+            "le matcher on a histogram",
+        ),
+        ("rate(h_bucket{le!=\"1\"}[1m])", "le matcher on a histogram"),
+        (
+            "rate(h_bucket{le=\"fast\"}[1m])",
+            "le matcher on a histogram",
+        ),
+        (
+            "rate(h_bucket{le=\"NaN\"}[1m])",
+            "le matcher on a histogram",
+        ),
+        (
+            "histogram_quantile(0.9, rate(h_bucket{le=\"1\"}[1m]))",
+            "histogram_quantile",
+        ),
         ("histogram_quantile(0.9, g)", "histogram_quantile"),
         ("g[5m]", "range vector"),
     ] {
