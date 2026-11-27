@@ -1,0 +1,400 @@
+---
+source: tests/unit/compile.rs
+expression: plans
+---
+[
+  {
+    "expr": "sum by (pod) (rate(rivet_guard_requests_total{rivet_project=\"$project\", rivet_datacenter=~\"$datacenter\", pod=~\"$host\"}[$__rate_interval]))",
+    "plan": {
+      "leaves": [
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, sum(value) AS value, throwIf(uniqExact(labels) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, labels, (if(dateDiff('second', before_at, first_at) > 300, 0, if(first >= before, first - before, first)) + if(last >= peak, last - first, peak - first + last)) / {step:UInt32} AS value\n\tFROM (\n\t\tSELECT t, series, labels, first, last, peak, first_at, lagInFrame(last, 1, first) OVER (PARTITION BY series ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before, lagInFrame(last_at, 1, first_at) OVER (PARTITION BY series ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before_at\n\t\tFROM (\n\t\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, mapFilter((k, v) -> v != '', CAST(map('pod', all_labels['pod']), 'Map(String, String)')) AS labels, argMin(toFloat64(Value), TimeUnix) AS first, argMax(toFloat64(Value), TimeUnix) AS last, max(toFloat64(Value)) AS peak, min(TimeUnix) AS first_at, max(TimeUnix) AS last_at\n\t\t\tFROM otel_metrics_sum\n\t\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\t\tAND MetricName IN ('rivet_guard_requests_total', 'rivet_guard_requests')\n\t\t\tGROUP BY t, series\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n)\nGROUP BY t, labels\nORDER BY labels, t"
+        }
+      ],
+      "tree": {
+        "index": 0,
+        "op": "leaf"
+      }
+    }
+  },
+  {
+    "expr": "increase(rivet_guard_requests_total{kind=\"http\"}[5m])",
+    "plan": {
+      "leaves": [
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, value, throwIf(uniqExact(series) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, labels, (if(dateDiff('second', before_at, first_at) > 300, 0, if(first >= before, first - before, first)) + if(last >= peak, last - first, peak - first + last)) AS value\n\tFROM (\n\t\tSELECT t, series, labels, first, last, peak, first_at, lagInFrame(last, 1, first) OVER (PARTITION BY series ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before, lagInFrame(last_at, 1, first_at) OVER (PARTITION BY series ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before_at\n\t\tFROM (\n\t\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, all_labels AS labels, argMin(toFloat64(Value), TimeUnix) AS first, argMax(toFloat64(Value), TimeUnix) AS last, max(toFloat64(Value)) AS peak, min(TimeUnix) AS first_at, max(TimeUnix) AS last_at\n\t\t\tFROM otel_metrics_sum\n\t\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\t\tAND MetricName IN ('rivet_guard_requests_total', 'rivet_guard_requests')\n\t\t\t\t\tAND Attributes['kind'] = 'http'\n\t\t\tGROUP BY t, series\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n)\nORDER BY series, t"
+        }
+      ],
+      "tree": {
+        "index": 0,
+        "op": "leaf"
+      }
+    }
+  },
+  {
+    "expr": "histogram_quantile(0.99, sum by (le, machine) (rate(rivet_state_machine_effect_seconds_bucket{rivet_project=\"$project\", machine=~\"$machine\"}[$__rate_interval])))",
+    "plan": {
+      "leaves": [
+        {
+          "offset_seconds": 0,
+          "shape": "buckets",
+          "sql": "SELECT t, labels, tupleElement(picked, 1) AS counts, tupleElement(picked, 2) AS bounds, throwIf(uniqExact(labels) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, labels, argMax((counts, bounds), (members, bounds)) AS picked\n\tFROM (\n\t\tSELECT t, labels, bounds, sumForEach(counts) AS counts, count() AS members\n\t\tFROM (\n\t\t\tSELECT t, series, labels, arrayMap((between, within) -> between + within, if(dateDiff('second', before_at, first_at) > 300, arrayMap(now -> toUInt64(0), first), if(arrayAll((now, was) -> now >= was, first, before), arrayMap((now, was) -> toUInt64(now - was), first, before), first)), arrayMap((start, top, end) -> toUInt64(if(end >= top, end - start, top - start + end)), first, peak, last)) AS counts, bounds\n\t\t\tFROM (\n\t\t\t\tSELECT t, series, labels, bounds, first, last, peak, first_at, lagInFrame(last, 1, first) OVER (PARTITION BY series, bounds ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before, lagInFrame(last_at, 1, first_at) OVER (PARTITION BY series, bounds ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before_at\n\t\t\t\tFROM (\n\t\t\t\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, ExplicitBounds AS bounds, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, mapFilter((k, v) -> v != '', CAST(map('machine', all_labels['machine']), 'Map(String, String)')) AS labels, argMin(BucketCounts, TimeUnix) AS first, argMax(BucketCounts, TimeUnix) AS last, maxForEach(BucketCounts) AS peak, min(TimeUnix) AS first_at, max(TimeUnix) AS last_at\n\t\t\t\t\tFROM otel_metrics_histogram\n\t\t\t\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\t\t\t\tAND MetricName = 'rivet_state_machine_effect_seconds'\n\t\t\t\t\tGROUP BY t, series, bounds\n\t\t\t\t)\n\t\t\t)\n\t\t\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n\t\t)\n\t\tGROUP BY t, labels, bounds\n\t)\n\tGROUP BY t, labels\n)\nORDER BY labels, t"
+        }
+      ],
+      "tree": {
+        "arg": {
+          "index": 0,
+          "op": "leaf"
+        },
+        "op": "histogram_quantile",
+        "q": 0.99
+      }
+    }
+  },
+  {
+    "expr": "sum(rate(rivet_epoxy_work_duration_seconds_count[1m])) / sum(rate(rivet_epoxy_work_duration_seconds_sum[1m]))",
+    "plan": {
+      "leaves": [
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, sum(value) AS value, throwIf(uniqExact(labels) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, labels, (if(dateDiff('second', before_at, first_at) > 300, 0, if(first >= before, first - before, first)) + if(last >= peak, last - first, peak - first + last)) / {step:UInt32} AS value\n\tFROM (\n\t\tSELECT t, series, labels, first, last, peak, first_at, lagInFrame(last, 1, first) OVER (PARTITION BY series ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before, lagInFrame(last_at, 1, first_at) OVER (PARTITION BY series ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before_at\n\t\tFROM (\n\t\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(SourceTable, ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, mapFilter((k, v) -> v != '', CAST(map(), 'Map(String, String)')) AS labels, argMin(toFloat64(Value), TimeUnix) AS first, argMax(toFloat64(Value), TimeUnix) AS last, max(toFloat64(Value)) AS peak, min(TimeUnix) AS first_at, max(TimeUnix) AS last_at\n\t\t\tFROM (\n\t\t\t\t\tSELECT 'otel_metrics_histogram' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, toFloat64(Count) AS Value\n\t\t\t\t\tFROM otel_metrics_histogram\n\t\t\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\t\t\tAND MetricName = 'rivet_epoxy_work_duration_seconds'\n\t\t\t\t\tUNION ALL\n\t\t\t\t\tSELECT 'otel_metrics_sum' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\t\t\tFROM otel_metrics_sum\n\t\t\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\t\t\tAND MetricName = 'rivet_epoxy_work_duration_seconds_count'\n\t\t\t\t)\n\t\t\tGROUP BY t, series\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n)\nGROUP BY t, labels\nORDER BY labels, t"
+        },
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, sum(value) AS value, throwIf(uniqExact(labels) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, labels, (if(dateDiff('second', before_at, first_at) > 300, 0, if(first >= before, first - before, first)) + if(last >= peak, last - first, peak - first + last)) / {step:UInt32} AS value\n\tFROM (\n\t\tSELECT t, series, labels, first, last, peak, first_at, lagInFrame(last, 1, first) OVER (PARTITION BY series ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before, lagInFrame(last_at, 1, first_at) OVER (PARTITION BY series ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before_at\n\t\tFROM (\n\t\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(SourceTable, ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, mapFilter((k, v) -> v != '', CAST(map(), 'Map(String, String)')) AS labels, argMin(toFloat64(Value), TimeUnix) AS first, argMax(toFloat64(Value), TimeUnix) AS last, max(toFloat64(Value)) AS peak, min(TimeUnix) AS first_at, max(TimeUnix) AS last_at\n\t\t\tFROM (\n\t\t\t\t\tSELECT 'otel_metrics_histogram' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, toFloat64(Sum) AS Value\n\t\t\t\t\tFROM otel_metrics_histogram\n\t\t\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\t\t\tAND MetricName = 'rivet_epoxy_work_duration_seconds'\n\t\t\t\t\tUNION ALL\n\t\t\t\t\tSELECT 'otel_metrics_sum' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\t\t\tFROM otel_metrics_sum\n\t\t\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\t\t\tAND MetricName = 'rivet_epoxy_work_duration_seconds_sum'\n\t\t\t\t)\n\t\t\tGROUP BY t, series\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n)\nGROUP BY t, labels\nORDER BY labels, t"
+        }
+      ],
+      "tree": {
+        "bool": false,
+        "lhs": {
+          "index": 0,
+          "op": "leaf"
+        },
+        "op": "binary",
+        "operator": "/",
+        "rhs": {
+          "index": 1,
+          "op": "leaf"
+        }
+      }
+    }
+  },
+  {
+    "expr": "max by (pod) (rivet_depot_client_volume_slots{pod=~\"$host\"}) / max by (pod) (rivet_depot_client_volume_capacity)",
+    "plan": {
+      "leaves": [
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, max(value) AS value, throwIf(uniqExact(labels) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, mapFilter((k, v) -> v != '', CAST(map('pod', all_labels['pod']), 'Map(String, String)')) AS labels, argMax(Value, TimeUnix) AS value, argMax(bitAnd(Flags, 1), TimeUnix) AS stale\n\tFROM (\n\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(SourceTable, ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, ResourceAttributes, Attributes, TimeUnix, Value, Flags\n\t\tFROM (\n\t\t\tSELECT 'otel_metrics_gauge' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_gauge\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND MetricName = 'rivet_depot_client_volume_slots'\n\t\t\tUNION ALL\n\t\t\tSELECT 'otel_metrics_sum' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_sum\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND MetricName = 'rivet_depot_client_volume_slots'\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n\tGROUP BY t, series\n\tHAVING stale = 0\n)\nGROUP BY t, labels\nORDER BY labels, t"
+        },
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, max(value) AS value, throwIf(uniqExact(labels) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, mapFilter((k, v) -> v != '', CAST(map('pod', all_labels['pod']), 'Map(String, String)')) AS labels, argMax(Value, TimeUnix) AS value, argMax(bitAnd(Flags, 1), TimeUnix) AS stale\n\tFROM (\n\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(SourceTable, ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, ResourceAttributes, Attributes, TimeUnix, Value, Flags\n\t\tFROM (\n\t\t\tSELECT 'otel_metrics_gauge' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_gauge\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND MetricName = 'rivet_depot_client_volume_capacity'\n\t\t\tUNION ALL\n\t\t\tSELECT 'otel_metrics_sum' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_sum\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND MetricName = 'rivet_depot_client_volume_capacity'\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n\tGROUP BY t, series\n\tHAVING stale = 0\n)\nGROUP BY t, labels\nORDER BY labels, t"
+        }
+      ],
+      "tree": {
+        "bool": false,
+        "lhs": {
+          "index": 0,
+          "op": "leaf"
+        },
+        "op": "binary",
+        "operator": "/",
+        "rhs": {
+          "index": 1,
+          "op": "leaf"
+        }
+      }
+    }
+  },
+  {
+    "expr": "1 - max by (pod) (node_memory_MemAvailable_bytes{role=~\"engine|runtime\", pod=~\"$host|$runtime\"}) / max by (pod) (node_memory_MemTotal_bytes)",
+    "plan": {
+      "leaves": [
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, max(value) AS value, throwIf(uniqExact(labels) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, mapFilter((k, v) -> v != '', CAST(map('pod', all_labels['pod']), 'Map(String, String)')) AS labels, argMax(Value, TimeUnix) AS value, argMax(bitAnd(Flags, 1), TimeUnix) AS stale\n\tFROM (\n\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(SourceTable, ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, ResourceAttributes, Attributes, TimeUnix, Value, Flags\n\t\tFROM (\n\t\t\tSELECT 'otel_metrics_gauge' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_gauge\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND MetricName = 'node_memory_MemAvailable_bytes'\n\t\t\t\tAND match(Attributes['role'], '^(?:engine|runtime)$')\n\t\t\tUNION ALL\n\t\t\tSELECT 'otel_metrics_sum' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_sum\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND MetricName = 'node_memory_MemAvailable_bytes'\n\t\t\t\tAND match(Attributes['role'], '^(?:engine|runtime)$')\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n\tGROUP BY t, series\n\tHAVING stale = 0\n)\nGROUP BY t, labels\nORDER BY labels, t"
+        },
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, max(value) AS value, throwIf(uniqExact(labels) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, mapFilter((k, v) -> v != '', CAST(map('pod', all_labels['pod']), 'Map(String, String)')) AS labels, argMax(Value, TimeUnix) AS value, argMax(bitAnd(Flags, 1), TimeUnix) AS stale\n\tFROM (\n\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(SourceTable, ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, ResourceAttributes, Attributes, TimeUnix, Value, Flags\n\t\tFROM (\n\t\t\tSELECT 'otel_metrics_gauge' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_gauge\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND MetricName = 'node_memory_MemTotal_bytes'\n\t\t\tUNION ALL\n\t\t\tSELECT 'otel_metrics_sum' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_sum\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND MetricName = 'node_memory_MemTotal_bytes'\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n\tGROUP BY t, series\n\tHAVING stale = 0\n)\nGROUP BY t, labels\nORDER BY labels, t"
+        }
+      ],
+      "tree": {
+        "bool": false,
+        "lhs": {
+          "op": "number",
+          "value": 1.0
+        },
+        "op": "binary",
+        "operator": "-",
+        "rhs": {
+          "bool": false,
+          "lhs": {
+            "index": 0,
+            "op": "leaf"
+          },
+          "op": "binary",
+          "operator": "/",
+          "rhs": {
+            "index": 1,
+            "op": "leaf"
+          }
+        }
+      }
+    }
+  },
+  {
+    "expr": "topk(15, max_over_time(rivet_state_machine_effects_in_flight[1h]))",
+    "plan": {
+      "leaves": [
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, value, throwIf(uniqExact(series) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, all_labels AS labels, max(Value) AS value\n\tFROM (\n\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(SourceTable, ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, ResourceAttributes, Attributes, TimeUnix, Value\n\t\tFROM (\n\t\t\tSELECT 'otel_metrics_gauge' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_gauge\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\tAND MetricName = 'rivet_state_machine_effects_in_flight'\n\t\t\tUNION ALL\n\t\t\tSELECT 'otel_metrics_sum' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_sum\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\tAND MetricName = 'rivet_state_machine_effects_in_flight'\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n\tGROUP BY t, series\n)\nORDER BY series, t"
+        }
+      ],
+      "tree": {
+        "arg": {
+          "index": 0,
+          "op": "leaf"
+        },
+        "k": 15.0,
+        "op": "topk"
+      }
+    }
+  },
+  {
+    "expr": "clamp_max(avg by (pod) (rate(rivet_tokio_worker_busy_duration_total[1m])), 1)",
+    "plan": {
+      "leaves": [
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, avg(value) AS value, throwIf(uniqExact(labels) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, labels, (if(dateDiff('second', before_at, first_at) > 300, 0, if(first >= before, first - before, first)) + if(last >= peak, last - first, peak - first + last)) / {step:UInt32} AS value\n\tFROM (\n\t\tSELECT t, series, labels, first, last, peak, first_at, lagInFrame(last, 1, first) OVER (PARTITION BY series ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before, lagInFrame(last_at, 1, first_at) OVER (PARTITION BY series ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before_at\n\t\tFROM (\n\t\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, mapFilter((k, v) -> v != '', CAST(map('pod', all_labels['pod']), 'Map(String, String)')) AS labels, argMin(toFloat64(Value), TimeUnix) AS first, argMax(toFloat64(Value), TimeUnix) AS last, max(toFloat64(Value)) AS peak, min(TimeUnix) AS first_at, max(TimeUnix) AS last_at\n\t\t\tFROM otel_metrics_sum\n\t\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\t\tAND MetricName IN ('rivet_tokio_worker_busy_duration_total', 'rivet_tokio_worker_busy_duration')\n\t\t\tGROUP BY t, series\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n)\nGROUP BY t, labels\nORDER BY labels, t"
+        }
+      ],
+      "tree": {
+        "args": [
+          {
+            "index": 0,
+            "op": "leaf"
+          },
+          1.0
+        ],
+        "fn": "clamp_max",
+        "op": "call"
+      }
+    }
+  },
+  {
+    "expr": "label_replace(changes(rivet_topology_epoch{job!=\"x\"}[5m]), \"host\", \"$1\", \"pod\", \"(.*)\")",
+    "plan": {
+      "leaves": [
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, value, throwIf(uniqExact(series) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, all_labels AS labels, toFloat64(countIf(Value != before)) AS value\n\tFROM (\n\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(SourceTable, ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, ResourceAttributes, Attributes, TimeUnix, Value, lagInFrame(Value, 1, Value) OVER (PARTITION BY series ORDER BY TimeUnix ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before\n\t\tFROM (\n\t\t\tSELECT 'otel_metrics_gauge' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_gauge\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\tAND MetricName = 'rivet_topology_epoch'\n\t\t\t\tAND ResourceAttributes['service.name'] != 'x'\n\t\t\tUNION ALL\n\t\t\tSELECT 'otel_metrics_sum' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_sum\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\tAND MetricName = 'rivet_topology_epoch'\n\t\t\t\tAND ResourceAttributes['service.name'] != 'x'\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n\tGROUP BY t, series\n)\nORDER BY series, t"
+        }
+      ],
+      "tree": {
+        "args": [
+          {
+            "index": 0,
+            "op": "leaf"
+          },
+          "host",
+          "$1",
+          "pod",
+          "(.*)"
+        ],
+        "fn": "label_replace",
+        "op": "call"
+      }
+    }
+  },
+  {
+    "expr": "(sum(rate(a_total[1m])) > 0.5) and on () (sum(rate(a_total[1m])) > 0.5) or on () (0 * sum(b))",
+    "plan": {
+      "leaves": [
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, sum(value) AS value, throwIf(uniqExact(labels) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, labels, (if(dateDiff('second', before_at, first_at) > 300, 0, if(first >= before, first - before, first)) + if(last >= peak, last - first, peak - first + last)) / {step:UInt32} AS value\n\tFROM (\n\t\tSELECT t, series, labels, first, last, peak, first_at, lagInFrame(last, 1, first) OVER (PARTITION BY series ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before, lagInFrame(last_at, 1, first_at) OVER (PARTITION BY series ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before_at\n\t\tFROM (\n\t\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, mapFilter((k, v) -> v != '', CAST(map(), 'Map(String, String)')) AS labels, argMin(toFloat64(Value), TimeUnix) AS first, argMax(toFloat64(Value), TimeUnix) AS last, max(toFloat64(Value)) AS peak, min(TimeUnix) AS first_at, max(TimeUnix) AS last_at\n\t\t\tFROM otel_metrics_sum\n\t\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\t\tAND MetricName IN ('a_total', 'a')\n\t\t\tGROUP BY t, series\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n)\nGROUP BY t, labels\nORDER BY labels, t"
+        },
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, sum(value) AS value, throwIf(uniqExact(labels) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, mapFilter((k, v) -> v != '', CAST(map(), 'Map(String, String)')) AS labels, argMax(Value, TimeUnix) AS value, argMax(bitAnd(Flags, 1), TimeUnix) AS stale\n\tFROM (\n\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(SourceTable, ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, ResourceAttributes, Attributes, TimeUnix, Value, Flags\n\t\tFROM (\n\t\t\tSELECT 'otel_metrics_gauge' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_gauge\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND MetricName = 'b'\n\t\t\tUNION ALL\n\t\t\tSELECT 'otel_metrics_sum' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_sum\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND MetricName = 'b'\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n\tGROUP BY t, series\n\tHAVING stale = 0\n)\nGROUP BY t, labels\nORDER BY labels, t"
+        }
+      ],
+      "tree": {
+        "bool": false,
+        "lhs": {
+          "bool": false,
+          "lhs": {
+            "bool": false,
+            "lhs": {
+              "index": 0,
+              "op": "leaf"
+            },
+            "op": "binary",
+            "operator": ">",
+            "rhs": {
+              "op": "number",
+              "value": 0.5
+            }
+          },
+          "on": [],
+          "op": "binary",
+          "operator": "and",
+          "rhs": {
+            "bool": false,
+            "lhs": {
+              "index": 0,
+              "op": "leaf"
+            },
+            "op": "binary",
+            "operator": ">",
+            "rhs": {
+              "op": "number",
+              "value": 0.5
+            }
+          }
+        },
+        "on": [],
+        "op": "binary",
+        "operator": "or",
+        "rhs": {
+          "bool": false,
+          "lhs": {
+            "op": "number",
+            "value": 0.0
+          },
+          "op": "binary",
+          "operator": "*",
+          "rhs": {
+            "index": 1,
+            "op": "leaf"
+          }
+        }
+      }
+    }
+  },
+  {
+    "expr": "scalar(sum(b)) * vector(2) + time()",
+    "plan": {
+      "leaves": [
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, sum(value) AS value, throwIf(uniqExact(labels) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, mapFilter((k, v) -> v != '', CAST(map(), 'Map(String, String)')) AS labels, argMax(Value, TimeUnix) AS value, argMax(bitAnd(Flags, 1), TimeUnix) AS stale\n\tFROM (\n\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(SourceTable, ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, ResourceAttributes, Attributes, TimeUnix, Value, Flags\n\t\tFROM (\n\t\t\tSELECT 'otel_metrics_gauge' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_gauge\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND MetricName = 'b'\n\t\t\tUNION ALL\n\t\t\tSELECT 'otel_metrics_sum' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_sum\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND MetricName = 'b'\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n\tGROUP BY t, series\n\tHAVING stale = 0\n)\nGROUP BY t, labels\nORDER BY labels, t"
+        }
+      ],
+      "tree": {
+        "bool": false,
+        "lhs": {
+          "bool": false,
+          "lhs": {
+            "args": [
+              {
+                "index": 0,
+                "op": "leaf"
+              }
+            ],
+            "fn": "scalar",
+            "op": "call"
+          },
+          "op": "binary",
+          "operator": "*",
+          "rhs": {
+            "args": [
+              2.0
+            ],
+            "fn": "vector",
+            "op": "call"
+          }
+        },
+        "op": "binary",
+        "operator": "+",
+        "rhs": {
+          "args": [],
+          "fn": "time",
+          "op": "call"
+        }
+      }
+    }
+  },
+  {
+    "expr": "sum by (machine) (rate(c_total[1m])) * on (machine) group_left (owner) max by (machine, owner) (d)",
+    "plan": {
+      "leaves": [
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, sum(value) AS value, throwIf(uniqExact(labels) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, labels, (if(dateDiff('second', before_at, first_at) > 300, 0, if(first >= before, first - before, first)) + if(last >= peak, last - first, peak - first + last)) / {step:UInt32} AS value\n\tFROM (\n\t\tSELECT t, series, labels, first, last, peak, first_at, lagInFrame(last, 1, first) OVER (PARTITION BY series ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before, lagInFrame(last_at, 1, first_at) OVER (PARTITION BY series ORDER BY t ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS before_at\n\t\tFROM (\n\t\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, mapFilter((k, v) -> v != '', CAST(map('machine', all_labels['machine']), 'Map(String, String)')) AS labels, argMin(toFloat64(Value), TimeUnix) AS first, argMax(toFloat64(Value), TimeUnix) AS last, max(toFloat64(Value)) AS peak, min(TimeUnix) AS first_at, max(TimeUnix) AS last_at\n\t\t\tFROM otel_metrics_sum\n\t\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\t\tAND MetricName IN ('c_total', 'c')\n\t\t\tGROUP BY t, series\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n)\nGROUP BY t, labels\nORDER BY labels, t"
+        },
+        {
+          "offset_seconds": 0,
+          "shape": "value",
+          "sql": "SELECT t, labels, max(value) AS value, throwIf(uniqExact(labels) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, mapFilter((k, v) -> v != '', CAST(map('machine', all_labels['machine'], 'owner', all_labels['owner']), 'Map(String, String)')) AS labels, argMax(Value, TimeUnix) AS value, argMax(bitAnd(Flags, 1), TimeUnix) AS stale\n\tFROM (\n\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(SourceTable, ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, ResourceAttributes, Attributes, TimeUnix, Value, Flags\n\t\tFROM (\n\t\t\tSELECT 'otel_metrics_gauge' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_gauge\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND MetricName = 'd'\n\t\t\tUNION ALL\n\t\t\tSELECT 'otel_metrics_sum' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_sum\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND MetricName = 'd'\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n\tGROUP BY t, series\n\tHAVING stale = 0\n)\nGROUP BY t, labels\nORDER BY labels, t"
+        }
+      ],
+      "tree": {
+        "bool": false,
+        "group": "left",
+        "include": [
+          "owner"
+        ],
+        "lhs": {
+          "index": 0,
+          "op": "leaf"
+        },
+        "on": [
+          "machine"
+        ],
+        "op": "binary",
+        "operator": "*",
+        "rhs": {
+          "index": 1,
+          "op": "leaf"
+        }
+      }
+    }
+  },
+  {
+    "expr": "-deriv(g[10m] offset 5m)",
+    "plan": {
+      "leaves": [
+        {
+          "offset_seconds": 300,
+          "shape": "value",
+          "sql": "SELECT t, labels, value, throwIf(uniqExact(series) OVER () > 1000, 'rivet_series_limit') AS series_limit\nFROM (\n\tSELECT t, series, mapFilter((k, v) -> v != '', mapUpdate(map('job', any(ResourceAttributes['service.name']), 'instance', any(ResourceAttributes['service.instance.id'])), any(Attributes))) AS all_labels, all_labels AS labels, tupleElement(simpleLinearRegression(toFloat64(toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9))) / 1e9, Value), 1) AS value\n\tFROM (\n\t\tSELECT toUInt32({from:UInt32} + {step:UInt32} * ceil((toUnixTimestamp64Nano(toDateTime64(TimeUnix, 9)) - toInt64({from:UInt32}) * 1000000000) / ({step:UInt32} * 1000000000))) AS t, cityHash64(SourceTable, ResourceAttributes['service.name'], ResourceAttributes['service.instance.id'], Attributes) AS series, ResourceAttributes, Attributes, TimeUnix, Value\n\t\tFROM (\n\t\t\tSELECT 'otel_metrics_gauge' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_gauge\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\tAND MetricName = 'g'\n\t\t\tUNION ALL\n\t\t\tSELECT 'otel_metrics_sum' AS SourceTable, ResourceAttributes, Attributes, TimeUnix, Flags, Value\n\t\t\tFROM otel_metrics_sum\n\t\t\tWHERE ProjectId = {project:String}\n\t\t\t\tAND TimeUnix >= toDateTime({query_from:UInt32})\n\t\t\t\tAND TimeUnix <= toDateTime({to:UInt32})\n\t\t\t\tAND bitAnd(Flags, 1) = 0\n\t\t\t\tAND MetricName = 'g'\n\t\t)\n\t)\n\tWHERE t >= {from:UInt32} AND t <= {to:UInt32}\n\tGROUP BY t, series\n)\nORDER BY series, t"
+        }
+      ],
+      "tree": {
+        "bool": false,
+        "lhs": {
+          "index": 0,
+          "op": "leaf"
+        },
+        "op": "binary",
+        "operator": "*",
+        "rhs": {
+          "op": "number",
+          "value": -1.0
+        }
+      }
+    }
+  }
+]

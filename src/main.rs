@@ -1,12 +1,17 @@
-use clap::Parser;
+use std::io::{BufRead, Write};
+
+use clap::{Parser, Subcommand};
 use clickhouse_promql::{
     api::{App, router},
+    compile::{Compiled, Target, compile_target},
     label_name,
     storage::{Store, validate_identifier},
 };
 #[derive(Parser)]
-#[command(version)]
+#[command(version, args_conflicts_with_subcommands = true)]
 struct Config {
+    #[command(subcommand)]
+    command: Option<Command>,
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
     #[arg(long, default_value_t = 9091)]
@@ -67,12 +72,50 @@ struct Config {
     #[arg(long, value_parser=clap::value_parser!(u64).range(1..))]
     thanos_default_step: Option<u64>,
 }
+#[derive(Subcommand)]
+enum Command {
+    /// Compile PromQL into ClickHouse leaves and an operator tree. Reads one
+    /// `{"id", "expr", "variables"}` JSON object per stdin line and writes one
+    /// `{"id", "plan"}` or `{"id", "error"}` line per input. Exits non-zero if
+    /// any expression fails to compile.
+    Compile,
+}
+fn main() -> anyhow::Result<()> {
+    let c = Config::parse();
+    match c.command {
+        Some(Command::Compile) => compile(),
+        None => serve(c),
+    }
+}
+fn compile() -> anyhow::Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let mut failed = 0usize;
+    for (number, line) in std::io::stdin().lock().lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let target: Target = serde_json::from_str(&line)
+            .map_err(|e| anyhow::anyhow!("input line {}: {e}", number + 1))?;
+        let compiled = compile_target(target);
+        if matches!(compiled, Compiled::Error { .. }) {
+            failed += 1;
+        }
+        serde_json::to_writer(&mut out, &compiled)?;
+        out.write_all(b"\n")?;
+    }
+    out.flush()?;
+    if failed > 0 {
+        anyhow::bail!("{failed} expressions failed to compile");
+    }
+    Ok(())
+}
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn serve(c: Config) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
-    let c = Config::parse();
     let mut store = Store::new(c.clickhouse_url, c.database, c.username, c.password)?;
     store.max_rows = c.max_rows as usize;
     store.max_samples = c.max_samples as usize;

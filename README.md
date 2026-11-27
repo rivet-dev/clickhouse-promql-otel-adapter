@@ -315,6 +315,7 @@ Add a **Prometheus** data source in Grafana: `http://<host>:9091`. Full local st
 | | `RUST_LOG` | | Log filter |
 
 - **Endpoints**: `/api/v1/*` (Prometheus + Thanos params), `/-/healthy`, `/-/ready`, `/metrics`
+- **Ahead-of-time compile**: `clickhouse-promql compile < targets.jsonl > plans.jsonl` turns dashboard PromQL into per-selector ClickHouse statements plus an operator tree, for callers that run fixed queries without the adapter. Every statement is scoped by `ProjectId = {project:String}`; ranges are ignored and `rate`/`increase` are reset-aware growth per step ([`src/compile`](src/compile/mod.rs))
 - **Not implemented** (404): rules/alerts, remote read/write, ingestion, TSDB admin, StoreAPI
 - **No auth or TLS**: run behind a proxy
 - **Limits & errors**: [API contract](docs/api-contract.md)
