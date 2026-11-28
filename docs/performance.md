@@ -202,6 +202,9 @@ The subsequent full browser check also passed all 47 panel requests, with the
 three heaviest concurrent requests taking 16.0–21.6 seconds.
 
 Use exact tenant/project/region filters and bounded time windows in dashboards.
+If one of those labels mirrors a leading sort-key column, configure
+[`--label-column`](../README.md#speed-up-queries-scoped-to-one-tenant) so ClickHouse
+can skip blocks for other label values.
 See [API limits](api-contract.md) for CLI controls. Tune concurrency to CPU and
 memory on the adapter and ClickHouse together; adding adapter replicas also
 adds ClickHouse query load. The adapter is stateless and can have multiple

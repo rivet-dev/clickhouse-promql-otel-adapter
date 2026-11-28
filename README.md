@@ -296,6 +296,25 @@ From a checkout: `just run` (source) or `just image-run` (container).
 
 Add a **Prometheus** data source in Grafana: `http://<host>:9091`. Full local stack: [demo](demo/README.md).
 
+### Speed up queries scoped to one tenant
+
+Use `--label-column=LABEL=COLUMN` when dashboards frequently select one or a few values of a label and your ClickHouse tables already store that label in a column near the start of the sort key. For example, suppose the metrics tables use `ORDER BY (TenantId, ServiceName, MetricName, …)` and your ingest pipeline writes the same tenant ID to the PromQL label `tenant` and the column `TenantId`.
+
+Add `--label-column=tenant=TenantId` to the adapter's startup arguments. The dashboard keeps the same PromQL:
+
+```promql
+sum(rate(http_requests_total{tenant="alpha"}[5m]))
+```
+
+| Adapter configuration | How ClickHouse finds the tenant's rows |
+|---|---|
+| Default | Evaluates the label against the OTel attributes on candidate rows. |
+| `--label-column=tenant=TenantId` | Applies a predicate equivalent to `TenantId IN ('alpha')`. ClickHouse can skip blocks for other tenants using the sort key. |
+
+Nonempty equality matchers and literal alternatives such as `tenant=~"alpha|beta"` can use the mapped column. Negative matchers, empty-value matches, and general regexes such as `tenant=~"a.*"` follow the usual label-matching path. A fleet-wide `sum by (tenant) (...)` needs every tenant unless its selector also filters by tenant.
+
+**Check the mapping before enabling it.** The flag refers to an existing column. Across all queried metric tables, including historical rows, the column and the label exposed by the adapter must agree on both the value and its absence. A mismatch can omit valid series. Replay the same selector over a fixed time range with and without the flag, compare the returned labels and samples, then compare `read_rows` in ClickHouse's `system.query_log` to see how much work the sort key saved.
+
 ## Reference
 
 | Flag | Env | Default | |
@@ -308,7 +327,7 @@ Add a **Prometheus** data source in Grafana: `http://<host>:9091`. Full local st
 | `--password` | `CLICKHOUSE_PASSWORD` | | |
 | `--replica-label` | | | HA replica label for dedup (repeatable) |
 | `--promote-resource-attribute` | | | Copy a resource attribute onto every series as `ATTR` or `ATTR=LABEL` (repeatable), like Prometheus `promote_resource_attributes` |
-| `--label-column` | | | Filter `LABEL=COLUMN` on a column that mirrors the label's value on every row (repeatable), such as a tenant ID in the sort key; positive matchers on the label then use the column alone |
+| `--label-column` | | | Map a PromQL label to an existing ClickHouse column with `LABEL=COLUMN` (repeatable). [When to use it and how to verify it](#speed-up-queries-scoped-to-one-tenant) |
 | `--series-cache-ttl-seconds` | | `10` | How long decoded sample rows serve identical requests from other panels; `0` disables ([details](#series-cache)) |
 | `--series-cache-bytes` | | `134217728` | Approximate bytes of decoded series kept for other panels |
 | `--thanos-default-step` | | off | Seconds; allows range queries without `step` |
